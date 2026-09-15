@@ -103,10 +103,22 @@ class _FakeHandle:
             yield item
 
 
+def _thread_model(options: dict[str, Any]) -> str:
+    """Mirror the App Server echoing the resolved model on the thread.
+
+    The server always names a model — the requested one when the options carry
+    it, the CLI default otherwise — so a missing option must not read as an
+    empty model.
+    """
+    return str(options.get("model") or "gpt-5.6-sol")
+
+
 class _FakeThread:
-    def __init__(self, state: _FakeSdkState, thread_id: str) -> None:
+    def __init__(self, state: _FakeSdkState, thread_id: str, model: str = "") -> None:
         self.state = state
         self.id = thread_id
+        # Echoes the model the App Server resolved, like the real SDK thread.
+        self.model = model
         self.handles: list[_FakeHandle] = []
 
     async def turn(self, prompt: str) -> _FakeHandle:
@@ -127,10 +139,11 @@ class _FakeCodex:
 
     async def thread_start(self, **options: Any) -> _FakeThread:
         self.state.thread_calls.append(("start", options))
-        return _FakeThread(self.state, self.state.next_thread_id)
+        return _FakeThread(self.state, self.state.next_thread_id, model=_thread_model(options))
 
     async def thread_resume(self, thread_id: str, **options: Any) -> _FakeThread:
         self.state.thread_calls.append(("resume", options))
+        return _FakeThread(self.state, thread_id, model=_thread_model(options))
         return _FakeThread(self.state, thread_id)
 
     async def close(self) -> None:
@@ -568,6 +581,13 @@ async def test_auth_failure_activates_fallback_after_host_ratification(monkeypat
     assert any(
         isinstance(event.event, ProviderEvent) and event.event.event_type == "auth_fallback_activated" for event in events
     )
+    # The fallback switch announces the live model for failure attribution.
+    model_events = [
+        event.event
+        for event in events
+        if isinstance(event.event, ProviderEvent) and event.event.event_type == "session/model_changed"
+    ]
+    assert [event.payload.get("model") for event in model_events] == ["fallback-model"]
     await harness.stop()
 
 
@@ -599,6 +619,13 @@ async def test_declined_fallback_ratification_restores_the_native_thread(monkeyp
     assert not any(
         isinstance(event.event, ProviderEvent) and event.event.event_type == "auth_fallback_activated" for event in events
     )
+    # The native endpoint is restored and announced again after the decline.
+    model_events = [
+        event.event
+        for event in events
+        if isinstance(event.event, ProviderEvent) and event.event.event_type == "session/model_changed"
+    ]
+    assert [event.payload.get("model") for event in model_events] == ["native-model"]
     await harness.stop()
 
 
@@ -754,3 +781,58 @@ async def test_auth_retries_are_reported_before_the_fallback_activates(monkeypat
     assert len(retrying) == 3, "every auth retry must be reported before the fallback"
     await harness.stop()
     logger.info("codex auth retries are reported before the fallback")
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_model_is_reported_from_thread_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    sdk, state = _install_fake_sdk(monkeypatch)
+
+    # No ``model`` in thread options: the member relies on the CLI default.
+    # The App Server response echoes the model it resolved, which must reach
+    # the failure report instead of ``model=``.
+    async def _fail(handle: _FakeHandle) -> Any:
+        return _turn_completed(handle.id, _Status.failed, SimpleNamespace(codex_error_info=None))
+
+    state.scripts.append([_fail])
+    harness = CodexHarness(CodexHarnessConfig(inherit_process_env=False))
+    await harness.start(_context())
+    # The App Server confirmed the CLI default on the thread response even
+    # though no ``model_name`` was configured — that value, not an empty
+    # string, is what the failure report must carry.
+    assert harness._confirmed_model == "gpt-5.6-sol"
+    receipt = await harness.send(HarnessInput(content="hi"))
+    events = await _turn(harness, receipt.turn_id)
+    terminal = _terminal(events)
+    assert terminal.kind is TurnEventKind.FAILED
+    await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_model_rerouted_updates_the_reported_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    sdk, state = _install_fake_sdk(monkeypatch)
+    state.scripts.append(
+        [
+            _notification(
+                "model/rerouted",
+                thread_id="thread-1",
+                turn_id="turn-1",
+                from_model="gpt-5.6-sol",
+                to_model="gpt-5.6-codex",
+                reason="fallback",
+            ),
+            _turn_completed("turn-1", _Status.completed),
+        ]
+    )
+    harness = CodexHarness(CodexHarnessConfig(inherit_process_env=False))
+    await harness.start(_context())
+    receipt = await harness.send(HarnessInput(content="hi"))
+    events = await _turn(harness, receipt.turn_id)
+    assert _terminal(events).kind is TurnEventKind.FINISHED
+    model_events = [
+        event.event
+        for event in events
+        if isinstance(event.event, ProviderEvent) and event.event.event_type == "session/model_changed"
+    ]
+    # Session activation announces the resolved model; the re-route replaces it.
+    assert [event.payload.get("model") for event in model_events][-1] == "gpt-5.6-codex"
+    await harness.stop()

@@ -75,7 +75,6 @@ class CodexTurnAccumulator:
         self.last_text_output = ""
         self.pending_error: TurnError | None = None
         self.completed_turn: Any = None
-        self.emitted_output = False
         self.notifications_seen = 0
         self._usage_events: list[TurnUsage] = []
         self._tool_names: dict[str, str] = {}
@@ -105,16 +104,18 @@ class CodexTurnAccumulator:
         if method == "turn/completed":
             self.completed_turn = getattr(payload, "turn", None)
             return [], None
+        if method == "model/rerouted":
+            return self._model_rerouted(payload), None
         if method in _SILENT_METHODS:
             return [], None
         return [self._provider_event(method or "unknown-notification", to_json_object(payload))], None
 
-    def _delta(self, payload: Any, channel: OutputChannel) -> list[MappedCodexEvent]:
+    @staticmethod
+    def _delta(payload: Any, channel: OutputChannel) -> list[MappedCodexEvent]:
         delta = getattr(payload, "delta", None)
         if not isinstance(delta, str) or not delta:
             return []
         item_id = str(getattr(payload, "item_id", "") or "unknown-item")
-        self.emitted_output = True
         return [
             MappedCodexEvent(
                 OutputEvent(
@@ -195,7 +196,6 @@ class CodexTurnAccumulator:
             )
             if not text:
                 return []
-            self.emitted_output = True
             return [
                 MappedCodexEvent(
                     OutputEvent(
@@ -241,6 +241,28 @@ class CodexTurnAccumulator:
                     data=freeze_json_object(to_json_object(item)),
                 ),
                 item_id=item_id,
+            )
+        ]
+
+    @staticmethod
+    def _model_rerouted(payload: Any) -> list[MappedCodexEvent]:
+        """Surface the App Server's mid-session model re-route as a model change.
+
+        The notification carries ``toModel`` (camelCase); emitting the shared
+        ``session/model_changed`` event keeps the host's reliability model in
+        sync with what the thread actually runs on after the re-route.
+        """
+        to_model = str(getattr(payload, "to_model", "") or "")
+        if not to_model:
+            return []
+        return [
+            MappedCodexEvent(
+                ProviderEvent(
+                    provider=PROVIDER_NAME,
+                    event_type="session/model_changed",
+                    schema_version=_SCHEMA_VERSION,
+                    payload={"model": to_model},
+                )
             )
         ]
 
