@@ -31,7 +31,6 @@ from openjiuwen.harness_protocol import (
     UserInputRequest,
     json_value_to_builtin,
 )
-from openjiuwen.harness_providers.skills import install_skills
 from openjiuwen.harness_providers.base import (
     PendingTurn,
     ProviderStartupError,
@@ -52,6 +51,7 @@ from openjiuwen.harness_providers.claudecode.options import (
 )
 from openjiuwen.harness_providers.inputs import harness_input_text
 from openjiuwen.harness_providers.jsonsafe import to_json_object, to_json_safe
+from openjiuwen.harness_providers.skills import install_skills
 
 ADAPTER_VERSION = "0.1.0"
 ASK_USER_TOOL_NAME = "AskUserQuestion"
@@ -285,6 +285,12 @@ class ClaudeCodeHarness(SerializedTurnHarness):
                         code="CLAUDE_MISSING_RESULT",
                         category="sdk_error",
                     )
+                    # An empty stream is the signature of a message channel that
+                    # already died (transport error, CLI exit): ``query`` writes
+                    # to a still-open stdin while ``receive_response`` drains a
+                    # closed stream and yields nothing. The client cannot
+                    # recover in place, so drop it; the next turn reconnects.
+                    await self._close_session()
                     return TurnEventKind.FAILED, accumulator.build_failed_result(error, timing=timing)
             except Exception as exc:
                 if turn.abort_requested:
@@ -298,6 +304,12 @@ class ClaudeCodeHarness(SerializedTurnHarness):
                 error = classify_claude_exception(exc, phase="turn")
                 if await self._maybe_activate_fallback(error, accumulator, turn):
                     continue
+                # A transport/decode exception kills the SDK read task and its
+                # message stream for good; a reused client accepts the next
+                # ``query`` (stdin is fine) but returns an empty stream, so the
+                # member would look READY while silently producing nothing.
+                # Drop the client here so the next turn reconnects cleanly.
+                await self._close_session()
                 return TurnEventKind.FAILED, accumulator.build_failed_result(error, timing=timing)
         error = TurnError(
             message="Claude Code authentication fallback did not recover the turn",

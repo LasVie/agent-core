@@ -341,7 +341,70 @@ async def test_failed_result_is_classified(monkeypatch: pytest.MonkeyPatch) -> N
     assert terminal.result.error.category == "rate_limited"
     assert terminal.result.error.provider_data["http_status"] == 429
     assert classify_result_message(_result(sdk, is_error=True, api_error_status=401)).category == "auth_required"
+    # A failed ResultMessage ends the turn normally: the client stays usable.
+    assert len(state.clients) == 1 and not state.clients[0].disconnected
     await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_turn_exception_drops_client_and_next_turn_reconnects(monkeypatch: pytest.MonkeyPatch) -> None:
+    sdk, state = _install_fake_sdk(monkeypatch)
+
+    async def _explode(client: _FakeClient) -> Any:
+        raise RuntimeError("JSON message exceeded maximum buffer size")
+
+    state.scripts.append([_explode])
+    state.scripts.append([_result(sdk, result="recovered")])
+    harness = ClaudeCodeHarness(ClaudeCodeHarnessConfig(inherit_process_env=False))
+    await harness.start(_context())
+    first = state.clients[0]
+
+    receipt = await harness.send(HarnessInput(content="read the big image"))
+    terminal = _terminal(await _turn(harness, receipt.turn_id))
+    assert terminal.kind is TurnEventKind.FAILED
+    # The SDK read task died with the exception; the client must be dropped so
+    # the next turn does not reuse a message stream that only yields nothing.
+    assert first.disconnected
+
+    receipt = await harness.send(HarnessInput(content="retry"))
+    terminal = _terminal(await _turn(harness, receipt.turn_id))
+    assert terminal.kind is TurnEventKind.FINISHED
+    assert terminal.result.final_output == "recovered"
+    # A fresh client served the retry, and it resumed the same CLI session.
+    assert len(state.clients) == 2
+    assert state.clients[1].queries == ["retry"]
+    assert state.clients[1].options.resume == harness.provider_session_id
+    await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_empty_stream_drops_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    sdk, state = _install_fake_sdk(monkeypatch)
+    state.scripts.append([])  # stream ends without a ResultMessage
+    harness = ClaudeCodeHarness(ClaudeCodeHarnessConfig(inherit_process_env=False))
+    await harness.start(_context())
+    receipt = await harness.send(HarnessInput(content="hi"))
+    terminal = _terminal(await _turn(harness, receipt.turn_id))
+    assert terminal.kind is TurnEventKind.FAILED
+    assert terminal.result.error.code == "CLAUDE_MISSING_RESULT"
+    assert state.clients[0].disconnected
+    await harness.stop()
+
+
+def test_max_buffer_size_config_flows_to_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    sdk, state = _install_fake_sdk(monkeypatch)
+    config = ClaudeCodeHarnessConfig.from_mapping({"max_buffer_size": 32 * 1024 * 1024})
+    assert config.max_buffer_size == 32 * 1024 * 1024
+    with pytest.raises(ValueError, match="max_buffer_size"):
+        ClaudeCodeHarnessConfig(max_buffer_size=0)
+
+    async def _run() -> None:
+        harness = ClaudeCodeHarness(config)
+        await harness.start(_context())
+        await harness.stop()
+
+    asyncio.run(_run())
+    assert state.clients[0].options.max_buffer_size == 32 * 1024 * 1024
 
 
 @pytest.mark.asyncio
