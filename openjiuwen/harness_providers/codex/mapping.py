@@ -286,6 +286,9 @@ class CodexTurnAccumulator:
 
     def _error(self, payload: Any) -> tuple[list[MappedCodexEvent], RetryingNotice | None]:
         error, will_retry = classify_error_notification(payload)
+        # Keep a specific failure observed earlier in the retry sequence when
+        # a later SDK notification only carries a generic sdk_error.
+        self.pending_error = merge_pending_error(self.pending_error, error)
         if will_retry:
             return [
                 MappedCodexEvent(
@@ -296,7 +299,6 @@ class CodexTurnAccumulator:
                     )
                 )
             ], RetryingNotice(error=error)
-        self.pending_error = error
         return [
             MappedCodexEvent(
                 DiagnosticEvent(

@@ -836,3 +836,78 @@ async def test_model_rerouted_updates_the_reported_model(monkeypatch: pytest.Mon
     # Session activation announces the resolved model; the re-route replaces it.
     assert [event.payload.get("model") for event in model_events][-1] == "gpt-5.6-codex"
     await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_exhausted_auth_retries_keep_auth_category_when_fallback_connect_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dead native credential must keep failing as auth_required end to end.
+
+    Reproduces the production shape: five will_retry auth notifications, the
+    budget exhausts, the fallback endpoint is just as dead (its connect raises
+    a raw SDK exception that classifies as a generic sdk_error), and the final
+    failure report must still say auth_required — the retry-time
+    classification is recorded as a pending candidate and merged over the
+    generic terminal error.
+    """
+    sdk, state = _install_fake_sdk(monkeypatch)
+    auth_error = SimpleNamespace(message="unauthorized", codex_error_info="unauthorized")
+    state.scripts.append(
+        [
+            _notification("error", error=auth_error, will_retry=True, thread_id="t", turn_id="x"),
+            _notification("error", error=auth_error, will_retry=True, thread_id="t", turn_id="x"),
+            _notification("error", error=auth_error, will_retry=True, thread_id="t", turn_id="x"),
+            _notification("error", error=auth_error, will_retry=True, thread_id="t", turn_id="x"),
+            _notification("error", error=auth_error, will_retry=True, thread_id="t", turn_id="x"),
+        ]
+    )
+    harness = CodexHarness(_fallback_config())
+    original_connect = CodexHarness._connect
+
+    async def dead_fallback_connect(harness_self, context, *, model, resume_thread_id):
+        # The fallback endpoint rejects the thread start with a raw SDK
+        # exception that carries no structured error info.
+        if model is not None and model.model == "fallback-model":
+            raise RuntimeError("unexpected status 401 Unauthorized: Authentication Error")
+        return await original_connect(harness_self, context, model=model, resume_thread_id=resume_thread_id)
+
+    monkeypatch.setattr(CodexHarness, "_connect", dead_fallback_connect)
+    await harness.start(_context())
+    receipt = await harness.send(HarnessInput(content="hi"))
+    events = await _turn(harness, receipt.turn_id)
+    terminal = _terminal(events)
+    assert terminal.kind is TurnEventKind.FAILED
+    assert terminal.result.error.category == "auth_required"
+    await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_generic_final_error_does_not_replace_retrying_auth_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A generic final notification must preserve the earlier auth failure."""
+    sdk, state = _install_fake_sdk(monkeypatch)
+    auth_error = SimpleNamespace(message="unauthorized", codex_error_info="unauthorized")
+    generic_error = SimpleNamespace(
+        message="unexpected status 401 Unauthorized: Authentication Error",
+        codex_error_info="other",
+    )
+    state.scripts.append(
+        [
+            _notification("error", error=auth_error, will_retry=True, thread_id="t", turn_id="x"),
+            _notification("error", error=generic_error, will_retry=False, thread_id="t", turn_id="x"),
+            _turn_completed("turn-1", _Status.failed, error=generic_error),
+        ]
+    )
+    state.scripts.append([_turn_completed("turn-2", _Status.completed)])
+
+    harness = CodexHarness(_fallback_config())
+    await harness.start(_context())
+    receipt = await harness.send(HarnessInput(content="hi"))
+    events = await _turn(harness, receipt.turn_id)
+
+    assert _terminal(events).kind is TurnEventKind.FINISHED
+    assert harness.fallback_activated
+    assert [call[0] for call in state.thread_calls] == ["start", "resume"]
+    await harness.stop()
