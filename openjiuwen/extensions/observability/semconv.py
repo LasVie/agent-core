@@ -188,6 +188,19 @@ DA_TASK_LOOP_EVENT = "deepagent.task.loop_event"
 # Attribute values — everything above this line is an attribute key
 # ---------------------------------------------------------------------------
 
+# Closed set of ``OJ_TRAJECTORY_RECORD_KIND`` values. Readers generated from this
+# module (the web trajectory viewer) reject anything outside it, so a new record
+# kind is added here first.
+TRAJECTORY_RECORD_KINDS = ("turn", "step", "inference", "reasoning", "tool", "agent", "event")
+
+# Closed set of ``OJ_TRAJECTORY_EVENT_KIND`` values a v2 event may state.
+TRAJECTORY_EVENT_KINDS = (
+    "context.window.commit",
+    "compaction.completed",
+    "ask_user.requested",
+    "ask_user.resolved",
+)
+
 # Recorded as the value of ``OJ_GEN_AI_REASONING_TIMING`` when no reasoning
 # duration could be measured. A zero would itself be a measurement, so the
 # reason is recorded in place of a duration.

@@ -628,19 +628,19 @@ def test_native_events_share_one_epoch_and_keep_subject_sequences_dense_across_t
         emit_native_trajectory_event(
             tracer=tracer,
             parent_span=parents[0],
-            event_kind="test.first",
+            event_kind="ask_user.requested",
             payload={"index": 1},
         )
         emit_native_trajectory_event(
             tracer=tracer,
             parent_span=parents[1],
-            event_kind="test.second",
+            event_kind="ask_user.requested",
             payload={"index": 2},
         )
         emit_native_trajectory_event(
             tracer=tracer,
             parent_span=parents[2],
-            event_kind="test.other-subject",
+            event_kind="ask_user.requested",
             payload={"index": 3},
         )
     finally:
@@ -649,7 +649,7 @@ def test_native_events_share_one_epoch_and_keep_subject_sequences_dense_across_t
         provider.shutdown()
         reset_state()
 
-    events = [span for span in exporter.get_finished_spans() if span.name.startswith("test.")]
+    events = [span for span in exporter.get_finished_spans() if span.name == "ask_user.requested"]
     assert len({_attrs(span)[OJ_TRAJECTORY_SEQUENCE_EPOCH] for span in events}) == 1
     assert [_attrs(span)[OJ_TRAJECTORY_SUBJECT_SEQUENCE] for span in events] == [1, 2, 1]
 
@@ -670,14 +670,14 @@ def test_reset_state_rotates_epoch_and_restarts_subject_sequence() -> None:
         emit_native_trajectory_event(
             tracer=tracer,
             parent_span=parent,
-            event_kind="test.before-reset",
+            event_kind="ask_user.requested",
             payload={},
         )
         reset_state()
         emit_native_trajectory_event(
             tracer=tracer,
             parent_span=parent,
-            event_kind="test.after-reset",
+            event_kind="ask_user.requested",
             payload={},
         )
     finally:
@@ -686,7 +686,7 @@ def test_reset_state_rotates_epoch_and_restarts_subject_sequence() -> None:
         reset_state()
 
     before, after = [
-        span for span in exporter.get_finished_spans() if span.name.startswith("test.")
+        span for span in exporter.get_finished_spans() if span.name == "ask_user.requested"
     ]
     before_attrs = _attrs(before)
     after_attrs = _attrs(after)
@@ -754,6 +754,23 @@ async def test_concurrent_subjects_have_independent_sequence_and_window_state() 
             for operation in second["delta"]
             if "message" in operation
         )
+
+
+def test_unknown_event_kind_is_refused_at_emit() -> None:
+    provider = TracerProvider()
+    tracer = provider.get_tracer("trajectory-unknown-kind-test")
+    parent = tracer.start_span("agent.root")
+    try:
+        with pytest.raises(ValueError, match="unknown trajectory event kind"):
+            emit_native_trajectory_event(
+                tracer=tracer,
+                parent_span=parent,
+                event_kind="context.window.snapshot",
+                payload={},
+            )
+    finally:
+        parent.end()
+        provider.shutdown()
 
 
 def test_langfuse_only_span_is_not_a_native_v2_event() -> None:

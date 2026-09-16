@@ -29,6 +29,7 @@ from openjiuwen.extensions.observability.semconv import (
     OJ_TRAJECTORY_SEQUENCE_EPOCH,
     OJ_TRAJECTORY_SUBJECT_ID,
     OJ_TRAJECTORY_SUBJECT_SEQUENCE,
+    TRAJECTORY_EVENT_KINDS,
     TRAJECTORY_SPAN_SCHEMA_VERSION,
     OJ_TURN_ID,
     OJ_TURN_NUMBER,
@@ -51,6 +52,13 @@ from openjiuwen.extensions.observability.span_context import (
 REQUEST_SYSTEM_SLOT_PREFIX = "openjiuwen:request-system-slot:"
 
 
+def _require_known_event_kind(event_kind: str) -> None:
+    # Readers treat the event-kind set as closed; an unknown kind would be
+    # dropped by every one of them, so refuse it where it is written.
+    if event_kind not in TRAJECTORY_EVENT_KINDS:
+        raise ValueError(f"unknown trajectory event kind: {event_kind!r}")
+
+
 def emit_native_trajectory_event(
     *,
     tracer: Tracer,
@@ -61,6 +69,7 @@ def emit_native_trajectory_event(
     sequence_epoch: str | None = None,
 ) -> Span | None:
     """Emit one immutable v2 event using the parent's concrete owner."""
+    _require_known_event_kind(event_kind)
     if not parent_span.is_recording():
         return None
     session_id = str(parent_span.attributes.get(GEN_AI_CONVERSATION_ID) or "")
@@ -122,6 +131,7 @@ def record_native_trajectory_log_event(
     payload: dict[str, Any],
 ) -> bool:
     """Record one immutable trajectory event on the current short-lived Span."""
+    _require_known_event_kind(event_kind)
     if not parent_span.is_recording():
         return False
     session_id = str(parent_span.attributes.get(GEN_AI_CONVERSATION_ID) or "")
