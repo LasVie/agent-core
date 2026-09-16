@@ -481,6 +481,26 @@ def test_selects_fields_after_reconstruction_and_rejects_unknown_configuration()
         trajectory_to_messages(trajectory, fields={"metadata"})  # type: ignore[arg-type]
 
 
+def test_reasoning_content_is_selected_only_on_request() -> None:
+    trajectory = _trajectory(
+        [
+            _llm_span(
+                "llm-1",
+                start=10,
+                prompt=[{"role": "user", "content": "why"}],
+                completion={"role": "assistant", "content": "because", "reasoning_content": "thinking"},
+            )
+        ]
+    )
+
+    assert trajectory_to_messages(trajectory)[-1] == {"role": "assistant", "content": "because"}
+    assert trajectory_to_messages(trajectory, fields={"content", "reasoning_content"})[-1] == {
+        "role": "assistant",
+        "content": "because",
+        "reasoning_content": "thinking",
+    }
+
+
 def test_uses_tool_error_only_when_output_is_absent() -> None:
     tool = _span(
         "tool-1",

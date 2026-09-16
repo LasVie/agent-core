@@ -22,11 +22,13 @@ from openjiuwen.agent_evolving.trajectory.team import span_category
 from openjiuwen.agent_evolving.trajectory.windows import replay_windows, window_for_inference
 
 
-MessageField: TypeAlias = Literal["content", "name", "tool_calls", "tool_call_id"]
+MessageField: TypeAlias = Literal["content", "reasoning_content", "name", "tool_calls", "tool_call_id"]
 DEFAULT_EVOLUTION_MESSAGE_FIELDS: Final[frozenset[MessageField]] = frozenset(
     {"content", "name", "tool_calls", "tool_call_id"}
 )
-_MESSAGE_FIELDS = frozenset(DEFAULT_EVOLUTION_MESSAGE_FIELDS)
+# ``reasoning_content`` is selectable but not a default: evolution reads what
+# the agent said, and a reader that wants the thinking asks for it.
+_MESSAGE_FIELDS = frozenset(DEFAULT_EVOLUTION_MESSAGE_FIELDS | {"reasoning_content"})
 
 
 def _field(value: object, name: str) -> object | None:

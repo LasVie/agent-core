@@ -587,17 +587,24 @@ def _flatten_structured_message(message: Mapping[str, Any]) -> dict[str, Any]:
     """
 
     flat = {key: deepcopy(value) for key, value in message.items() if key != "parts"}
+    parts = message.get("parts") if isinstance(message.get("parts"), list) else []
+    # Reasoning is what the model thought, not what it said: it is read back
+    # as ``reasoning_content`` and never folded into ``content``.
+    reasoning_parts = [
+        part for part in parts if isinstance(part, Mapping) and part.get("type") == "reasoning"
+    ]
+    said_parts = [
+        part for part in parts if isinstance(part, Mapping) and part.get("type") != "reasoning"
+    ]
+    if reasoning_parts and "reasoning_content" not in flat:
+        flat["reasoning_content"] = _structured_parts_text(reasoning_parts)
     if not isinstance(flat.get("content"), str):
-        parts = message.get("parts")
-        contents = [
-            part["content"] for part in parts
-            if isinstance(part, Mapping) and "content" in part
-        ] if isinstance(parts, list) else []
+        contents = [part["content"] for part in said_parts if "content" in part]
         if len(contents) == 1 and not isinstance(contents[0], str):
             # Multimodal content rides in one part and comes back whole.
             flat["content"] = deepcopy(contents[0])
         elif contents:
-            flat["content"] = _structured_parts_text(parts)
+            flat["content"] = _structured_parts_text(said_parts)
     if "tool_calls" not in flat:
         tool_calls = _tool_calls_from_parts(message.get("parts"))
         if tool_calls:
@@ -627,6 +634,9 @@ def _structure_message(message: Mapping[str, Any]) -> dict[str, Any]:
     parts: list[dict[str, Any]] = []
     content = message.get("content")
     role = str(message.get("role") or "unknown")
+    reasoning = message.get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning:
+        parts.append({"type": "reasoning", "content": reasoning})
     if role == "tool" and content is not None:
         response: dict[str, Any] = {
             "type": "tool_call_response",

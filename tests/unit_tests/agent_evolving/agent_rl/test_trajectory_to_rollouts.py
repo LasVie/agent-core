@@ -45,6 +45,48 @@ def test_trajectory_to_rollouts_keeps_dict_response():
     assert rollouts[0].output_response == {"role": "assistant", "content": "ok"}
 
 
+def test_reasoning_is_its_own_field_of_the_response():
+    traj = _trajectory(
+        "e-reasoning",
+        {
+            semconv.GEN_AI_OUTPUT_MESSAGES: json.dumps(
+                [
+                    {
+                        "role": "assistant",
+                        "parts": [
+                            {"type": "reasoning", "content": "think first"},
+                            {"type": "text", "content": "answer"},
+                        ],
+                    }
+                ]
+            ),
+        },
+    )
+
+    rollouts = trajectory_to_rollouts(traj)
+
+    assert rollouts[0].output_response == {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "think first",
+    }
+
+
+def test_compaction_requests_are_not_rollouts():
+    traj = _trajectory(
+        "e-compaction",
+        {
+            semconv.OJ_REQUEST_PURPOSE: "compaction",
+            **write_llm_exchange(
+                [{"role": "user", "content": "summarize the conversation"}],
+                [{"role": "assistant", "content": "summary"}],
+            ),
+        },
+    )
+
+    assert trajectory_to_rollouts(traj) == []
+
+
 def test_trajectory_to_rollouts_projects_otlp_token_tools_and_meta_fields():
     tools = [
         {
