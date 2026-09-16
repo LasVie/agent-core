@@ -62,6 +62,7 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
+    AgentCallbackEvent,
     InvokeInputs,
     ModelCallInputs,
     ToolCallInputs,
@@ -253,6 +254,19 @@ class EvolutionRail(DeepAgentRail):
 
     priority = 60  # Lower than security rails, higher than user rails
     _DEFAULT_MEMBER_ROLE: Optional[str] = None
+
+    # after_tool_call reads the tool span the observability rail ends in its
+    # own after_tool_call, and records the result every other callback of
+    # that hook may still rewrite. So evolution reads last in that one chain,
+    # keeping the evolution rails' relative order among themselves.
+    _AFTER_TOOL_CALL_READER_OFFSET = 1_000_000
+
+    def callback_priority(self, event: AgentCallbackEvent) -> int:
+        """Run after_tool_call after every rail that produces the tool call."""
+
+        if event == AgentCallbackEvent.AFTER_TOOL_CALL:
+            return self.priority - self._AFTER_TOOL_CALL_READER_OFFSET
+        return self.priority
 
     def __init__(
         self,
