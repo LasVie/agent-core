@@ -178,7 +178,7 @@ async def test_each_llm_request_keeps_identity_parent_and_owning_step(tracing):
     tracing.root.set_attribute(OJ_TURN_ID, "turn-7")
     rail = AgentObservabilityRail(tracer=tracing.tracer)
     handler = OtelCallbackHandler(
-        ObservabilityConfig(enabled=True, backend="otlp", max_attributes=40),
+        ObservabilityConfig(enabled=True, max_attributes=40),
         tracer=tracing.tracer,
     )
     ctx = _iteration_ctx(_agent(), iteration=3)
@@ -326,7 +326,7 @@ async def test_subagent_invoke_nests_under_the_dispatching_agent_span(tracing):
 
     subagent_rail = AgentObservabilityRail(tracer=tracing.tracer)
     handler = OtelCallbackHandler(
-        ObservabilityConfig(enabled=True, backend="otlp"),
+        ObservabilityConfig(enabled=True),
         tracer=tracing.tracer,
     )
     subagent_ctx = AgentCallbackContext(
@@ -645,7 +645,7 @@ async def test_llm_child_context_propagation_inherits_agent_card_identity(tracin
     agent = _agent()
     rail = AgentObservabilityRail(tracer=tracing.tracer)
     handler = OtelCallbackHandler(
-        ObservabilityConfig(enabled=True, backend="otlp"),
+        ObservabilityConfig(enabled=True),
         tracer=tracing.tracer,
     )
     iteration_ctx = _iteration_ctx(agent)
@@ -668,7 +668,7 @@ async def test_subagent_ambient_session_does_not_replace_trajectory_owner(tracin
     agent = _agent("explore_agent", enable_task_loop=False)
     rail = AgentObservabilityRail(tracer=tracing.tracer)
     handler = OtelCallbackHandler(
-        ObservabilityConfig(enabled=True, backend="otlp"),
+        ObservabilityConfig(enabled=True),
         tracer=tracing.tracer,
     )
     ctx = AgentCallbackContext(
@@ -758,7 +758,7 @@ async def test_concrete_tool_global_callbacks_enrich_without_duplicate_span(trac
     agent.ability_manager = SimpleNamespace(get=lambda name: card)
     rail = AgentObservabilityRail(tracer=tracing.tracer)
     handler = OtelCallbackHandler(
-        ObservabilityConfig(enabled=True, backend="otlp"),
+        ObservabilityConfig(enabled=True),
         tracer=tracing.tracer,
     )
     iteration_ctx = _iteration_ctx(agent)
@@ -793,7 +793,7 @@ async def test_mcp_raw_lifecycle_name_enriches_model_facing_authoritative_span(t
     )
     rail = AgentObservabilityRail(tracer=tracing.tracer)
     handler = OtelCallbackHandler(
-        ObservabilityConfig(enabled=True, backend="otlp"),
+        ObservabilityConfig(enabled=True),
         tracer=tracing.tracer,
     )
     iteration_ctx = _iteration_ctx(agent)
@@ -830,7 +830,7 @@ async def test_non_mcp_name_mismatch_does_not_match_by_resource_id(tracing):
     agent.ability_manager = SimpleNamespace(get=lambda name: card)
     rail = AgentObservabilityRail(tracer=tracing.tracer)
     handler = OtelCallbackHandler(
-        ObservabilityConfig(enabled=True, backend="otlp"),
+        ObservabilityConfig(enabled=True),
         tracer=tracing.tracer,
     )
     iteration_ctx = _iteration_ctx(agent)
@@ -972,7 +972,7 @@ async def test_the_global_tool_callbacks_also_read_failure_from_the_result(traci
     agent = _agent()
     rail = AgentObservabilityRail(tracer=tracing.tracer)
     handler = OtelCallbackHandler(
-        ObservabilityConfig(enabled=True, backend="otlp"),
+        ObservabilityConfig(enabled=True),
         tracer=tracing.tracer,
     )
     iteration_ctx = _iteration_ctx(agent)

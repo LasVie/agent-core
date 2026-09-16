@@ -631,7 +631,6 @@ async def test_structured_input_and_output_share_redaction_decisions() -> None:
             enabled=True,
             service_name="redaction-contract-test",
             sample_rate=1.0,
-            backend="otlp",
             redact_prompts=True,
             redact_completions=True,
         ),
@@ -676,7 +675,6 @@ async def test_prompt_attachment_provenance_is_additive_and_positioned() -> None
             enabled=True,
             service_name="input-provenance-contract-test",
             sample_rate=1.0,
-            backend="otlp",
         ),
         span_exporter_override=exporter,
     )
@@ -787,7 +785,6 @@ async def test_prompt_attachment_provenance_survives_attribute_pressure_and_reda
             enabled=True,
             service_name="input-provenance-pressure-test",
             sample_rate=1.0,
-            backend="otlp",
             redact_prompts=True,
             max_attributes=35,
         ),
@@ -944,7 +941,6 @@ async def test_structured_messages_preserve_ordered_multimodal_parts_and_name() 
             enabled=True,
             service_name="multimodal-contract-test",
             sample_rate=1.0,
-            backend="otlp",
         ),
         span_exporter_override=exporter,
     )
@@ -1049,7 +1045,6 @@ async def test_unified_and_legacy_llm_terminals_each_end_exactly_once() -> None:
             enabled=True,
             service_name="llm-terminal-contract-test",
             sample_rate=1.0,
-            backend="otlp",
         ),
         span_exporter_override=exporter,
     )
@@ -1122,7 +1117,6 @@ async def test_internal_probe_callback_flow_does_not_create_trajectory_span() ->
             enabled=True,
             service_name="internal-probe-suppression-test",
             sample_rate=1.0,
-            backend="otlp",
         ),
         span_exporter_override=exporter,
     )
@@ -1169,7 +1163,6 @@ async def test_tool_definitions_model_dump_before_string_fallback() -> None:
             enabled=True,
             service_name="tool-definition-contract-test",
             sample_rate=1.0,
-            backend="otlp",
         ),
         span_exporter_override=exporter,
     )
@@ -1252,7 +1245,6 @@ async def test_tool_definitions_failures_fallback_per_item_without_orphaning_spa
             enabled=True,
             service_name="tool-definition-fallback-test",
             sample_rate=1.0,
-            backend="otlp",
         ),
         span_exporter_override=exporter,
     )
@@ -1317,7 +1309,6 @@ async def test_real_model_stream_early_close_is_forced_unset_before_root(
             enabled=True,
             service_name="early-close-contract-test",
             sample_rate=1.0,
-            backend="otlp",
         ),
         span_exporter_override=exporter,
     )
