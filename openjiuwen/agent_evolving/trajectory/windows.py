@@ -35,6 +35,7 @@ from openjiuwen.agent_evolving.trajectory.spans import (
     normalize_otlp,
     span_attributes,
     span_sort_key,
+    trim_trajectory,
 )
 from openjiuwen.extensions.observability import semconv
 
@@ -637,6 +638,28 @@ def rebase_window_chain(history: Any, retained: Any) -> Any:
     return Trajectory.from_otlp(payload)
 
 
+def is_trajectory_event_span(span: Mapping[str, Any]) -> bool:
+    """Whether a span is a v2 trajectory event rather than work."""
+
+    attributes = span_attributes(span)
+    return (
+        attributes.get(semconv.OJ_TRAJECTORY_RECORD_KIND) == "event"
+        or semconv.OJ_TRAJECTORY_EVENT_KIND in attributes
+    )
+
+
+def trim_trajectory_window(value: Any, max_spans: int | None) -> Any:
+    """Bound a trajectory to its newest ``max_spans`` spans of work.
+
+    Events do not spend the budget: they are kept alongside the work they
+    describe, and every commit chain the trim cut into is given a restated
+    baseline, so the bounded window still replays every request it keeps.
+    """
+
+    trimmed = trim_trajectory(value, max_spans, uncounted=is_trajectory_event_span)
+    return rebase_window_chain(value, trimmed)
+
+
 __all__ = [
     "COMPACTION_COMPLETED",
     "CONTEXT_WINDOW_COMMIT",
@@ -645,9 +668,11 @@ __all__ = [
     "TrajectoryEvent",
     "WindowReplay",
     "apply_context_delta",
+    "is_trajectory_event_span",
     "iter_trajectory_events",
     "read_trajectory_event",
     "rebase_window_chain",
     "replay_windows",
+    "trim_trajectory_window",
     "window_for_inference",
 ]

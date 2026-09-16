@@ -15,7 +15,7 @@ is no fallback to keys that earlier producers wrote.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from typing import Any, Iterator, TypeAlias
 
@@ -408,6 +408,7 @@ def _trim_span_indices(
     *,
     start_time: int | None,
     end_time: int | None,
+    uncounted: Callable[[Mapping[str, Any]], bool] | None = None,
 ) -> list[int]:
     """Select positions so equal or repeated span identities remain distinct."""
 
@@ -420,11 +421,22 @@ def _trim_span_indices(
         selected.append(index)
 
     selected.sort(key=lambda index: span_sort_key(spans[index]))
-    if max_spans is not None:
-        if max_spans <= 0:
-            return []
-        selected = selected[-max_spans:]
-    return selected
+    if max_spans is None:
+        return selected
+    if max_spans <= 0:
+        return []
+    if uncounted is None:
+        return selected[-max_spans:]
+    counted = [index for index in selected if not uncounted(spans[index])]
+    kept = set(counted[-max_spans:])
+    if not kept:
+        return []
+    cutoff = min(_time_value(spans[index], "startTimeUnixNano") for index in kept)
+    return [
+        index
+        for index in selected
+        if index in kept or (uncounted(spans[index]) and _time_value(spans[index], "startTimeUnixNano") >= cutoff)
+    ]
 
 
 def trim_spans(
@@ -451,8 +463,13 @@ def trim_trajectory(
     *,
     start_time: int | None = None,
     end_time: int | None = None,
+    uncounted: Callable[[Mapping[str, Any]], bool] | None = None,
 ) -> Any:
-    """Return a globally trimmed trajectory preserving original resource/scope groups."""
+    """Return a globally trimmed trajectory preserving original resource/scope groups.
+
+    Spans ``uncounted`` accepts do not take a place in ``max_spans``; they are
+    kept when they start no earlier than the oldest span that was.
+    """
 
     payload = normalize_otlp(_payload_for(value))
     if max_spans is None and start_time is None and end_time is None:
@@ -464,6 +481,7 @@ def trim_trajectory(
         max_spans,
         start_time=start_time,
         end_time=end_time,
+        uncounted=uncounted,
     )
     result = deepcopy(payload)
     for resource_span in result.get("resourceSpans") or []:
@@ -716,6 +734,17 @@ def _standard_prompt_messages(attrs: Mapping[str, Any]) -> list[dict[str, Any]]:
     return messages
 
 
+def is_compaction_span(span: Mapping[str, Any]) -> bool:
+    """Whether a model request summarised the conversation instead of continuing it.
+
+    Such a request's prompt is about the context, not part of it, so readers
+    that rebuild a conversation or train on its turns leave it out. It stays in
+    the trajectory: the window it produced is committed separately.
+    """
+
+    return span_attributes(span).get(semconv.OJ_REQUEST_PURPOSE) == "compaction"
+
+
 def read_llm_exchange(span: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Read detached LLM messages from the standard GenAI attributes."""
 
@@ -868,6 +897,7 @@ __all__ = [
     "decode_json_attribute",
     "decode_otlp_value",
     "encode_otlp_value",
+    "is_compaction_span",
     "iter_spans",
     "merge_payloads",
     "merge_spans",

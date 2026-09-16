@@ -51,9 +51,9 @@ from openjiuwen.agent_evolving.trajectory.spans import (
     merge_trajectories,
     span_attributes,
     span_sort_key,
-    trim_trajectory,
 )
 from openjiuwen.agent_evolving.trajectory.team import span_category
+from openjiuwen.agent_evolving.trajectory.windows import trim_trajectory_window
 from openjiuwen.extensions.observability import semconv as observability_semconv
 from openjiuwen.extensions.observability.span_context import get_root_span
 from openjiuwen.core.common.background_tasks import BackgroundTask
@@ -156,6 +156,7 @@ class _TeamTrajectoryCaptureMixin:
     _TEAM_SUBSCRIPTION_CATEGORIES = (
         "llm",
         "tool",
+        "event",
         "agent",
         "task",
         "message",
@@ -721,7 +722,7 @@ class EvolutionRail(DeepAgentRail):
         with self._scope_lock(capture.scope_key):
             current = self._scope_windows.get(capture.scope_key)
             merged = merge_trajectories(current, increment) if current is not None else increment
-            merged = trim_trajectory(merged, self._max_trajectory_spans)
+            merged = trim_trajectory_window(merged, self._max_trajectory_spans)
             self._scope_windows[capture.scope_key] = merged
         return self._project_window(capture)
 

@@ -221,3 +221,31 @@ def test_trimmed_chain_gets_a_replayable_baseline() -> None:
     assert names == ["context.window.commit", "context.window.commit"]
     # A chain that already starts at a baseline is left alone.
     assert rebase_window_chain(history, history) is history
+
+
+def _request(sequence: int) -> dict[str, Any]:
+    return {
+        "traceId": "1" * 32,
+        "spanId": f"inference-{sequence}",
+        "name": "chat model",
+        "startTimeUnixNano": str(sequence * 10 - 5),
+        "endTimeUnixNano": str(sequence * 10 + 5),
+        "attributes": attributes_from_map({semconv.GEN_AI_OPERATION_NAME: "chat"}),
+    }
+
+
+def test_trimmed_window_keeps_events_off_the_budget_and_stays_replayable() -> None:
+    from openjiuwen.agent_evolving.trajectory.windows import trim_trajectory_window
+
+    spans = [span for sequence, commit in enumerate(_chain(), 1) for span in (_request(sequence), commit)]
+    history = _trajectory(spans)
+
+    trimmed = trim_trajectory_window(history, 1)
+
+    kept = list(iter_spans(trimmed))
+    assert [span["spanId"] for span in kept if span["name"] == "chat model"] == ["inference-3"]
+    replay = replay_windows(trimmed)
+    assert replay.issues == ()
+    assert _ids(window_for_inference(replay, {"spanId": "inference-3"})) == ["a", "b", "c"]
+    # Nothing beyond the request, its own commit and the restated base.
+    assert len(kept) == 3
