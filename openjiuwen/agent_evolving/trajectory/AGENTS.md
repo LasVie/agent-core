@@ -12,6 +12,7 @@
 | `spans.py` | canonical span 的无状态访问器与转换 |
 | `schema.py` | trajectory 自有的 scope、schema version 与 RL 字段名 |
 | `messages.py` | span 到 OpenAI-compatible messages 的唯一重建实现 |
+| `windows.py` | v2 `context.window.commit` 链重放：按 `message_id` 重建每次请求读到的窗口，与前端 reducer 同语义 |
 | `serialization.py` | OTLP 值的 JSON-compatible 归一化 |
 | `store.py` | 内存与 append-only JSONL 归档 |
 | `team.py` | Team root-trace scope 辅助 |

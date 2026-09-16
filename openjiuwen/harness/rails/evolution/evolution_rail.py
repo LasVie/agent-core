@@ -449,9 +449,13 @@ class EvolutionRail(DeepAgentRail):
 
     @staticmethod
     def _subscription_categories() -> Collection[str]:
-        """Return categories selected by this rail's invoke subscription."""
+        """Return categories selected by this rail's invoke subscription.
 
-        return ("llm", "tool")
+        Trajectory events carry the context windows the message projection is
+        rebuilt from, so they are captured with the calls they describe.
+        """
+
+        return ("llm", "tool", "event")
 
     def _capture_route(self, ctx: AgentCallbackContext) -> tuple[str | None, str | None, str | None]:
         """Resolve one internally consistent subscription and scope route."""
