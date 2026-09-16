@@ -1853,3 +1853,30 @@ async def test_tool_reported_failure_masks_reason_in_status() -> None:
     assert span.attributes[ERROR_TYPE] == "ToolReportedFailure"
     assert span.status.description == "auth failed: access_token=***"
     assert "eyAbCdEf123" not in span.status.description
+
+
+def test_tool_inputs_record_arguments_not_the_invocation_signature() -> None:
+    """``gen_ai.tool.call.arguments`` carries the model's arguments alone.
+
+    The runner invokes tools as ``invoke(arguments, session=session)``; the
+    keyword arguments are injected call context, not model output, so the
+    recorded arguments keep the arguments' own shape instead of burying them
+    in an ``(args, kwargs)`` tuple.
+    """
+    serialize = OtelCallbackHandler._serialize_tool_inputs
+    session = SimpleNamespace(get_session_id=lambda: "session-1")
+
+    assert serialize((({"command": "pwd"},), {"session": session})) == '{"command": "pwd"}'
+    assert serialize((({"command": "ls"},), {"session": session, "_tool_callback_context": "c"})) == (
+        '{"command": "ls"}'
+    )
+    # A tool invoked without arguments records an empty argument object.
+    assert serialize(((), {"session": session})) == "{}"
+    assert serialize(((), {})) == "{}"
+    # A nested Session inside the arguments still renders readable.
+    assert serialize((({"session": session},), {})) == '{"session": "session:session-1"}'
+    # Shapes the unwrap cannot vouch for keep the whole invocation recorded.
+    assert serialize((({"a": 1}, {"b": 2}), {})) == '[[{"a": 1}, {"b": 2}], {}]'
+    assert serialize(((), {"q": "hello"})) == '[[], {"q": "hello"}]'
+    assert serialize({"command": "pwd"}) == '{"command": "pwd"}'
+    assert serialize(None) == ""

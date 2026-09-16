@@ -185,6 +185,10 @@ _PROVIDER_METADATA_ALLOWLIST = frozenset({
     "stop_sequence",
     "incomplete_details",
 })
+# Keyword arguments the runner injects into every tool invocation. They are
+# call context, not model output, so they never belong in
+# ``gen_ai.tool.call.arguments``.
+_INJECTED_TOOL_KWARGS = frozenset({"session", "_tool_callback_context"})
 
 
 def _coerce_message_content(content: Any) -> str:
@@ -1914,8 +1918,12 @@ class OtelCallbackHandler:
 
         ``ToolCallEvents.TOOL_CALL_STARTED`` carries ``inputs=(args, kwargs)``
         — a 2-element tuple of positional and keyword arguments from the
-        tool invocation. Preserve the original structure; Session objects
-        are rendered as ``"session:<id>"`` so they remain readable.
+        tool invocation. The model's tool call arguments are the single
+        positional argument the runner passes; keyword arguments are
+        framework-injected call context (session, callback context), not
+        model output, so the attribute records the arguments alone. Session
+        objects still render as ``"session:<id>"`` so they remain readable.
+        Calls that do not fit that shape keep the whole invocation recorded.
         """
         if inputs is None:
             return ""
@@ -1931,6 +1939,21 @@ class OtelCallbackHandler:
                 except Exception:
                     return "<Session>"
             return obj
+
+        invocation = inputs if isinstance(inputs, tuple) and len(inputs) == 2 else None
+        if invocation is not None:
+            args, kwargs = invocation
+            injected = isinstance(kwargs, dict) and all(
+                key in _INJECTED_TOOL_KWARGS for key in kwargs
+            )
+            if injected and len(args) == 1:
+                sanitized = _sanitize(args[0])
+                try:
+                    return json.dumps(sanitized, ensure_ascii=False, default=str)
+                except (TypeError, ValueError):
+                    return str(args[0])
+            if injected and len(args) == 0:
+                return "{}"
 
         try:
             sanitized = _sanitize(inputs)
