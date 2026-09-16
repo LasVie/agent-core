@@ -36,7 +36,6 @@ from openjiuwen.extensions.observability.gen_ai_semconv import *  # noqa: F403
 # ---------------------------------------------------------------------------
 
 OJ_TRACE_ROOT = "openjiuwen.trace.root"
-OJ_TRACE_SCHEMA_VERSION = "openjiuwen.trace.schema_version"
 OJ_TRACE_COMPLETE = "openjiuwen.trace.complete"
 OJ_TRACE_FORCED_CLOSE = "openjiuwen.trace.forced_close"
 OJ_SPAN_FORCED_CLOSE = "openjiuwen.span.forced_close"
@@ -63,7 +62,10 @@ OJ_CONTEXT_OPERATION_ID = "openjiuwen.context.operation.id"
 # context, not what the provider made of it.
 OJ_COMPACTION_NUMBER = "openjiuwen.compaction.number"
 OJ_TRAJECTORY_RECORD_KIND = "openjiuwen.trajectory.record.kind"
+# The one span-level contract version. Every canonical span states it; v2
+# events are identified by OJ_TRAJECTORY_EVENT_KIND, not by this value.
 OJ_TRAJECTORY_SCHEMA_VERSION = "openjiuwen.trajectory.schema_version"
+TRAJECTORY_SPAN_SCHEMA_VERSION = "2"
 OJ_TRAJECTORY_EVENT_ID = "openjiuwen.trajectory.event_id"
 OJ_TRAJECTORY_EVENT_KIND = "openjiuwen.trajectory.event_kind"
 OJ_TRAJECTORY_SUBJECT_ID = "openjiuwen.trajectory.subject_id"

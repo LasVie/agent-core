@@ -14,8 +14,8 @@ from openjiuwen.agent_evolving.trajectory.schema import (
     SESSION_ID,
     TEAM_ID,
     TRAJECTORY_ID,
-    TRAJECTORY_SCHEMA_VERSION,
-    TRAJECTORY_SCHEMA_VERSION_ATTR,
+    TRAJECTORY_PROJECTION_VERSION,
+    TRAJECTORY_PROJECTION_VERSION_ATTR,
     TRAJECTORY_SOURCE,
 )
 from openjiuwen.agent_evolving.trajectory.spans import attributes_from_map
@@ -33,7 +33,7 @@ def _trajectory(
 ) -> Trajectory:
     attributes = {
         TRAJECTORY_ID: trajectory_id,
-        TRAJECTORY_SCHEMA_VERSION_ATTR: TRAJECTORY_SCHEMA_VERSION,
+        TRAJECTORY_PROJECTION_VERSION_ATTR: TRAJECTORY_PROJECTION_VERSION,
         SESSION_ID: session_id,
         TRAJECTORY_SOURCE: source,
     }

@@ -26,8 +26,8 @@ from openjiuwen.agent_evolving.trajectory.schema import (
     SESSION_ID,
     TEAM_ID,
     TRAJECTORY_ID,
-    TRAJECTORY_SCHEMA_VERSION,
-    TRAJECTORY_SCHEMA_VERSION_ATTR,
+    TRAJECTORY_PROJECTION_VERSION,
+    TRAJECTORY_PROJECTION_VERSION_ATTR,
     TRAJECTORY_SOURCE,
 )
 from openjiuwen.agent_evolving.trajectory.spans import (
@@ -258,7 +258,7 @@ def _legacy_to_otlp(record: Mapping[str, Any]) -> dict[str, Any]:
     attributes.update(
         {
             TRAJECTORY_ID: str(execution_id),
-            TRAJECTORY_SCHEMA_VERSION_ATTR: TRAJECTORY_SCHEMA_VERSION,
+            TRAJECTORY_PROJECTION_VERSION_ATTR: TRAJECTORY_PROJECTION_VERSION,
             TRAJECTORY_SOURCE: str(source),
         }
     )
@@ -275,7 +275,7 @@ def _legacy_to_otlp(record: Mapping[str, Any]) -> dict[str, Any]:
             {
                 "scope": {
                     "name": "openjiuwen.agent_evolving.trajectory",
-                    "version": TRAJECTORY_SCHEMA_VERSION,
+                    "version": TRAJECTORY_PROJECTION_VERSION,
                 },
                 "spans": [],
             }
@@ -325,11 +325,11 @@ def upgrade_legacy_record(record: Mapping[str, Any]) -> Trajectory:
             attributes = resource.setdefault("attributes", [])
             if isinstance(attributes, list):
                 keys = {item.get("key") for item in attributes if isinstance(item, Mapping)}
-                if TRAJECTORY_SCHEMA_VERSION_ATTR not in keys:
+                if TRAJECTORY_PROJECTION_VERSION_ATTR not in keys:
                     attributes.append(
                         {
-                            "key": TRAJECTORY_SCHEMA_VERSION_ATTR,
-                            "value": {"stringValue": TRAJECTORY_SCHEMA_VERSION},
+                            "key": TRAJECTORY_PROJECTION_VERSION_ATTR,
+                            "value": {"stringValue": TRAJECTORY_PROJECTION_VERSION},
                         }
                     )
     return Trajectory.from_historical_otlp(payload)

@@ -34,7 +34,6 @@ from openjiuwen.extensions.observability.semconv import (
     GEN_AI_CONVERSATION_ID,
     OJ_STEP_ID,
     OJ_STEP_NUMBER,
-    OJ_TRACE_SCHEMA_VERSION,
     OJ_TRAJECTORY_EVENT_KIND,
     OJ_TRAJECTORY_PAYLOAD,
     OJ_TRAJECTORY_SCHEMA_VERSION,
@@ -198,7 +197,6 @@ async def test_real_recorder_completion_emits_correlated_native_v2_span(
         assert len(events) == 1
         event = events[0]
         assert event.parent.span_id == parent.context.span_id
-        assert event.attributes[OJ_TRACE_SCHEMA_VERSION] == "2"
         assert event.attributes[OJ_TRAJECTORY_SCHEMA_VERSION] == "2"
         assert event.attributes[OJ_TRAJECTORY_EVENT_KIND] == "compaction.completed"
         assert event.attributes[OJ_TRAJECTORY_SUBJECT_ID] == "subagent:one"

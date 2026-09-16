@@ -82,7 +82,7 @@ from openjiuwen.extensions.observability.semconv import (
     OJ_TRACE_COMPLETE,
     OJ_TRACE_FORCED_CLOSE,
     OJ_TRACE_ROOT,
-    OJ_TRACE_SCHEMA_VERSION,
+    OJ_TRAJECTORY_SCHEMA_VERSION,
     OJ_TRAJECTORY_RECORD_KIND,
 )
 from openjiuwen.extensions.observability.span_context import (
@@ -926,7 +926,7 @@ async def test_llm_semantic_identity_survives_prompt_attribute_pressure() -> Non
     assert span.attributes[OJ_REQUEST_ID] == "semantic-pressure-call"
     assert span.attributes[OJ_INFERENCE_ID] == f"{span.context.span_id:016x}"
     assert span.attributes[GEN_AI_OPERATION_NAME] == "chat"
-    assert span.attributes[OJ_TRACE_SCHEMA_VERSION] == "1"
+    assert span.attributes[OJ_TRAJECTORY_SCHEMA_VERSION] == "2"
     assert span.attributes[OJ_TRAJECTORY_RECORD_KIND] == "inference"
     assert span.attributes[GEN_AI_REQUEST_STREAM] is False
     assert GEN_AI_OUTPUT_MESSAGES in span.attributes

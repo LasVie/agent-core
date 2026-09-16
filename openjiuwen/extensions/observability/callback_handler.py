@@ -122,7 +122,8 @@ from openjiuwen.extensions.observability.semconv import (
     OJ_STREAM_PHASE_FIRST_SEQUENCE,
     OJ_STREAM_PHASE_LAST_SEQUENCE,
     OJ_STREAM_PHASE_OPEN_EVENT,
-    OJ_TRACE_SCHEMA_VERSION,
+    OJ_TRAJECTORY_SCHEMA_VERSION,
+    TRAJECTORY_SPAN_SCHEMA_VERSION,
     OJ_TRAJECTORY_RECORD_KIND,
     OJ_TOOL_AUTHORITATIVE,
     OJ_TOOL_PROTOCOL,
@@ -742,7 +743,7 @@ class OtelCallbackHandler:
                 context=parent_ctx,
             )
             span.set_attribute(GEN_AI_OPERATION_NAME, "execute_tool")
-            span.set_attribute(OJ_TRACE_SCHEMA_VERSION, "1")
+            span.set_attribute(OJ_TRAJECTORY_SCHEMA_VERSION, TRAJECTORY_SPAN_SCHEMA_VERSION)
             span.set_attribute(OJ_TRAJECTORY_RECORD_KIND, "tool")
             span.set_attribute(GEN_AI_TOOL_NAME, tool_name)
             if tool_id is not None:
@@ -948,7 +949,7 @@ class OtelCallbackHandler:
             span.set_attribute(OJ_REQUEST_ID, call_id)
         span.set_attribute(OJ_INFERENCE_ID, f"{span.context.span_id:016x}")
         span.set_attribute(GEN_AI_OPERATION_NAME, "chat")
-        span.set_attribute(OJ_TRACE_SCHEMA_VERSION, "1")
+        span.set_attribute(OJ_TRAJECTORY_SCHEMA_VERSION, TRAJECTORY_SPAN_SCHEMA_VERSION)
         span.set_attribute(OJ_TRAJECTORY_RECORD_KIND, "inference")
         span.set_attribute(GEN_AI_REQUEST_STREAM, is_streaming)
         provider_name = self._derive_provider_name(kwargs)
@@ -1168,7 +1169,7 @@ class OtelCallbackHandler:
                     ),
                 )
                 reasoning_span.set_attribute(GEN_AI_OPERATION_NAME, "chat")
-                reasoning_span.set_attribute(OJ_TRACE_SCHEMA_VERSION, "1")
+                reasoning_span.set_attribute(OJ_TRAJECTORY_SCHEMA_VERSION, TRAJECTORY_SPAN_SCHEMA_VERSION)
                 reasoning_span.set_attribute(OJ_TRAJECTORY_RECORD_KIND, "reasoning")
                 self._copy_correlation_attributes(state.span, reasoning_span)
                 # Mirror reasoning_tokens onto the reasoning span (also on the
@@ -1204,7 +1205,7 @@ class OtelCallbackHandler:
             span.set_attribute(OJ_REQUEST_ID, state.call_id)
         span.set_attribute(OJ_INFERENCE_ID, f"{span.context.span_id:016x}")
         span.set_attribute(GEN_AI_OPERATION_NAME, "chat")
-        span.set_attribute(OJ_TRACE_SCHEMA_VERSION, "1")
+        span.set_attribute(OJ_TRAJECTORY_SCHEMA_VERSION, TRAJECTORY_SPAN_SCHEMA_VERSION)
         span.set_attribute(OJ_TRAJECTORY_RECORD_KIND, "inference")
         span.set_attribute(GEN_AI_REQUEST_STREAM, state.is_streaming)
 

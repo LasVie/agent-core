@@ -31,7 +31,6 @@ from openjiuwen.extensions.observability.semconv import (
     GEN_AI_CONVERSATION_ID,
     OJ_STEP_ID,
     OJ_STEP_NUMBER,
-    OJ_TRACE_SCHEMA_VERSION,
     OJ_TRAJECTORY_EVENT_ID,
     OJ_TRAJECTORY_EVENT_KIND,
     OJ_TRAJECTORY_PAYLOAD,
@@ -207,7 +206,6 @@ async def test_canonical_request_and_v2_event_survive_legacy_attribute_pressure(
     )
     attrs = _attrs(event_span)
     payload = _payload(event_span)
-    assert attrs[OJ_TRACE_SCHEMA_VERSION] == "2"
     assert attrs[OJ_TRAJECTORY_SCHEMA_VERSION] == "2"
     assert attrs[OJ_TRAJECTORY_EVENT_KIND] == "context.window.commit"
     assert len(attrs[OJ_TRAJECTORY_SEQUENCE_EPOCH]) == 32

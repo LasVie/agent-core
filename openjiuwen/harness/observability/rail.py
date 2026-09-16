@@ -88,7 +88,8 @@ from openjiuwen.extensions.observability.semconv import (
     OJ_TOOL_PROTOCOL,
     OJ_TOOL_RESOURCE_ID,
     OJ_TRACE_ROOT,
-    OJ_TRACE_SCHEMA_VERSION,
+    OJ_TRAJECTORY_SCHEMA_VERSION,
+    TRAJECTORY_SPAN_SCHEMA_VERSION,
     OJ_TRAJECTORY_RECORD_KIND,
     OJ_TURN_ID,
     OJ_TURN_NUMBER,
@@ -831,6 +832,7 @@ class AgentObservabilityRail(DeepAgentRail):
                 root_span=root_span,
             )
             span.set_attribute(OJ_TRAJECTORY_RECORD_KIND, "step")
+            span.set_attribute(OJ_TRAJECTORY_SCHEMA_VERSION, TRAJECTORY_SPAN_SCHEMA_VERSION)
             step_id = f"{span.context.span_id:016x}"
             span.set_attribute(OJ_STEP_ID, step_id)
             # The ReAct counter is the step number. ``deepagent.task.iteration``
@@ -914,7 +916,7 @@ class AgentObservabilityRail(DeepAgentRail):
             )
             span.set_attribute(GEN_AI_OPERATION_NAME, "execute_tool")
             span.set_attribute(GEN_AI_TOOL_NAME, tool_name)
-            span.set_attribute(OJ_TRACE_SCHEMA_VERSION, "1")
+            span.set_attribute(OJ_TRAJECTORY_SCHEMA_VERSION, TRAJECTORY_SPAN_SCHEMA_VERSION)
             span.set_attribute(OJ_TRAJECTORY_RECORD_KIND, "tool")
             span.set_attribute(OJ_TOOL_AUTHORITATIVE, True)
 
@@ -1146,7 +1148,7 @@ class AgentObservabilityRail(DeepAgentRail):
     ) -> None:
         """Apply the attributes shared by iteration and invoke spans."""
         span.set_attribute(GEN_AI_OPERATION_NAME, "invoke_agent")
-        span.set_attribute(OJ_TRACE_SCHEMA_VERSION, "1")
+        span.set_attribute(OJ_TRAJECTORY_SCHEMA_VERSION, TRAJECTORY_SPAN_SCHEMA_VERSION)
         span.set_attribute(OJ_TRAJECTORY_RECORD_KIND, "agent")
         if agent_name:
             span.set_attribute(GEN_AI_AGENT_NAME, agent_name)

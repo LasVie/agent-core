@@ -29,7 +29,7 @@ from openjiuwen.extensions.observability.semconv import (
     OJ_TRAJECTORY_SEQUENCE_EPOCH,
     OJ_TRAJECTORY_SUBJECT_ID,
     OJ_TRAJECTORY_SUBJECT_SEQUENCE,
-    OJ_TRACE_SCHEMA_VERSION,
+    TRAJECTORY_SPAN_SCHEMA_VERSION,
     OJ_TURN_ID,
     OJ_TURN_NUMBER,
     OJ_EXECUTION_SUBJECT_ID,
@@ -80,7 +80,7 @@ def emit_native_trajectory_event(
     span = tracer.start_span(name=event_kind, context=parent_context, kind=SpanKind.INTERNAL)
     recorded_at = time.time_ns()
     attributes: dict[str, Any] = {
-        OJ_TRAJECTORY_SCHEMA_VERSION: "2",
+        OJ_TRAJECTORY_SCHEMA_VERSION: TRAJECTORY_SPAN_SCHEMA_VERSION,
         OJ_TRAJECTORY_EVENT_ID: event_id,
         OJ_TRAJECTORY_EVENT_KIND: event_kind,
         OJ_TRAJECTORY_SUBJECT_ID: subject_id,
@@ -90,7 +90,6 @@ def emit_native_trajectory_event(
         OJ_TRAJECTORY_RECORDED_AT_UNIX_NANO: recorded_at,
         OJ_TRAJECTORY_PAYLOAD: json.dumps(payload, ensure_ascii=False, default=str),
         OJ_TRAJECTORY_RECORD_KIND: "event",
-        OJ_TRACE_SCHEMA_VERSION: "2",
     }
     for routing_key in (
         OJ_TURN_ID,
@@ -133,7 +132,7 @@ def record_native_trajectory_log_event(
     )
     recorded_at = time.time_ns()
     attributes: dict[str, Any] = {
-        OJ_TRAJECTORY_SCHEMA_VERSION: "2",
+        OJ_TRAJECTORY_SCHEMA_VERSION: TRAJECTORY_SPAN_SCHEMA_VERSION,
         OJ_TRAJECTORY_EVENT_ID: uuid.uuid4().hex,
         OJ_TRAJECTORY_EVENT_KIND: event_kind,
         OJ_TRAJECTORY_SUBJECT_ID: subject_id,

@@ -24,8 +24,8 @@ from openjiuwen.agent_evolving.trajectory.model import Trajectory
 from openjiuwen.agent_evolving.trajectory.schema import (
     SESSION_ID,
     TRAJECTORY_ID,
-    TRAJECTORY_SCHEMA_VERSION,
-    TRAJECTORY_SCHEMA_VERSION_ATTR,
+    TRAJECTORY_PROJECTION_VERSION,
+    TRAJECTORY_PROJECTION_VERSION_ATTR,
     TRAJECTORY_SOURCE,
 )
 from openjiuwen.agent_evolving.trajectory.spans import (
@@ -564,7 +564,7 @@ class SFTOnlineRail(BaseOnlineTrainingRail):
     ) -> Trajectory:
         resource_attrs = {
             TRAJECTORY_ID: str(uuid.uuid4()),
-            TRAJECTORY_SCHEMA_VERSION_ATTR: TRAJECTORY_SCHEMA_VERSION,
+            TRAJECTORY_PROJECTION_VERSION_ATTR: TRAJECTORY_PROJECTION_VERSION,
             TRAJECTORY_SOURCE: "sft_online",
             SESSION_ID: session_id or str(uuid.uuid4()),
             **metadata,

@@ -60,7 +60,7 @@ from openjiuwen.extensions.observability.semconv import (
     OJ_TOOL_RESOURCE_ID,
     OJ_TRACE_ROOT,
     OJ_TRACE_FORCED_CLOSE,
-    OJ_TRACE_SCHEMA_VERSION,
+    OJ_TRAJECTORY_SCHEMA_VERSION,
     OJ_TRAJECTORY_RECORD_KIND,
     OJ_TURN_ID,
 )
@@ -167,7 +167,7 @@ async def test_iteration_span_opens_under_the_run_root_and_carries_generic_attri
     assert span.attributes[OJ_RUN_ID] == "run"
     assert OJ_STEP_ID not in span.attributes
     assert OJ_STEP_NUMBER not in span.attributes
-    assert span.attributes[OJ_TRACE_SCHEMA_VERSION] == "1"
+    assert span.attributes[OJ_TRAJECTORY_SCHEMA_VERSION] == "2"
     assert span.attributes[OJ_SPAN_INPUT] == "do it"
     assert span.attributes[OJ_SPAN_OUTPUT] == "the answer"
     assert not [key for key in span.attributes if key.startswith("agentteam.")]
