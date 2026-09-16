@@ -176,6 +176,7 @@ class ObservabilityRuntime:
                 )
                 context_compression_handler = ContextCompressionObservabilityBridge(
                     tracer=provider.get_tracer("openjiuwen.extensions.observability.context"),
+                    window_messages=callback_handler.context_window_messages,
                 )
                 self._callback_handler = callback_handler
                 self._context_compression_handler = context_compression_handler

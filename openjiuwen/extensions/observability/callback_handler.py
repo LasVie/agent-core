@@ -43,7 +43,10 @@ from openjiuwen.extensions.observability.demand import (
 )
 from openjiuwen.extensions.observability.span_record_processor import StreamFrameRecord
 from openjiuwen.extensions.observability.error_reporting import record_span_error
-from openjiuwen.extensions.observability.trajectory_events import emit_context_window_commit
+from openjiuwen.extensions.observability.trajectory_events import (
+    REQUEST_SYSTEM_SLOT_PREFIX,
+    emit_context_window_commit,
+)
 from openjiuwen.extensions.observability.semconv import (
     AT_MEMBER_NAME,
 
@@ -376,6 +379,26 @@ class OtelCallbackHandler:
         if self._injected_tracer is not None:
             return self._injected_tracer
         return trace.get_tracer(_TRACER_NAME)
+
+    def context_window_messages(self, messages: Any) -> list[dict[str, Any]]:
+        """Return *messages* in the canonical form a context window commit states.
+
+        The same identity and redaction rules as a model request's commit
+        apply, so a window stated from the context engine directly (after a
+        compaction, say) joins the chain the next request's commit continues:
+        occurrence ids come from each message's ``context_message_id``.
+
+        Args:
+            messages: Context-engine messages, objects or dicts.
+
+        Returns:
+            One canonical trajectory message per input message.
+        """
+        return self._trajectory_messages(
+            messages,
+            occurrence_ids=self._message_occurrence_ids(messages),
+            source_metadata=(),
+        )
 
     @staticmethod
     def _get_parent_context_for_llm_tool() -> Any:
@@ -1472,7 +1495,7 @@ class OtelCallbackHandler:
             if not explicit and isinstance(metadata, Mapping):
                 explicit = metadata.get("message_id") or metadata.get("openjiuwen.message_id")
             if not explicit and _message_role(message) == "system":
-                explicit = f"openjiuwen:request-system-slot:{system_slot}"
+                explicit = f"{REQUEST_SYSTEM_SLOT_PREFIX}{system_slot}"
                 system_slot += 1
             if explicit:
                 base = str(explicit)
