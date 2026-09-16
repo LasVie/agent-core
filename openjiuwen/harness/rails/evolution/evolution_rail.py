@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import uuid
 import threading
 from contextvars import ContextVar
@@ -738,19 +737,10 @@ class EvolutionRail(DeepAgentRail):
         if trajectory is None:
             return ()
         issues: list[Mapping[str, object]] = []
-        indexed_pattern = re.compile(r"^(gen_ai\.(?:prompt|completion))\.(\d+)\.")
         for span in iter_spans(trajectory):
-            attrs = span_attributes(span)
-            indexes: dict[str, set[int]] = {}
-            for key in attrs:
-                match = indexed_pattern.match(str(key))
-                if match:
-                    indexes.setdefault(match.group(1), set()).add(int(match.group(2)))
-            for base, values in indexes.items():
-                if values and values != set(range(max(values) + 1)):
-                    issues.append(MappingProxyType({"code": "indexed_attribute_gap", "attribute": base}))
             if span_category(span) != "tool":
                 continue
+            attrs = span_attributes(span)
             for key in (
                 observability_semconv.GEN_AI_TOOL_CALL_ARGUMENTS,
                 observability_semconv.GEN_AI_TOOL_CALL_RESULT,

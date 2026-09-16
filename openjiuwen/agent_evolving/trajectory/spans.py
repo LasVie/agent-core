@@ -8,8 +8,8 @@ registry, or subscription.  Functions return detached dictionaries/lists and
 transformations create a new :class:`Trajectory` value through
 ``Trajectory.from_otlp``.
 
-Current attributes follow the observability conventions; migration-only
-fallbacks remain explicitly owned by the trajectory package.
+Attributes are read only under the current observability conventions; there
+is no fallback to keys that earlier producers wrote.
 """
 
 from __future__ import annotations
@@ -19,7 +19,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from typing import Any, Iterator, TypeAlias
 
-from openjiuwen.agent_evolving.trajectory import legacy_semconv
+from openjiuwen.agent_evolving.trajectory.schema import (
+    RL_COMPLETION_TOKEN_IDS,
+    RL_LOGPROBS,
+    RL_PROMPT_TOKEN_IDS,
+    RL_REWARD,
+)
 from openjiuwen.agent_evolving.trajectory.serialization import to_json_compatible
 from openjiuwen.extensions.observability import semconv
 
@@ -650,7 +655,7 @@ def write_llm_exchange(
 
     The inverse of :func:`read_llm_exchange`, for the trajectory producers that
     build span attribute dictionaries by hand rather than through
-    instrumentation: offline extraction, the RL rail, and legacy conversion.
+    instrumentation: offline extraction and the RL and SFT rails.
 
     Args:
         prompts: Flat request messages, system turns included.
@@ -720,12 +725,6 @@ def read_llm_exchange(span: Mapping[str, Any]) -> tuple[list[dict[str, Any]], li
         _flatten_structured_message(message)
         for message in _message_list(attrs.get(semconv.GEN_AI_OUTPUT_MESSAGES))
     ]
-    tool_calls = _decode_structured_attribute(attrs.get(legacy_semconv.LEGACY_GEN_AI_TOOL_CALLS))
-    if tool_calls not in (None, ""):
-        if completions:
-            completions[0].setdefault("tool_calls", tool_calls)
-        else:
-            completions.append({"role": "assistant", "tool_calls": tool_calls})
     return deepcopy(prompts), deepcopy(completions)
 
 
@@ -745,19 +744,15 @@ def read_tool_call(span: Mapping[str, Any]) -> dict[str, Any]:
     attrs = span_attributes(span)
     result: dict[str, Any] = {}
     name = attrs.get(semconv.GEN_AI_TOOL_NAME)
-    tool_id = attrs.get(semconv.GEN_AI_TOOL_CALL_ID) or attrs.get(legacy_semconv.LEGACY_GEN_AI_TOOL_ID)
+    tool_id = attrs.get(semconv.GEN_AI_TOOL_CALL_ID)
     if name is not None:
         result["name"] = deepcopy(name)
     if tool_id is not None:
         result["id"] = deepcopy(tool_id)
     if semconv.GEN_AI_TOOL_CALL_ARGUMENTS in attrs:
         result["input"] = _decode_structured_attribute(attrs[semconv.GEN_AI_TOOL_CALL_ARGUMENTS])
-    elif legacy_semconv.LEGACY_GEN_AI_TOOL_INPUT in attrs:
-        result["input"] = _decode_structured_attribute(attrs[legacy_semconv.LEGACY_GEN_AI_TOOL_INPUT])
     if semconv.GEN_AI_TOOL_CALL_RESULT in attrs:
         result["output"] = _decode_structured_attribute(attrs[semconv.GEN_AI_TOOL_CALL_RESULT])
-    elif legacy_semconv.LEGACY_GEN_AI_TOOL_OUTPUT in attrs:
-        result["output"] = _decode_structured_attribute(attrs[legacy_semconv.LEGACY_GEN_AI_TOOL_OUTPUT])
     error = read_span_error(span)
     if error is not None:
         result["error"] = error
@@ -768,36 +763,18 @@ def read_usage(span: Mapping[str, Any]) -> dict[str, int]:
     """Return token usage using observability's canonical names."""
 
     attrs = span_attributes(span)
-    mapping = (
-        (
-            "prompt_tokens",
-            (semconv.GEN_AI_USAGE_INPUT_TOKENS, legacy_semconv.LEGACY_GEN_AI_USAGE_PROMPT_TOKENS),
-        ),
-        (
-            "completion_tokens",
-            (semconv.GEN_AI_USAGE_OUTPUT_TOKENS, legacy_semconv.LEGACY_GEN_AI_USAGE_COMPLETION_TOKENS),
-        ),
-        ("total_tokens", (legacy_semconv.LEGACY_GEN_AI_USAGE_TOTAL_TOKENS,)),
-    )
     result: dict[str, int] = {}
-    for output_key, input_keys in mapping:
-        value = next((attrs[key] for key in input_keys if key in attrs), None)
-        if value is None:
-            continue
+    for output_key, key in (
+        ("prompt_tokens", semconv.GEN_AI_USAGE_INPUT_TOKENS),
+        ("completion_tokens", semconv.GEN_AI_USAGE_OUTPUT_TOKENS),
+    ):
         try:
-            result[output_key] = int(value)
-        except (TypeError, ValueError):
+            result[output_key] = int(attrs[key])
+        except (KeyError, TypeError, ValueError):
             continue
-    if "total_tokens" not in result and ("prompt_tokens" in result or "completion_tokens" in result):
+    if result:
         result["total_tokens"] = result.get("prompt_tokens", 0) + result.get("completion_tokens", 0)
     return result
-
-
-def _first_suffix_attribute(attrs: Mapping[str, Any], suffixes: Sequence[str]) -> Any:
-    for key in suffixes:
-        if key in attrs:
-            return deepcopy(attrs[key])
-    return None
 
 
 def _coerce_int_list(value: Any) -> list[int] | None:
@@ -835,19 +812,13 @@ def read_rl_fields(span: Mapping[str, Any]) -> dict[str, Any]:
 
     attrs = span_attributes(span)
     fields: dict[str, Any] = {}
-    for output_key, suffixes in (
-        (
-            "prompt_token_ids",
-            ("evolution.rl.prompt_token_ids", "openjiuwen.rl.prompt_token_ids"),
-        ),
-        (
-            "completion_token_ids",
-            ("evolution.rl.completion_token_ids", "openjiuwen.rl.completion_token_ids"),
-        ),
-        ("logprobs", ("evolution.rl.logprobs", "openjiuwen.rl.logprobs")),
-        ("reward", ("evolution.rl.reward", "openjiuwen.rl.reward")),
+    for output_key, key in (
+        ("prompt_token_ids", RL_PROMPT_TOKEN_IDS),
+        ("completion_token_ids", RL_COMPLETION_TOKEN_IDS),
+        ("logprobs", RL_LOGPROBS),
+        ("reward", RL_REWARD),
     ):
-        value = _first_suffix_attribute(attrs, suffixes)
+        value = deepcopy(attrs.get(key))
         if value is None:
             continue
         if output_key in {"prompt_token_ids", "completion_token_ids"}:

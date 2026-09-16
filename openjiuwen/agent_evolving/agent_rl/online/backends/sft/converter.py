@@ -173,9 +173,6 @@ class SFTRawTrajectoryConverter:
     @staticmethod
     def _span_meta(span: dict[str, Any], attrs: dict[str, Any]) -> dict[str, Any]:
         meta = {str(key): json_safe(value) for key, value in attrs.items()}
-        legacy_meta = decode_json_attribute(meta.get("openjiuwen.legacy.step.meta"))
-        if isinstance(legacy_meta, dict):
-            meta.update(json_safe(legacy_meta))
         for output_key, span_key in (
             ("span_name", "name"),
             ("span_id", "spanId"),

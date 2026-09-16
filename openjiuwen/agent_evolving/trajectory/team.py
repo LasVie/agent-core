@@ -13,7 +13,6 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Iterator
 
-from openjiuwen.agent_evolving.trajectory import legacy_semconv
 from openjiuwen.extensions.observability import semconv
 
 from openjiuwen.agent_evolving.trajectory.spans import (
@@ -53,10 +52,9 @@ def span_category(span: Mapping[str, Any]) -> str | None:
         return "tool"
     attrs = span_attributes(span)
     operation = str(attrs.get(semconv.GEN_AI_OPERATION_NAME) or "").lower()
-    explicit_kind = str(attrs.get(legacy_semconv.LEGACY_TRAJECTORY_STEP_KIND) or "").lower()
-    if operation in {"chat", "text_completion", "generate_content"} or explicit_kind == "llm":
+    if operation in {"chat", "text_completion", "generate_content"}:
         return "llm"
-    if operation == "execute_tool" or explicit_kind == "tool":
+    if operation == "execute_tool":
         return "tool"
     for category, prefixes in (
         ("team", ("team.",)),

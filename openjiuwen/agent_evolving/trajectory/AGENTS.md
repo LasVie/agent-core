@@ -15,8 +15,6 @@
 | `serialization.py` | OTLP 值的 JSON-compatible 归一化 |
 | `store.py` | 内存与 append-only JSONL 归档 |
 | `team.py` | Team root-trace scope 辅助 |
-| `legacy.py` | 历史 step/detail mapping 到 canonical `Trajectory` 的只读转换 |
-| `legacy_semconv.py` | 仅供历史转换读取的旧语义键 |
 | `offline/` | Session / 历史 span 到 canonical `Trajectory` 的离线转换 |
 
 ## Capture 生命周期
@@ -37,13 +35,13 @@ subscribe(scope) → on_end(span) → drain(scope) → clean Trajectory
 
 - `Trajectory` 拥有输入 OTLP JSON 的深拷贝；输入 payload、`to_otlp()` 返回值和访问器结果都
   不能反向修改对象。
-- 新数据必须带合法 scope。历史缺失字段只能在明确的 legacy/offline 读取入口兼容，不能
-  放宽 canonical 构造约束。
+- 数据必须带合法 scope。不存在历史格式读取入口：旧 step/detail 记录与旧语义键（`gen_ai.prompt.{i}`、
+  `gen_ai.tool.*`、`gen_ai.usage.*_tokens` 等）一律不再读取，也不要重新引入回退。
 - `trajectory_to_messages()` 负责 span 排序、prompt-tail overlap 合并、tool call 归一化与
   result 按 call ID 关联。保留真实重复消息，只合并跨 span 的 prompt overlap。
 - `TrajectoryBuilder` / `TrajectoryExtractor` 只属于 `trajectory.offline`。不要恢复旧顶层导出，
   也不要重新引入 step、snapshot 或第二套在线轨迹模型。
-- `FileTrajectoryStore` 保持 append-only JSONL；legacy record 在读取时转换，不原地改写历史。
+- `FileTrajectoryStore` 保持 append-only JSONL，只读写 canonical OTLP 记录。
 
 ## 修改与测试
 
