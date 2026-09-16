@@ -524,7 +524,7 @@ class SwarmflowTool(AsyncTool):
         enriched[_COMPLETION_CTX_KEY] = {}
         return enriched
 
-    def map_result(self, output: ToolOutput) -> str:
+    def render_for_llm(self, output: ToolOutput) -> str:
         if not output.success:
             return output.error or "Failed to launch async tool"
         data = output.data or {}

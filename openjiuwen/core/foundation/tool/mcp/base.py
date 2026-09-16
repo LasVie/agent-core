@@ -1,5 +1,5 @@
 # coding: utf-8
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 import uuid
 from typing import Any, AsyncIterator, Dict, Optional
 
@@ -8,7 +8,14 @@ from pydantic import Field, BaseModel
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.core.common.utils.schema_utils import SchemaUtils
-from openjiuwen.core.foundation.tool.base import Tool, ToolCard, Input, Output
+from openjiuwen.core.foundation.tool.base import (
+    EMPTY_SUCCESS_TEXT,
+    Input,
+    Output,
+    Tool,
+    ToolCard,
+    render_payload_text,
+)
 from openjiuwen.core.foundation.tool.schema import McpToolInfo
 from openjiuwen.core.runner.callback import trigger
 from openjiuwen.core.runner.callback.events import ToolCallEvents
@@ -149,8 +156,9 @@ class McpToolResult(BaseModel):
 
     Duck-type-compatible with the harness ``ToolOutput`` shape
     (``success`` / ``data`` / ``error``) so the react-agent multimodal
-    pipeline and tool-message building consume it without core importing
-    harness.
+    pipeline consumes it without core importing harness. It deliberately
+    stays a separate model: its serialized form is streamed to upper layers
+    as the structured tool result and must not grow ``ToolOutput`` fields.
     """
 
     success: bool = True
@@ -215,3 +223,13 @@ class MCPTool(Tool):
         except Exception as e:
             raise build_error(StatusCode.TOOL_MCP_EXECUTION_ERROR, cause=e, reason=str(e), method="invoke",
                               card=self._card)
+
+    def render_for_llm(self, output: Any) -> str:
+        """Render an MCP call result as its extracted content.
+
+        ``invoke`` wraps a plain result as ``{"result": value}``; the model reads
+        the value itself (text as-is, structured values as JSON) instead of the
+        wrapper. A multimodal ``McpToolResult`` renders its ``content`` text.
+        """
+        payload = output.data if isinstance(output, McpToolResult) else output["result"]
+        return render_payload_text(payload) or EMPTY_SUCCESS_TEXT
