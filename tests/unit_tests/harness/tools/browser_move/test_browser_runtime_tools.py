@@ -14,7 +14,6 @@ from mcp.types import CallToolResult, TextContent
 from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.foundation.tool import McpServerConfig, McpToolCard, Tool, ToolCard
 from openjiuwen.core.foundation.tool.mcp.base import MCPTool, McpToolResult
-from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
 from openjiuwen.harness.tools.browser_move.clients.stdio_client import BrowserMoveStdioClient
 from openjiuwen.harness.tools.browser_move.playwright_runtime.config import BrowserRunGuardrails
@@ -375,7 +374,7 @@ def test_single_batch_wait_preserves_mcp_outcome_through_browser_client_and_rail
             tool_result=result,
             tool_msg=ToolMessage(
                 tool_call_id="wait-results",
-                content=AbilityManager._build_tool_message_content(result),
+                content=helper.render_for_llm(result),
             ),
         )
         await rail.after_tool_call(AgentCallbackContext(agent=None, inputs=inputs))
