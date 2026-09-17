@@ -26,7 +26,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any
+from typing import Any, TypeGuard
 
 from openjiuwen.agent_evolving.trajectory.spans import (
     Span,
@@ -113,6 +113,20 @@ def _positive_int(value: Any) -> int | None:
     return number if number >= 0 else None
 
 
+def _non_empty_str(value: Any) -> TypeGuard[str]:
+    return isinstance(value, str) and bool(value)
+
+
+def _has_text(value: Any) -> TypeGuard[str]:
+    """Whether a value is a string with non-whitespace content."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _declared_conflict(declared: Any, stated: Any) -> bool:
+    """Whether a compaction declares a window id that differs from the stated one."""
+    return isinstance(declared, str) and declared != stated
+
+
 def read_trajectory_event(span: Mapping[str, Any]) -> TrajectoryEvent | None:
     """Return the v2 event a span states, or None for any other span.
 
@@ -134,17 +148,9 @@ def read_trajectory_event(span: Mapping[str, Any]) -> TrajectoryEvent | None:
         payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
     except ValueError:
         payload = None
-    if (
-        not isinstance(event_id, str)
-        or not event_id
-        or not isinstance(subject_id, str)
-        or not subject_id
-        or not isinstance(sequence_epoch, str)
-        or not sequence_epoch
-        or sequence is None
-        or recorded_at is None
-        or not isinstance(payload, Mapping)
-    ):
+    if not _non_empty_str(event_id) or not _non_empty_str(subject_id) or not _non_empty_str(sequence_epoch):
+        return None
+    if sequence is None or recorded_at is None or not isinstance(payload, Mapping):
         return None
     return TrajectoryEvent(
         span=dict(span),
@@ -215,14 +221,9 @@ def _context_message(value: Any) -> dict[str, Any] | None:
     message_id = value.get("message_id")
     role = value.get("role")
     source_kind = value.get("source_kind")
-    if (
-        not isinstance(message_id, str)
-        or not message_id.strip()
-        or not isinstance(role, str)
-        or not role.strip()
-        or value.get("origin") not in _MESSAGE_ORIGINS
-        or (source_kind is not None and (not isinstance(source_kind, str) or not source_kind.strip()))
-    ):
+    if not _has_text(message_id) or not _has_text(role) or value.get("origin") not in _MESSAGE_ORIGINS:
+        return None
+    if source_kind is not None and not _has_text(source_kind):
         return None
     return deepcopy(dict(value))
 
@@ -254,13 +255,9 @@ def _commit_payload(payload: Mapping[str, Any]) -> dict[str, Any] | None:
     window_id = payload.get("window_id")
     base_window_id = payload.get("base_window_id")
     delta = payload.get("delta")
-    if (
-        not isinstance(window_id, str)
-        or not window_id.strip()
-        or payload.get("complete") is not True
-        or not isinstance(delta, list)
-        or not (base_window_id is None or isinstance(base_window_id, str))
-    ):
+    if not _has_text(window_id) or payload.get("complete") is not True or not isinstance(delta, list):
+        return None
+    if base_window_id is not None and not isinstance(base_window_id, str):
         return None
     transition_kind = payload.get("transition_kind")
     baseline = transition_kind in _BASELINE_REASONS
@@ -292,11 +289,10 @@ def _commit_payload(payload: Mapping[str, Any]) -> dict[str, Any] | None:
         ids = [item["message_id"] for item in parsed_messages]  # type: ignore[index]
         if len(set(ids)) != len(ids):
             return None
-    if baseline and (
-        base_window_id is not None or payload.get("baseline_reason") != _BASELINE_REASONS[transition_kind] or delta
-    ):
+    # A baseline states its own reason; any other commit states none.
+    if payload.get("baseline_reason") != _BASELINE_REASONS.get(transition_kind):
         return None
-    if not baseline and payload.get("baseline_reason") is not None:
+    if baseline and (base_window_id is not None or delta):
         return None
     result = dict(payload)
     result["delta"] = parsed_delta
@@ -328,7 +324,9 @@ def apply_context_delta(
         index = operation.get("index")
         if op == "insert":
             message = operation.get("message")
-            if message is None or index is None or index > len(messages) or current != -1:
+            if message is None or current != -1:
+                return None
+            if index is None or index > len(messages):
                 return None
             messages.insert(index, deepcopy(dict(message)))
             continue
@@ -357,6 +355,14 @@ def _same_window(left: Sequence[Mapping[str, Any]], right: Sequence[Mapping[str,
     return canonical(left) == canonical(right)
 
 
+def _matches_checkpoint(
+    rebuilt: Sequence[Mapping[str, Any]] | None,
+    stated: Sequence[Mapping[str, Any]] | None,
+) -> bool:
+    """Whether a replayed delta fits and agrees with the window its commit states, if any."""
+    return rebuilt is not None and (stated is None or _same_window(rebuilt, stated))
+
+
 def _is_compaction_commit(payload: Mapping[str, Any]) -> bool:
     return (
         payload.get("transition_kind") == "compaction" or payload.get("correlation_kind") == "compaction"
@@ -380,12 +386,9 @@ def _compaction_correlation_issue(
     input_window_id = payload.get("input_window_id")
     output_window_id = str(payload.get("output_window_id") or "").strip()
     compaction_kind = "compaction" in (payload.get("transition_kind"), payload.get("correlation_kind"))
-    if (
-        not compaction_kind
-        or not operation_id
-        or (input_window_id is not None and not str(input_window_id).strip())
-        or not output_window_id
-    ):
+    missing_ids = not operation_id or not output_window_id
+    blank_input = input_window_id is not None and not str(input_window_id).strip()
+    if not compaction_kind or missing_ids or blank_input:
         return "Explicit compaction correlation is incomplete."
     if input_window_id != payload.get("base_window_id") or output_window_id != payload.get("window_id"):
         return "Explicit compaction correlation conflicts with the context window transition."
@@ -398,9 +401,8 @@ def _compaction_correlation_issue(
         return f"Compaction operation {operation_id} does not precede its output window."
     declared_input = compaction.payload.get("input_window_id")
     declared_output = compaction.payload.get("output_window_id")
-    if (input_window_id is not None and isinstance(declared_input, str) and declared_input != input_window_id) or (
-        isinstance(declared_output, str) and declared_output != output_window_id
-    ):
+    input_conflict = input_window_id is not None and _declared_conflict(declared_input, input_window_id)
+    if input_conflict or _declared_conflict(declared_output, output_window_id):
         return f"Compaction operation {operation_id} conflicts with its declared input/output windows."
     return None
 
@@ -485,9 +487,7 @@ def _replay_subject(
         baseline = payload.get("transition_kind") in _BASELINE_REASONS
         stated = payload.get("messages")
         rebuilt = None if base is None or baseline else apply_context_delta(base, payload["delta"])
-        if base is not None and not baseline and (
-            rebuilt is None or (stated is not None and not _same_window(rebuilt, stated))
-        ):
+        if base is not None and not baseline and not _matches_checkpoint(rebuilt, stated):
             issues.append(
                 _issue(
                     "v2.delta_checkpoint_mismatch",
@@ -527,9 +527,9 @@ def replay_windows(value: Any) -> WindowReplay:
     windows: dict[str, dict[str, tuple[dict[str, Any], ...]]] = {}
     by_inference: dict[str, tuple[dict[str, Any], ...]] = {}
     issues: list[Mapping[str, object]] = []
-    for subject_id in sorted(by_subject):
+    for subject_id, subject_events in sorted(by_subject.items(), key=lambda item: item[0]):
         subject_windows = windows.setdefault(subject_id, {})
-        _replay_subject(by_subject[subject_id], subject_windows, by_inference, issues)
+        _replay_subject(subject_events, subject_windows, by_inference, issues)
     return WindowReplay(windows=windows, by_inference=by_inference, issues=tuple(issues))
 
 
