@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import uuid
 import threading
 from contextvars import ContextVar
@@ -42,8 +41,8 @@ from openjiuwen.agent_evolving.trajectory.schema import (
     SESSION_ID,
     TEAM_ID,
     TRAJECTORY_ID,
-    TRAJECTORY_SCHEMA_VERSION,
-    TRAJECTORY_SCHEMA_VERSION_ATTR,
+    TRAJECTORY_PROJECTION_VERSION,
+    TRAJECTORY_PROJECTION_VERSION_ATTR,
     TRAJECTORY_SOURCE,
 )
 from openjiuwen.agent_evolving.trajectory.spans import (
@@ -52,9 +51,9 @@ from openjiuwen.agent_evolving.trajectory.spans import (
     merge_trajectories,
     span_attributes,
     span_sort_key,
-    trim_trajectory,
 )
 from openjiuwen.agent_evolving.trajectory.team import span_category
+from openjiuwen.agent_evolving.trajectory.windows import trim_trajectory_window
 from openjiuwen.extensions.observability import semconv as observability_semconv
 from openjiuwen.extensions.observability.span_context import get_root_span
 from openjiuwen.core.common.background_tasks import BackgroundTask
@@ -63,6 +62,7 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
+    AgentCallbackEvent,
     InvokeInputs,
     ModelCallInputs,
     ToolCallInputs,
@@ -157,6 +157,7 @@ class _TeamTrajectoryCaptureMixin:
     _TEAM_SUBSCRIPTION_CATEGORIES = (
         "llm",
         "tool",
+        "event",
         "agent",
         "task",
         "message",
@@ -253,6 +254,19 @@ class EvolutionRail(DeepAgentRail):
 
     priority = 60  # Lower than security rails, higher than user rails
     _DEFAULT_MEMBER_ROLE: Optional[str] = None
+
+    # after_tool_call reads the tool span the observability rail ends in its
+    # own after_tool_call, and records the result every other callback of
+    # that hook may still rewrite. So evolution reads last in that one chain,
+    # keeping the evolution rails' relative order among themselves.
+    _AFTER_TOOL_CALL_READER_OFFSET = 1_000_000
+
+    def callback_priority(self, event: AgentCallbackEvent) -> int:
+        """Run after_tool_call after every rail that produces the tool call."""
+
+        if event == AgentCallbackEvent.AFTER_TOOL_CALL:
+            return self.priority - self._AFTER_TOOL_CALL_READER_OFFSET
+        return self.priority
 
     def __init__(
         self,
@@ -450,9 +464,13 @@ class EvolutionRail(DeepAgentRail):
 
     @staticmethod
     def _subscription_categories() -> Collection[str]:
-        """Return categories selected by this rail's invoke subscription."""
+        """Return categories selected by this rail's invoke subscription.
 
-        return ("llm", "tool")
+        Trajectory events carry the context windows the message projection is
+        rebuilt from, so they are captured with the calls they describe.
+        """
+
+        return ("llm", "tool", "event")
 
     def _capture_route(self, ctx: AgentCallbackContext) -> tuple[str | None, str | None, str | None]:
         """Resolve one internally consistent subscription and scope route."""
@@ -534,7 +552,7 @@ class EvolutionRail(DeepAgentRail):
 
         metadata: dict[str, Any] = {
             TRAJECTORY_ID: str(uuid.uuid4()),
-            TRAJECTORY_SCHEMA_VERSION_ATTR: TRAJECTORY_SCHEMA_VERSION,
+            TRAJECTORY_PROJECTION_VERSION_ATTR: TRAJECTORY_PROJECTION_VERSION,
             TRAJECTORY_SOURCE: "online",
             SESSION_ID: str(session_id),
         }
@@ -718,7 +736,7 @@ class EvolutionRail(DeepAgentRail):
         with self._scope_lock(capture.scope_key):
             current = self._scope_windows.get(capture.scope_key)
             merged = merge_trajectories(current, increment) if current is not None else increment
-            merged = trim_trajectory(merged, self._max_trajectory_spans)
+            merged = trim_trajectory_window(merged, self._max_trajectory_spans)
             self._scope_windows[capture.scope_key] = merged
         return self._project_window(capture)
 
@@ -738,19 +756,10 @@ class EvolutionRail(DeepAgentRail):
         if trajectory is None:
             return ()
         issues: list[Mapping[str, object]] = []
-        indexed_pattern = re.compile(r"^(gen_ai\.(?:prompt|completion))\.(\d+)\.")
         for span in iter_spans(trajectory):
-            attrs = span_attributes(span)
-            indexes: dict[str, set[int]] = {}
-            for key in attrs:
-                match = indexed_pattern.match(str(key))
-                if match:
-                    indexes.setdefault(match.group(1), set()).add(int(match.group(2)))
-            for base, values in indexes.items():
-                if values and values != set(range(max(values) + 1)):
-                    issues.append(MappingProxyType({"code": "indexed_attribute_gap", "attribute": base}))
             if span_category(span) != "tool":
                 continue
+            attrs = span_attributes(span)
             for key in (
                 observability_semconv.GEN_AI_TOOL_CALL_ARGUMENTS,
                 observability_semconv.GEN_AI_TOOL_CALL_RESULT,

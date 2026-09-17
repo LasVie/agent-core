@@ -10,8 +10,7 @@ import pytest
 from openjiuwen.agent_evolving.signal.base import make_signal_fingerprint
 from openjiuwen.agent_evolving.signal.from_conv import ConversationSignalDetector
 from openjiuwen.agent_evolving.trajectory.model import Trajectory
-from openjiuwen.agent_evolving.trajectory import legacy_semconv
-from openjiuwen.agent_evolving.trajectory.spans import attributes_from_map
+from openjiuwen.agent_evolving.trajectory.spans import attributes_from_map, write_llm_exchange
 from openjiuwen.extensions.observability import semconv
 from openjiuwen.core.foundation.llm import ToolMessage
 
@@ -24,15 +23,22 @@ def _build_trajectory_from_messages(messages: List[dict]) -> Trajectory:
 
     def add_llm(prompt: list[dict], completion: dict | None) -> None:
         nonlocal span_index
-        values: dict[str, object] = {}
-        for index, message in enumerate(prompt):
-            values[f"{legacy_semconv.LEGACY_GEN_AI_PROMPT}.{index}.role"] = message.get("role", "")
-            values[f"{legacy_semconv.LEGACY_GEN_AI_PROMPT}.{index}.content"] = message.get("content", "")
+        completions = []
         if completion is not None:
-            values[f"{legacy_semconv.LEGACY_GEN_AI_COMPLETION}.0.role"] = completion.get("role", "assistant")
-            values[f"{legacy_semconv.LEGACY_GEN_AI_COMPLETION}.0.content"] = completion.get("content", "")
-            if completion.get("tool_calls"):
-                values[legacy_semconv.LEGACY_GEN_AI_TOOL_CALLS] = completion["tool_calls"]
+            completions.append(
+                {
+                    "role": completion.get("role", "assistant"),
+                    "content": completion.get("content", ""),
+                    **({"tool_calls": completion["tool_calls"]} if completion.get("tool_calls") else {}),
+                }
+            )
+        values: dict[str, object] = {
+            **write_llm_exchange(
+                [{"role": m.get("role", ""), "content": m.get("content", "")} for m in prompt],
+                completions,
+            ),
+            semconv.GEN_AI_OPERATION_NAME: "chat",
+        }
         values[semconv.GEN_AI_REQUEST_MODEL] = "test-model"
         spans.append(
             {
@@ -168,10 +174,10 @@ class TestConversationSignalDetector:
                                         "spanId": "llm-1",
                                         "name": "llm.call",
                                         "attributes": attributes_from_map(
-                                            {
-                                                f"{legacy_semconv.LEGACY_GEN_AI_PROMPT}.0.role": "system",
-                                                f"{legacy_semconv.LEGACY_GEN_AI_PROMPT}.0.content": "system prompt",
-                                            }
+                                            write_llm_exchange(
+                                                [{"role": "system", "content": "system prompt"}],
+                                                [],
+                                            )
                                         ),
                                     }
                                 ]
