@@ -886,20 +886,19 @@ class AgentObservabilityRail(DeepAgentRail):
     # ------------------------------------------------------------------
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
-        """Open the authoritative span around one AbilityManager execution."""
+        """Open the authoritative span around one AbilityManager execution.
+
+        Every agent this rail is mounted on gets it, a Team member included.
+        Only this hook sees the model's tool call, so only this span can state
+        the call id; the global tool callback span a Team member used to get
+        stated none, and nothing could join the call to the tool message the
+        model read for it.
+        """
         try:
             inputs = getattr(ctx, "inputs", None)
             tool_name = str(getattr(inputs, "tool_name", "") or "unknown")
             current_agent = get_current_agent_span()
             root_span = self._root_span_for(ctx)
-            if (
-                root_span is None
-                or not root_span.attributes.get(OJ_TRACE_ROOT)
-            ):
-                # This authoritative Ability scope is the single-Agent
-                # integration. Team roots keep their existing global Tool
-                # callback behavior until the later Team trajectory phase.
-                return
             parent = (
                 current_agent
                 if current_agent is not None and current_agent.is_recording()

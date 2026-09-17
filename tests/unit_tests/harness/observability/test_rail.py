@@ -590,6 +590,66 @@ async def test_ability_tool_span_is_authoritative_and_carries_old_and_new_fields
 
 
 @pytest.mark.asyncio
+async def test_team_member_tool_span_is_authoritative_and_states_its_call_id(tracing):
+    """A Team root is not a trace root, and its members' tools still get the span.
+
+    Team members used to fall back to the global tool callback span, which
+    never sees the model's tool call and so stated no call id; nothing could
+    join the call to the tool message the model read for it.
+    """
+    team_root = tracing.tracer.start_span("team.marketing")
+    team_root.set_attribute(GEN_AI_CONVERSATION_ID, "conversation")
+    team_root.set_attribute(OJ_EXECUTION_SUBJECT_ID, "team-member:conversation:marketing:leader")
+    team_root.set_attribute(OJ_EXECUTION_SUBJECT_DISPLAY_NAME, "Team Leader")
+    team_root.set_attribute(OJ_EXECUTION_SUBJECT_KIND, "team_leader")
+    team_root.set_attribute(OJ_EXECUTION_SUBJECT_SESSION_ID, "conversation")
+    shared_span_context.set_root_span(team_root)
+    card = ToolCard(id="resource-search", name="search", description="Search documents")
+    agent = _agent("leader")
+    agent.ability_manager = SimpleNamespace(get=lambda name: card)
+    rail = AgentObservabilityRail(tracer=tracing.tracer)
+    handler = OtelCallbackHandler(
+        ObservabilityConfig(enabled=True),
+        tracer=tracing.tracer,
+    )
+    iteration_ctx = _iteration_ctx(agent)
+    await rail.before_task_iteration(iteration_ctx)
+    model_ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=ModelCallInputs(react_iteration=1),
+        extra=iteration_ctx.extra,
+    )
+    await rail.before_model_call(model_ctx)
+    step_span = shared_span_context.get_current_agent_span()
+
+    # The real order: the ability hook opens the span, then the tool's own
+    # lifecycle callbacks fire inside its invocation.
+    ctx = _tool_ctx(agent, call_id="call-team-1")
+    await rail.before_tool_call(ctx)
+    await handler.on_tool_call_started(
+        tool_name="search",
+        tool_id="resource-search",
+        inputs=(({"q": "hello"},), {}),
+    )
+    await handler.on_tool_call_finished(tool_name="search", result={"answer": 42})
+    ctx.inputs.tool_result = {"answer": 42}
+    await rail.after_tool_call(ctx)
+    await rail.after_task_iteration(iteration_ctx)
+    team_root.end()
+
+    spans = _finished(tracing.exporter, "tool.search")
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.parent.span_id == step_span.context.span_id
+    assert span.attributes[OJ_TOOL_AUTHORITATIVE] is True
+    assert span.attributes[GEN_AI_TOOL_CALL_ID] == "call-team-1"
+    assert span.attributes[GEN_AI_CONVERSATION_ID] == "conversation"
+    assert span.attributes[OJ_EXECUTION_SUBJECT_ID] == "team-member:conversation:marketing:leader"
+    assert span.attributes[OJ_EXECUTION_SUBJECT_KIND] == "team_leader"
+    assert span.attributes[OJ_STEP_ID] == f"{step_span.context.span_id:016x}"
+
+
+@pytest.mark.asyncio
 async def test_iteration_and_tool_publish_live_snapshots_before_they_end(
     tracing,
     monkeypatch,
@@ -968,7 +1028,10 @@ async def test_a_succeeding_result_still_closes_the_span_as_ok(tracing):
 
 @pytest.mark.asyncio
 async def test_the_global_tool_callbacks_also_read_failure_from_the_result(tracing):
-    """Team mode owns the span in the callback handler; it needs the same reading."""
+    """A tool run outside any ability hook owns its span in the callback handler.
+
+    That span needs the same failure reading as the authoritative one.
+    """
     agent = _agent()
     rail = AgentObservabilityRail(tracer=tracing.tracer)
     handler = OtelCallbackHandler(
