@@ -1,6 +1,6 @@
 # Session 私有历史与 ReAct 周期归档实施计划
 
-日期：2026-09-18。状态：规划稿，功能尚未实现。范围已收敛为仅修改 agent-core 仓库；本次只更新实施计划。
+日期：2026-09-18。状态：实现及本地持久化验收已完成；仅修改 agent-core 仓库。
 
 ## 1. 分支与规划依据
 
@@ -9,7 +9,7 @@
 - 代码核对基线：`6dfda012`（`feat(team): add group conversations and reliable member inputs`）。本地工作分支已包含相对原工作目录新增的 28 个提交。
 - 需求输入：工作空间 `documentation/` 中的《群聊 && 组织级 Agent功能方案设计》《群聊 && 组织级 Agent代码模块设计》《群聊与组织级Agent接口设计》，以及 Session 管理补充。它们位于本 Git 仓库之外；本计划在下面重述实现所需约束，避免远端阅读依赖本地绝对路径。
 
-本轮交付是 agent-core 的文件级提案，不创建空实现文件，不提前替换已有压缩行为。下文“新增”“修改”均指后续实现工作；除本计划外，尚未修改运行代码、测试或业务设计文件。所有实现、测试、示例和文档改动均位于本仓库，不包含 WorkSwarm 文件或依赖版本变更。
+本文件保留已确认的实施约束，并记录实际文件、验证结果和边界。所有实现、测试、示例和文档改动均位于本仓库，不包含 WorkSwarm 文件或依赖版本变更。默认处理链与已有压缩行为保持不变。
 
 ## 2. 固定需求与仓库边界
 
@@ -74,7 +74,7 @@
 
 本分支保持这些现有群聊语义。`agent_teams/agent/session_manager.py` 管理 TeamAgent 会话绑定，也不直接复用为新的业务映射管理器。
 
-## 4. 计划新增的实现文件
+## 4. 已新增的实现文件
 
 | 新增路径 | 主要内容 | 为什么放这里 |
 |---|---|---|
@@ -87,9 +87,9 @@
 
 第一版采用宿主可持久化且 Agent 工具可读取的文件系统目录。写入使用同目录临时文件、完整写入与刷新、原子发布；相同 ID 的已有文件必须校验内容，不能覆盖不同原文。文件系统失败返回明确错误，不自动改写到别的目录或内存。若使用远程沙箱，宿主必须提供满足同等写入语义的可读挂载或适配；本分支不同时开发新的远程存储平台。
 
-## 5. 计划修改的现有文件
+## 5. 已修改的现有文件
 
-### 必须修改：8 个接入文件
+### 原计划的 8 个接入文件
 
 | 修改路径 | 精确接入点与要求 |
 |---|---|
@@ -102,12 +102,14 @@
 | `openjiuwen/core/common/exception/codes.py` | 在合法 CONTEXT 段定义归档写入与输入预算错误，遵循 StatusCode 命名规则，不写死未核对的编号；宿主映射为 ARCHIVE_FAILED / CONTEXT_BUDGET_EXCEEDED |
 | `openjiuwen/harness/deep_agent.py` | 仅新模式在外层 invoke/stream 绑定一次 execution_id，完成、中断或异常时冻结并提供已有记录；内层 task-loop 不重复开启业务执行。旧模式的回调、状态保存、取消与流式最终输出时机不变 |
 
-### 条件性修改：先复用，确有缺口才改
+### 核对后增加的两个内部接入点
 
-| 路径 | 何时需要修改 |
+| 路径 | 实际接入原因 |
 |---|---|
-| `openjiuwen/core/context_engine/base.py` | 如果最终校验或轨迹导出需要统一的 ModelContext 能力入口，增加默认无操作的可选方法；不新增第三方必须实现的抽象方法 |
-| `openjiuwen/harness/rails/context_engineer/context_processor_rail.py` | 优先使用现有 `preset=False` + 自定义 Processor 注册。若工具配对修复、异常兜底或配置组合与新策略冲突，仅对显式新模式作适配；原默认值、旧实例的配对修复和异常处理均保持不变 |
+| `openjiuwen/core/single_agent/rail/base.py` | 通用 rail 装饰器原本允许异常回调重试或 force_finish，可能吞掉最终守卫的错误。仅对新增的归档失败、预算超限两种状态直接透传；旧异常策略保持不变，不新增接口 |
+| `openjiuwen/harness/rails/context_engineer/context_processor_rail.py` | 复用现有 `preset=False` + 自定义 Processor 注册；仅新模式跳过原工具配对修复，避免 pop / 重新追加改写未闭合原文。旧实例的修复和默认值保持不变 |
+
+`openjiuwen/core/context_engine/base.py` 无需修改；第三方 ModelContext 不增加抽象方法。ReActAgent 的取消清理在新模式保留未闭合原文，并将持久提交交回外层，使完整轨迹先于 checkpoint 提交。
 
 ### 直接复用，不预设修改
 
@@ -137,12 +139,14 @@
 ### 6.3 原始轨迹与状态
 
 ```text
-宿主绑定的 sessions/<session_id>/
-  state/                               原生 checkpoint，由宿主管理
-  history/
-    offload/<archive_id>.jsonl          运行中先保存，再移除消息
-    trajectories/<execution_id>.jsonl   轮末由业务 save 保存完整执行轨迹
+root_dir/
+  sessions/<sha256(session_id)>/history/
+    offload/<content_sha256>.jsonl          运行中先保存，再移除消息
+    trajectories/<sha256(execution_id)>.jsonl  外层执行退出时保存完整轨迹
+  state.db                                 示例采用的原生 SQLite checkpoint
 ```
+
+路径中的 ID 编码防止目录穿越，JSONL 内仍保存原始 ID。checkpoint 位置由宿主管理，不强制位于上述 root_dir。临时文件 flush/fsync 后使用同目录 hard-link 原子发布；文件系统必须支持该语义。
 
 - 记录字段采用现有设计：session_id、execution_id、step_id、seq、message_id、occurred_at、archived_at、完整 message。`step_id` 在本方案中标识 ReAct 周期，不复用 team 协议中表示原子动作的 Step；跨层适配明确映射。
 - `message_id` 复用 context_message_id，群平台 message_id 单独作为来源标识。归档不因发生在后一轮就重写原始 execution_id/发生时间。
@@ -186,7 +190,9 @@
 | `docs/zh/2.开发指南/API文档/openjiuwen.core/context_engine/processors/cycle_archive_processor.md` | 新配置、归档格式、错误、原生与业务生命周期区别 |
 | `docs/en/2.Development Guide/API Docs/openjiuwen.core/context_engine/processors/cycle_archive_processor.md` | 对应英文 API 文档 |
 
-### 扩展已有验证与设计说明
+### 已有回归与同步的设计说明
+
+保留以下旧测试文件及其预期，直接运行回归；新断言集中在新增的测试文件，不将旧用例改为新行为。
 
 - `tests/unit_tests/core/context_engine/test_context_engine.py`：默认关闭时保持原行为，保存恢复引用。
 - `tests/unit_tests/harness/test_context_processor_rail.py`：preset=False 配置、新旧 Processor 互不污染、工具配对修复与新策略兼容。
@@ -211,7 +217,7 @@
 
 专门构造同进程混用场景：默认 Agent A 与启用新模式的 Agent B 使用不同 Session；B 发生归档失败时，只阻断 B，A 的配置、模型请求、目录、状态和错误处理均不改变。旧模式本身的文件卸载失败仍按原机制处理，不能因为新守卫而获得新的失败语义。
 
-以上是实施后的验收要求，目前没有运行或宣称通过这些回归测试。除定向回归外，交付前还需通过项目适用的既有 CI；出现相关旧用例回归时先修复兼容性，再交付新能力。
+验收结果见下一节。旧功能回归若失败，需要区分基线已存在的环境限制与新增回归，不修改原测试预期来隐藏失败。
 
 ## 9. 实施顺序与完成条件
 
@@ -224,8 +230,27 @@
 
 agent-core 分支的完成边界为 P1～P4，全部在本仓库内实现和验收；不包含业务群聊映射、公开消息投递或其它仓库升级。现有 agent_teams 的群聊通知规则保持原语义。
 
-未来修改 harness 时遵循其目录约定同步 S/F 文档，并将特性代码、测试、文档组织为约定的连续提交；实际关联的 issue 使用真实编号。本次计划位于根 `docs/dev/`，没有提交 harness 功能代码。
+### 实现与提交
 
-实施后的定向检查包含上述新测试及已有 ContextEngine、ContextProcessorRail、DeepAgent Session 状态测试；再运行仓库 `make check` 和相关类型检查。本次只有 Markdown 规划变更，检查文件路径、文档结构和 git diff，不把运行测试清单表述为已通过。
+- P1 已提交并推送：`359864e3`，Session 原文记录与严格 JSONL 存储。
+- P2 已提交并推送：`5f753140`，完整周期归档与最小预算选择。
+- P3 的 core 请求守卫已提交并推送：`3596c079`；兼容性与隔离修复为 `49489be6`。
+- 中断后继续执行的周期关联补充为 `bc1f8b1d`，已提交并推送。
+- P3 的 DeepAgent 外层生命周期、P4 的示例、测试和中英 API 文档均已实现。harness 特性、测试、文档按目录约定组织为三个连续提交。目标仓库关闭 Issues，用户已明确授权本次提交不关联 issue。
 
-本次验证限制：当前 PowerShell 环境未安装 make，`make check` 无法启动；该 Makefile 本身也要求选中 Python 文件，本次没有 Python 变更。采用现有路径核对、新文件路径检查、Markdown 结构检查和 `git diff --cached --check` 验证本计划，不运行代码测试。
+### 验证记录
+
+环境：Windows、Python 3.12.12、仓库 uv 依赖；未修改依赖锁文件。无真实模型请求，模型回复使用确定性脚本，其余 ContextEngine、DeepAgent、ReAct、工具、Session、SQLite 和文件写入均运行真实代码。
+
+- 最小持久化验收：在两个独立 Python 进程依次运行 `examples/context_engine/session_cycle_archive.py --root <新的空目录> --phase seed` 和 `--phase resume`，均输出 PASS。两 Session 隔离，完整工具原文留在 JSONL，恢复后只将裁剪状态及引用提供给模型。
+- 新测试验证最早最少完整周期、并行未闭合保护、写失败保留原文、零 provider 调用、外层一次轨迹、内层多次工具/task-loop、异常与取消、流关闭、中断恢复，以及旧快照兼容。
+- 最终扩大回归：已有 ContextEngine、ReActAgent 和相关 harness 状态/流式/Processor 测试连同新增测试，762 passed、1 failed。唯一失败为既有 `test_recall_rejects_chunk_symlink_escape`，Windows 缺少创建符号链接权限（WinError 1314）；在未改动基线 `7f0993dc` 复现同一失败。工具等待确认与工作流中断恢复的新用例均通过。
+- 默认关闭对照：相同脚本模型、工具和两轮输入，在未改动基线与当前代码运行，归一化动态 context_message_id / 访问时间后，模型输入、工具定义、调用次数、输出及原生状态一致。
+- 14 个新增 Python 文件的 Ruff、格式检查、Pylint、codespell、mypy 通过。已有接入文件仍有基线 lint/type 诊断；对照后 Ruff 为 57 对 57、mypy 为 186 对 186，归一化行号偏移后无新增诊断，不宣称历史文件已整体清零。
+- 本机未安装 make，直接运行 Makefile 对应的 Python 检查器，不能声称 `make check` 命令已运行通过。未运行需要真实外部服务的全仓库系统测试或远端 CI。
+
+### 已知边界
+
+同 Session 单写者；不提供分布式锁。存储必须支持原子 hard-link 发布。旧来源时间保持 null。offload 与完整轨迹可重复保存同一消息，引用文件不自动回收。硬终止进程可能丢失尚未导出的本轮记录。
+
+DeepAgent 方法自身的 stream 关闭路径已测试；原生 BaseAgent 通用回调包装器对 instance-level aclose 的既有限制未在此特性中改写。显式 Session 的 pre_run、commit/post_run 仍由宿主管理。归档保存失败后先重试导出，不覆盖未保存执行进入下一轮。

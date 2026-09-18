@@ -6,7 +6,7 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/deep_agent.py`、`openjiuwen/harness/schema/interaction.py`、`openjiuwen/harness/schema/state.py`、`openjiuwen/harness/schema/agent_mode.py` |
-| 最近一次修订日期 | 2026-09-15 |
+| 最近一次修订日期 | 2026-09-18 |
 | 关联 feature | `F_04_authoritative-terminal-stream.md` |
 
 ## 范围 / 边界
@@ -82,6 +82,9 @@
 15. 最终 payload 与 `invoke` 的返回契约一致，允许 rail 替换整个 result 对象。结构化 Browser
     partial/blocked 不是传输异常，TaskTool 保留其 evidence、retryable 和恢复字段；没有结构化
     结果的执行错误仍走框架异常路径。
+
+16. 显式启用 `ContextEngineConfig.session_history` 时，外层 invoke/stream 在 BEFORE_INVOKE 前绑定一个执行 ID，所有内层工具与 task-loop 轮次共用它；正常、异常、中断和关闭流都在统一退出点导出原始轨迹，再更新原生 Session 状态。成功 answer 在轨迹保存之后返回；显式传入的 Session 仍由宿主 commit。未启用时不创建记录器、目录或额外状态。
+17. 原始消息在 ContextEngine add Processor 之前冻结，原文轨迹不从裁剪后的窗口反推。历史目录按稳定 session_id 隔离；同一 Session 的写入必须串行。新模式归档/预算错误不能转为模型重试或成功空回复；保存失败与原执行异常一并保留。
 
 ## 接口契约
 
