@@ -36,6 +36,7 @@ from openjiuwen.core.foundation.llm.schema.config import (
     ModelClientConfig,
     ModelRequestConfig
 )
+from openjiuwen.core.context_engine.processor.budget_guard import guard_history_window
 from openjiuwen.core.context_engine import (
     ContextEngine,
     ContextEngineConfig,
@@ -1014,6 +1015,10 @@ class ReActAgent(BaseAgent):
         try:
             ai_message = await self._railed_model_call(ctx)
         except Exception as exc:
+            if getattr(exc, "status", None) in {
+                StatusCode.CONTEXT_ARCHIVE_EXECUTION_ERROR, StatusCode.CONTEXT_BUDGET_EXECUTION_ERROR,
+            }:
+                raise
             if ctx.extra.get("_model_exception_recovery_attempted"):
                 raise
 
@@ -1531,6 +1536,7 @@ class ReActAgent(BaseAgent):
         context_window = await ctx.context.get_context_window(
             **context_window_kwargs
         )
+        guard_history_window(ctx.context, context_window)
         # Update ctx.inputs: after_model_call hooks inspect these to see
         # what was actually sent. (LLM call uses them too, but could
         # equally pass context_window.get_*() directly.)

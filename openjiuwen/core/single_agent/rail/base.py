@@ -32,6 +32,7 @@ from typing import (
     TYPE_CHECKING,
 )
 
+from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.logging import logger
 
 from openjiuwen.core.context_engine import ModelContext
@@ -1036,6 +1037,14 @@ def rail(
                 except Exception as e:
                     exc_to_raise = e
                     ctx.exception = e
+                    # Lossless history failures are local admission failures, not
+                    # provider failures. They cannot be retried or turned into an
+                    # apparent success by an ON_MODEL_EXCEPTION rail.
+                    if getattr(e, "status", None) in {
+                        StatusCode.CONTEXT_ARCHIVE_EXECUTION_ERROR,
+                        StatusCode.CONTEXT_BUDGET_EXECUTION_ERROR,
+                    }:
+                        raise
                     # Record this failed attempt so the final error message
                     # can tell the LLM how many retries happened and why.
                     ctx.retry_history.append(
