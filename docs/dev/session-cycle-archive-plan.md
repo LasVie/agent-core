@@ -13,6 +13,21 @@
 
 ## 2. 固定需求与仓库边界
 
+### 首要约束：保持原有 core 功能和默认行为
+
+本特性以可选扩展方式接入，不能通过替换默认实现实现新需求。“旧功能不受影响”是实施与合入条件，需要回归证据，不能仅凭配置默认关闭就视为已经满足。
+
+1. **默认关闭、显式启用**：未配置新能力或显式关闭时，继续原有执行路径。只有明确启用历史配置并选择 CycleArchiveProcessor 的运行实例进入新逻辑；不完整或冲突的新配置只在该实例启用时校验报错，不影响旧配置加载。
+2. **默认处理链不变**：不全局将 ContextProcessorRail 的 preset 默认值改为 False，不替换已有 Processor 注册键、默认阈值、摘要压缩、TTL、自动恢复/召回和工具处理策略。新 Processor 使用独立名称注册，导入新模块不能改写已有注册映射。
+3. **旧调用接口不变**：保留已有名称、位置参数、返回结构和配置默认值，不新增必填参数。可选能力不增加第三方 ModelContext 子类必须实现的抽象方法，不修改旧错误码及其映射。
+4. **旧消息与持久化格式不变**：未启用时不增加归档专用消息字段、执行结果字段或 checkpoint 命名空间，不改动原文件目录、保存时机和状态恢复方式。已启用模式的新字段与旧字段分开保存，新版本必须能读取缺少新字段的旧 checkpoint；不自动迁移或覆写旧历史文件。
+5. **严格失败处理仅作用于新模式**：新模式的归档失败和预算超限在其请求出口阻断。旧模式保持原有 Processor 异常处理、文件卸载失败回退、模型重试与压缩兜底语义；不能全局把捕获后继续改成直接抛出。
+6. **未启用不承担新工作**：不创建历史记录器/目录、不复制原始消息、不额外计数 tokens、不写归档、不启动后台任务，也不改变原有模型请求次数和工具执行顺序。公共接入点只做轻量模式判断。
+7. **运行实例隔离**：新模式的记录器、错误状态、预算和存储绑定当前 Session/context；同一进程中的旧 Agent、其它 Session 和其它 ContextEngine 不能被带入新模式。不得修改共享配置对象或使用全局开关切换所有实例。
+8. **生命周期只作受控扩展**：DeepAgent invoke/stream、取消、中断恢复和 task-loop 的新增记录/导出逻辑只在新模式进入；旧模式继续原有回调顺序、状态提交、资源清理与最终输出时机。
+9. **配置切换不静默改写存量上下文**：第一版在运行实例创建时确定模式，不在执行中的 Session 热切换归档策略。旧快照导入新模式的兼容逻辑与默认旧路径分开验证，不能扫描全部历史或自动补回卸载内容。
+10. **新旧两组验证均通过才交付**：保留原有测试的预期，新增默认关闭对照与同进程混用测试。不得为了使新策略通过而把旧压缩、旧恢复或旧流式输出测试改成新行为。
+
 ### 不改变的业务接口与执行方式
 
 - `(agent_id, group_chat_id)` 唯一对应稳定的 `session_id`。同 Agent 跨群、同群不同 Agent 的私有状态均隔离。
@@ -81,18 +96,18 @@
 | `openjiuwen/core/context_engine/schema/config.py` | 增加可选历史配置，默认关闭；启用周期归档时校验与消息数上限、默认窗口提前裁剪及其它会改写原文的 Processor 不冲突 |
 | `openjiuwen/core/context_engine/__init__.py` | 导出新 Processor/Config 和必要历史配置；保留所有现有导出及默认行为 |
 | `openjiuwen/core/context_engine/context_engine.py` | 注册新 Processor；按原生 session/context 绑定记录器和存储，支持执行记录导出；保留 create_context 现有参数，不增加必填参数 |
-| `openjiuwen/core/context_engine/context/context.py` | 在消息已标准化、已有 context_message_id、尚未交给 add Processor 时记录原文；关联当前执行；set_messages 后保留原有 usage/KV 失效机制；快照保留日志元数据与归档引用，恢复不重录旧消息 |
-| `openjiuwen/core/context_engine/processor/budget_guard.py` | 增加本模式的最终窗口预算和失败状态检查；复用既有计数，不调用头尾字符截短函数 |
-| `openjiuwen/core/single_agent/agents/react_agent.py` | `_railed_model_call` 最终窗口确定后统一校验，覆盖 invoke/stream；传递模型预算所需参数。归档/预算错误不能被自动重试或压缩兜底当成普通模型错误；中断恢复不重执行已完成工具 |
+| `openjiuwen/core/context_engine/context/context.py` | 仅新模式在消息已标准化、已有 context_message_id、尚未交给 add Processor 时记录原文；关联当前执行；保留 set_messages 原有 usage/KV 失效机制；新模式快照隔离保存日志元数据与引用，旧格式及恢复行为不变 |
+| `openjiuwen/core/context_engine/processor/budget_guard.py` | 增加仅新模式调用的最终窗口预算和失败状态检查；保留既有函数语义和默认策略，新策略不调用头尾字符截短函数 |
+| `openjiuwen/core/single_agent/agents/react_agent.py` | `_railed_model_call` 在新模式的最终窗口确定后校验，覆盖 invoke/stream；未启用时不增加 token 统计或阻断条件。新归档/预算错误不能被重试或压缩兜底掩盖，旧错误路径与模型调用顺序不变 |
 | `openjiuwen/core/common/exception/codes.py` | 在合法 CONTEXT 段定义归档写入与输入预算错误，遵循 StatusCode 命名规则，不写死未核对的编号；宿主映射为 ARCHIVE_FAILED / CONTEXT_BUDGET_EXCEEDED |
-| `openjiuwen/harness/deep_agent.py` | 外层 invoke/stream 绑定一次 execution_id，完成、中断或异常时冻结并提供已有记录；内层 task-loop 不重复开启业务执行。状态整理与可捕获退出保持一致，不把失败转换成正常输出 |
+| `openjiuwen/harness/deep_agent.py` | 仅新模式在外层 invoke/stream 绑定一次 execution_id，完成、中断或异常时冻结并提供已有记录；内层 task-loop 不重复开启业务执行。旧模式的回调、状态保存、取消与流式最终输出时机不变 |
 
 ### 条件性修改：先复用，确有缺口才改
 
 | 路径 | 何时需要修改 |
 |---|---|
 | `openjiuwen/core/context_engine/base.py` | 如果最终校验或轨迹导出需要统一的 ModelContext 能力入口，增加默认无操作的可选方法；不新增第三方必须实现的抽象方法 |
-| `openjiuwen/harness/rails/context_engineer/context_processor_rail.py` | 优先使用现有 `preset=False` + 自定义 Processor 注册。只有工具配对修复、异常兜底或配置组合与新策略冲突时才调整；不得移除未归档原文、掩盖归档失败或引入摘要兜底 |
+| `openjiuwen/harness/rails/context_engineer/context_processor_rail.py` | 优先使用现有 `preset=False` + 自定义 Processor 注册。若工具配对修复、异常兜底或配置组合与新策略冲突，仅对显式新模式作适配；原默认值、旧实例的配对修复和异常处理均保持不变 |
 
 ### 直接复用，不预设修改
 
@@ -164,6 +179,7 @@
 | `tests/unit_tests/core/context_engine/test_session_history_store.py` | JSONL 原文一致、原子发布失败、重试幂等、路径范围、时间/ID 保留、已有引用链 |
 | `tests/unit_tests/core/context_engine/test_session_history_recorder.py` | 改写前采集、执行边界、同一消息不因恢复重复记录、多 Session 隔离、旧快照缺字段 |
 | `tests/unit_tests/core/context_engine/test_cycle_archive_processor.py` | 未超限不写盘、阈值触发、失败不移除、整条工具结果落盘、同步更新状态与请求窗口 |
+| `tests/unit_tests/core/context_engine/test_cycle_archive_compatibility.py` | 未配置/显式关闭的基线对照、旧 checkpoint、第三方 ModelContext 兼容、新旧实例同进程运行、无额外归档 I/O |
 | `tests/unit_tests/agent/react_agent/test_react_agent_cycle_archive.py` | mock provider 验证归档失败和最终超限时零模型调用；覆盖 invoke/stream、附件、工具循环和取消 |
 | `tests/unit_tests/harness/test_deep_agent_session_history.py` | 一次外层 invoke 对应一份轨迹；多次工具及内层 task-loop 不重开执行；中断、失败、恢复和两 Session 隔离 |
 | `examples/context_engine/session_cycle_archive.py` | 无需群平台的最小示例：两 Session、多周期、低预算触发卸载、轮末导出和下轮恢复 |
@@ -181,6 +197,22 @@
 
 测试采用本地临时目录与 mock 模型，不依赖真实模型凭证。除了验证归档内容，必须断言失败时 provider 未被调用、消息未被移除、另一 Session 的状态与文件未变化。
 
+### 原有功能回归与对照
+
+在相同 mock 模型、工具结果、旧配置和旧快照下，对照开发基线与变更后的默认关闭模式，验证模型最终输入、工具定义、请求次数、工具调用顺序、返回结果和持久化副作用保持一致。已存在的动态 ID/时间做合理归一化；不能因此忽略正文、关联 ID、事件顺序或原文件格式的变化。
+
+| 回归范围 | 已有测试位置 | 新增断言重点 |
+|---|---|---|
+| 原生消息与窗口 | `tests/unit_tests/core/context_engine/test_context_engine.py`、`tests/unit_tests/core/context_engine/test_context_window_diff.py` | 默认模式无新归档文件或专用字段，窗口选择与状态恢复一致 |
+| 旧卸载与摘要链 | `tests/unit_tests/core/context_engine/test_message_offloader.py`、`tests/unit_tests/core/context_engine/test_forked_message_offloader.py`、`tests/unit_tests/core/context_engine/test_dialogue_compressor.py`、`tests/unit_tests/core/context_engine/test_compression_recall.py` | 原有阈值、卸载格式、摘要/召回、失败回退预期不变 |
+| Rail 默认装配 | `tests/unit_tests/harness/test_context_processor_rail.py` | preset=True 仍使用原处理链；仅新实例明确选择 preset=False，注册表和配置对象互不污染 |
+| 旧模型与中断路径 | `tests/unit_tests/agent/react_agent/test_react_agent_context_config.py`、`tests/unit_tests/agent/react_agent/test_react_agent_streaming.py`、`tests/unit_tests/agent/react_agent/test_react_agent_interrupt.py` | 未启用时模型请求、流式和中断恢复保持既有语义 |
+| DeepAgent 状态与输出 | `tests/unit_tests/harness/test_deep_agent_session_state.py`、`tests/unit_tests/harness/test_deep_agent_terminal_stream.py`、`tests/unit_tests/harness/test_deep_agent_stream_aclose.py` | 保存恢复、最终 answer 时机与取消清理保持不变 |
+
+专门构造同进程混用场景：默认 Agent A 与启用新模式的 Agent B 使用不同 Session；B 发生归档失败时，只阻断 B，A 的配置、模型请求、目录、状态和错误处理均不改变。旧模式本身的文件卸载失败仍按原机制处理，不能因为新守卫而获得新的失败语义。
+
+以上是实施后的验收要求，目前没有运行或宣称通过这些回归测试。除定向回归外，交付前还需通过项目适用的既有 CI；出现相关旧用例回归时先修复兼容性，再交付新能力。
+
 ## 9. 实施顺序与完成条件
 
 | 阶段 | 工作 | 完成条件 |
@@ -188,7 +220,7 @@
 | P1 记录与存储 | 数据结构、原始消息采集、Session 文件存储和执行范围绑定 | 轨迹完整、ID/时间稳定、两 Session 隔离、恢复不重录 |
 | P2 周期归档 | 周期包装、预算选择、严格落盘、活跃状态与请求窗口同步替换 | 最早最少完整周期被移除，并行工具不拆分，写失败保留原文 |
 | P3 请求和生命周期接入 | 最终模型请求检查、DeepAgent invoke/stream 记录范围、退出导出与状态处理 | 工具循环不回到业务 ContextAssembler；失败/取消有记录，超预算不调用模型 |
-| P4 兼容与交付 | 回归测试、两 Session 示例、中英文说明及 harness 设计同步 | 默认行为保持不变，新配置显式启用，文档与代码一致 |
+| P4 兼容与交付 | 默认关闭基线对照、原功能回归、新旧实例混用、两 Session 示例及设计同步 | 新功能验收与原功能回归同时通过，默认路径无新增持久化副作用，文档与代码一致 |
 
 agent-core 分支的完成边界为 P1～P4，全部在本仓库内实现和验收；不包含业务群聊映射、公开消息投递或其它仓库升级。现有 agent_teams 的群聊通知规则保持原语义。
 
