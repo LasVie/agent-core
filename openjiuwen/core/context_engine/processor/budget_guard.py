@@ -7,6 +7,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from openjiuwen.core.common.exception.codes import StatusCode
+from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.core.common.logging import logger
 from openjiuwen.core.context_engine.base import ModelContext
 from openjiuwen.core.context_engine.context.context_utils import ContextUtils
@@ -14,6 +16,32 @@ from openjiuwen.core.foundation.llm import BaseMessage
 
 TRUNCATED_BY_BUDGET_MARKER = "... placeholder truncated; original content is preserved in offload storage ..."
 TRUNCATED_SIDE_MAX_CHARS = 2000
+
+
+def history_input_budget(context: ModelContext) -> int:
+    """Resolve the explicit lossless-history input budget, reserving output space."""
+    config = context._history_config
+    return effective_context_budget(context) - config.output_reserve_tokens - config.safety_margin_tokens
+
+
+def history_window_tokens(context: ModelContext, window) -> int:
+    """Count the complete outbound payload, including tools and references."""
+    counter = context.token_counter()
+    return counter.count_messages(window.get_messages()) + counter.count_tools(window.get_tools())
+
+
+def guard_history_window(context: ModelContext, window) -> None:
+    """Fail closed only for opted-in contexts after every final-window mutator."""
+    recorder = getattr(context, "_session_history", None)
+    if recorder is None:
+        return
+    if recorder.failure is not None:
+        raise recorder.failure
+    tokens = history_window_tokens(context, window)
+    budget = history_input_budget(context)
+    if tokens > budget:
+        raise build_error(StatusCode.CONTEXT_BUDGET_EXECUTION_ERROR,
+                          error_msg=f"protected input requires {tokens} tokens; input budget is {budget}")
 
 
 def _positive_int(value: Any) -> int | None:

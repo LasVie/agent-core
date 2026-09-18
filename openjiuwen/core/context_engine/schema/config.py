@@ -5,6 +5,7 @@ from typing import Dict, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from openjiuwen.core.context_engine.schema.history import SessionHistoryConfig
 from openjiuwen.core.context_engine.token.tokenizer_spec import TokenizerSpec
 
 
@@ -150,3 +151,17 @@ class ContextEngineConfig(BaseModel):
     )
     enable_context_debug: bool = Field(default=False)
     context_debug_dir: Optional[str] = Field(default=None)
+    session_history: Optional[SessionHistoryConfig] = Field(default=None)
+
+    @model_validator(mode="after")
+    def _validate_session_history(self) -> "ContextEngineConfig":
+        if self.session_history is None or not self.session_history.enabled:
+            return self
+        if any(value is not None for value in (
+            self.max_context_message_num, self.default_window_message_num, self.default_window_round_num,
+        )) or self.enable_reload or self.compression_recall_config.enabled:
+            raise ValueError("Session history cannot combine with window slicing, reload or compression recall")
+        reserve = self.session_history.output_reserve_tokens + self.session_history.safety_margin_tokens
+        if self.context_window_tokens is None or self.context_window_tokens <= reserve:
+            raise ValueError("Session history requires explicit context_window_tokens larger than token reserves")
+        return self

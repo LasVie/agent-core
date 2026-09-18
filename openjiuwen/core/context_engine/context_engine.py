@@ -15,6 +15,8 @@ from openjiuwen.core.context_engine.base import ContextWindow, ModelContext
 from openjiuwen.core.context_engine.schema.config import ContextEngineConfig
 from openjiuwen.core.context_engine.context.context import SessionModelContext
 from openjiuwen.core.context_engine.context.context_utils import ContextUtils
+from openjiuwen.core.context_engine.history.recorder import SessionHistoryRecorder
+from openjiuwen.core.context_engine.history.store import SessionHistoryStore
 from openjiuwen.core.context_engine.token.base import TokenCounter
 from openjiuwen.core.context_engine.token.tokenizer_manager import TokenizerArtifactManager
 from openjiuwen.core.context_engine.token.tokenizer_registry import TokenizerRegistry
@@ -84,9 +86,47 @@ class ContextEngine:
         self._workspace = workspace
         self._sys_operation = sys_operation
         self._context_pool: Dict[str, ModelContext] = dict()
+        self._history_recorders = {} if self.history_enabled else None
         self._window_mutators: List[
             Callable[[ModelContext, ContextWindow], Awaitable[ContextWindow]]
         ] = []
+
+    @property
+    def history_enabled(self) -> bool:
+        """Whether this engine explicitly opts into lossless Session history."""
+        history = self._config.session_history
+        return history is not None and history.enabled
+
+    def _history_recorder(self, session_id: str) -> SessionHistoryRecorder:
+        recorder = self._history_recorders.get(session_id)
+        if recorder is None:
+            store = SessionHistoryStore(self._config.session_history.root_dir, session_id)
+            recorder = SessionHistoryRecorder(store)
+            self._history_recorders[session_id] = recorder
+        return recorder
+
+    def begin_history_execution(self, session: Session, execution_id: str | None = None) -> str | None:
+        """Bind one outer invoke; tools and inner task iterations reuse it."""
+        if not self.history_enabled:
+            return None
+        if session is None:
+            raise build_error(StatusCode.CONTEXT_EXECUTION_ERROR, error_msg="Session history requires a native Session")
+        return self._history_recorder(session.get_session_id()).begin(execution_id)
+
+    async def finish_history_execution(self, session: Session, status: str = "completed"):
+        """Save the raw trajectory, then snapshot active context into the native Session.
+
+        The host still owns Session.commit/post_run and durable checkpoint storage.
+        """
+        if not self.history_enabled:
+            return None
+        recorder = self._history_recorder(session.get_session_id())
+        result = recorder.finish(status)
+        await self.save_contexts(session)
+        active = [message for context in self._context_pool.values()
+                  if context.session_id() == session.get_session_id() for message in context.get_messages()]
+        recorder.retain(active)
+        return result
 
     def register_window_mutator(
             self,
@@ -212,6 +252,15 @@ class ContextEngine:
         context_id = self._process_context_id(context_id)
         session_id = session.get_session_id() if session else "default_session_id"
         full_context_id = f"{session_id}_{context_id}"
+        if self.history_enabled:
+            if session is None:
+                raise build_error(StatusCode.CONTEXT_EXECUTION_ERROR, error_msg="Session history requires a native Session")
+            if [name for name, _ in processors or []] != ["CycleArchiveProcessor"]:
+                raise build_error(StatusCode.CONTEXT_EXECUTION_ERROR,
+                                  error_msg="Session history requires only CycleArchiveProcessor (preset=False)")
+        elif any(name == "CycleArchiveProcessor" for name, _ in processors or []):
+            raise build_error(StatusCode.CONTEXT_EXECUTION_ERROR,
+                              error_msg="CycleArchiveProcessor requires enabled Session history")
         if full_context_id in self._context_pool:
             context = self._context_pool.get(full_context_id)
             context.set_session_ref(session)
@@ -246,7 +295,11 @@ class ContextEngine:
             sys_operation=self._sys_operation,
             window_mutators=self._window_mutators,
         )
+        if self.history_enabled:
+            context._session_history = self._history_recorder(session_id)
         self._load_state_from_session(context, session, history_messages)
+        if self.history_enabled:
+            context._session_history.capture(context.get_messages(), legacy=True)
         self._context_pool[full_context_id] = context
         return context
 

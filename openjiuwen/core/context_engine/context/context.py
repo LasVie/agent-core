@@ -56,6 +56,8 @@ class SessionModelContext(ModelContext):
         sys_operation=None,
         window_mutators: List[Callable[[ModelContext, ContextWindow], Awaitable[ContextWindow]]] = None,
     ):
+        self._session_history = None
+        self._history_config = config.session_history if config.session_history and config.session_history.enabled else None
         self._message_id = 0
         ContextUtils.validate_messages(history_messages)
         history_messages = ContextUtils.ensure_context_message_ids(history_messages or [])
@@ -311,6 +313,8 @@ class SessionModelContext(ModelContext):
         ContextUtils.validate_messages(messages)
         messages_to_add = messages if isinstance(messages, list) else [messages]
         messages_to_add = ContextUtils.ensure_context_message_ids(messages_to_add)
+        if self._session_history is not None:
+            self._session_history.capture(messages_to_add)
         kwargs.setdefault("sys_operation", self._sys_operation)
 
         # Active compaction wins the lock, so concurrent appends bypass passive processors and only enqueue messages.
@@ -584,6 +588,10 @@ class SessionModelContext(ModelContext):
 
         if dialogue_round is not None and dialogue_round <= 0:
             raise build_error(StatusCode.CONTEXT_EXECUTION_ERROR, error_msg="dialogue round should be larger than 0")
+
+        if self._session_history is not None and (window_size is not None or dialogue_round is not None):
+            raise build_error(StatusCode.CONTEXT_EXECUTION_ERROR,
+                              error_msg="Session history cannot use per-request window slicing")
 
         async with self._guarded_processor_lock("get_context_window"):
             system_messages = (system_messages or [])[:]
@@ -1517,14 +1525,19 @@ class SessionModelContext(ModelContext):
         self._offload_message_buffer.offload(offload_handle, "in_memory", messages)
 
     def save_state(self) -> Dict[str, Any]:
-        return {
+        state = {
             "messages": self._message_buffer.get_back(),
             "offload_messages": self._offload_message_buffer.get_all(),
             "last_context_window_access_at": self._last_context_window_access_at,
         }
+        if self._session_history is not None:
+            state["session_history"] = self._session_history.snapshot(self._message_buffer.get_back())
+        return state
 
     def load_state(self, state: Dict[str, Any]):
         context_state = state.get(self._context_id, {})
+        if self._session_history is not None:
+            self._session_history.restore(context_state.get("session_history", {}))
         messages = context_state.get("messages", [])
         ContextUtils.validate_messages(messages)
         messages = ContextUtils.ensure_context_message_ids(messages)

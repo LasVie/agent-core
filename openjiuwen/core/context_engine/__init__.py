@@ -67,8 +67,17 @@ from openjiuwen.core.context_engine.processor.compressor.full_compact_processor 
     FullCompactProcessorConfig,
 )
 
+from openjiuwen.core.context_engine.schema.history import SessionHistoryConfig, ArchiveRecord, ArchiveRef, ExecutionRecord
+from openjiuwen.core.context_engine.processor.offloader.cycle_archive_processor import (
+    CycleArchiveProcessor, CycleArchiveProcessorConfig,
+)
+
 # context base classes
 _CORE_CLASSES = [
+    "SessionHistoryConfig",
+    "ArchiveRecord",
+    "ArchiveRef",
+    "ExecutionRecord",
     "CompressionRecallConfig",
     "ContextEngineConfig",
     "ContextWindow",
@@ -97,6 +106,8 @@ _TOKEN_COUNTER = [
 _PROCESSORS_CLASSES = [
     # base process class
     "ContextProcessor",
+    "CycleArchiveProcessor",
+    "CycleArchiveProcessorConfig",
     "ToolResultBudgetProcessor",
     "ToolResultBudgetProcessorConfig",
     # tool result window
