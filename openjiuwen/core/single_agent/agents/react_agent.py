@@ -3130,7 +3130,7 @@ class ReActAgent(BaseAgent):
 
         return await self._persist_context_after_abort(
             session,
-            commit_session=commit_session,
+            commit_session=False if getattr(self.context_engine, "history_enabled", False) is True else commit_session,
         )
 
     async def _cleanup_context_after_abort(
@@ -3150,6 +3150,8 @@ class ReActAgent(BaseAgent):
         if context is None:
             return
 
+        if getattr(context, "__dict__", {}).get("_session_history") is not None:
+            return  # Keep incomplete originals for strict outer-execution export.
         current = context.get_messages(with_history=False)
         if not current:
             return

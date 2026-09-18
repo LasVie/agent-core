@@ -3094,6 +3094,13 @@ class DeepAgent(BaseAgent):
         session = await self._prepare_single_round_session(invoke_inputs, session)
         ctx = AgentCallbackContext(agent=self, inputs=invoke_inputs, session=session)
 
+        history_engine = getattr(self._react_agent, "context_engine", None)
+        if not isinstance(history_engine, ContextEngine) or not history_engine.history_enabled:
+            history_engine = None
+        if history_engine is not None:
+            history_engine.begin_history_execution(session)
+        history_finished = False
+        history_saved = history_engine is None
         self._invoke_active = True
         try:
             result: Dict[str, Any]
@@ -3112,14 +3119,38 @@ class DeepAgent(BaseAgent):
                     result = await self._run_single_round_invoke(ctx, session)
                 invoke_inputs.result = result
 
+            if history_engine is not None:
+                history_finished = True
+                result_type = (invoke_inputs.result or {}).get("result_type")
+                status = (
+                    "interrupted" if result_type == "interrupt" else "failed" if result_type == "error" else "completed"
+                )
+                await history_engine.finish_history_execution(session, status)
+                history_saved = True
             if session is not None:
                 self.save_state(session)
                 self.clear_state(session)
             return invoke_inputs.result
         finally:
-            self._invoke_active = False
-            if owns_session and session is not None:
-                await session.post_run()
+            try:
+                if history_engine is not None and not history_finished:
+                    primary = sys.exception()
+                    status = "interrupted" if isinstance(primary, (asyncio.CancelledError, GeneratorExit)) else "failed"
+                    try:
+                        await history_engine.finish_history_execution(session, status)
+                        history_saved = True
+                    except Exception as save_error:
+                        if primary is not None:
+                            primary.add_note(f"Session history save also failed: {save_error}")
+                            raise primary from save_error
+                        raise
+            finally:
+                self._invoke_active = False
+                if owns_session and session is not None:
+                    if history_saved:
+                        await session.post_run()
+                    else:
+                        await session.close_stream()
 
     async def stream(
         self,
@@ -3142,6 +3173,13 @@ class DeepAgent(BaseAgent):
         session = await self._prepare_single_round_session(invoke_inputs, session)
         ctx = AgentCallbackContext(agent=self, inputs=invoke_inputs, session=session)
 
+        history_engine = getattr(self._react_agent, "context_engine", None)
+        if not isinstance(history_engine, ContextEngine) or not history_engine.history_enabled:
+            history_engine = None
+        if history_engine is not None:
+            history_engine.begin_history_execution(session)
+        history_finished = False
+        history_saved = history_engine is None
         self._invoke_active = True
         try:
             stream_result: Optional[Dict[str, Any]] = None
@@ -3183,6 +3221,15 @@ class DeepAgent(BaseAgent):
                 if stream_result is not None:
                     invoke_inputs.result = stream_result
 
+            if history_engine is not None:
+                history_finished = True
+                result_type = (invoke_inputs.result or {}).get("result_type")
+                status = (
+                    "interrupted" if interrupted or result_type == "interrupt"
+                    else "failed" if result_type == "error" else "completed"
+                )
+                await history_engine.finish_history_execution(session, status)
+                history_saved = True
             if session is not None:
                 self.save_state(session)
                 self.clear_state(session)
@@ -3191,9 +3238,25 @@ class DeepAgent(BaseAgent):
             if invoke_inputs.result is not None:
                 yield self._finalized_answer_chunk(terminal_chunk, invoke_inputs.result)
         finally:
-            self._invoke_active = False
-            if owns_session and session is not None:
-                await session.post_run()
+            try:
+                if history_engine is not None and not history_finished:
+                    primary = sys.exception()
+                    status = "interrupted" if isinstance(primary, (asyncio.CancelledError, GeneratorExit)) else "failed"
+                    try:
+                        await history_engine.finish_history_execution(session, status)
+                        history_saved = True
+                    except Exception as save_error:
+                        if primary is not None:
+                            primary.add_note(f"Session history save also failed: {save_error}")
+                            raise primary from save_error
+                        raise
+            finally:
+                self._invoke_active = False
+                if owns_session and session is not None:
+                    if history_saved:
+                        await session.post_run()
+                    else:
+                        await session.close_stream()
 
     async def follow_up(
         self,

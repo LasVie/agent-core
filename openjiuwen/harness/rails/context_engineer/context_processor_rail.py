@@ -546,7 +546,7 @@ class ContextProcessorRail(DeepAgentRail):
         """Validate and fix incomplete context messages before entering ReAct loop."""
         try:
             context = ctx.context
-            if context is None:
+            if context is None or getattr(context, "__dict__", {}).get("_session_history") is not None:
                 return
 
             messages = context.get_messages()
