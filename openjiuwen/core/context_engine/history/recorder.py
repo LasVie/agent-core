@@ -3,6 +3,7 @@
 
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from openjiuwen.core.common.exception.codes import StatusCode
@@ -88,8 +89,14 @@ class SessionHistoryRecorder:
         """Publish the complete trajectory before closing the execution."""
         if self.execution_id is None:
             return None
+        if status not in {"completed", "interrupted", "failed"}:
+            raise build_error(
+                StatusCode.CONTEXT_EXECUTION_ERROR, error_msg=f"invalid history execution status: {status}"
+            )
         trajectory = self.store.write_trajectory(self.execution_id, self.current_records())
-        result = ExecutionRecord(execution_id=self.execution_id, status=status, trajectory=trajectory)
+        result = ExecutionRecord.model_validate(
+            {"execution_id": self.execution_id, "status": status, "trajectory": trajectory}
+        )
         self.last_execution = result
         self.execution_id = None
         return result
@@ -113,8 +120,14 @@ class SessionHistoryRecorder:
             if record.session_id != self.store.session_id:
                 raise build_error(StatusCode.CONTEXT_ARCHIVE_EXECUTION_ERROR, error_msg="checkpoint Session mismatch")
             self._records.setdefault(record.message_id, record.model_dump_json())
+            for call in record.message.get("tool_calls") or []:
+                self._tool_steps.setdefault(call["id"], record.step_id)
         for value in state.get("references", []):
             ref = ArchiveRef.model_validate(value)
+            if not Path(ref.path).resolve().is_relative_to(self.store.root):
+                raise build_error(
+                    StatusCode.CONTEXT_ARCHIVE_EXECUTION_ERROR, error_msg="checkpoint archive path escapes Session"
+                )
             self.references[ref.archive_id] = ref
         if state.get("last_execution"):
             self.last_execution = ExecutionRecord.model_validate(state["last_execution"])

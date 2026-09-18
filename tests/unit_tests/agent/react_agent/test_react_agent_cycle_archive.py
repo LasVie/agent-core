@@ -8,7 +8,7 @@ import pytest_asyncio
 
 from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.context_engine import ContextEngineConfig, CycleArchiveProcessorConfig, SessionHistoryConfig
-from openjiuwen.core.foundation.llm import AssistantMessage, SystemMessage, UserMessage
+from openjiuwen.core.foundation.llm import AssistantMessage, BaseMessage, SystemMessage, UserMessage
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.agent import create_agent_session
 from openjiuwen.core.single_agent.agents.react_agent import ReActAgent, ReActAgentConfig
@@ -51,7 +51,7 @@ async def test_final_guard_blocks_provider(tmp_path, streaming, failure):
         session=session,
         processors=[("CycleArchiveProcessor", CycleArchiveProcessorConfig())],
     )
-    messages = (
+    messages: list[BaseMessage] = (
         [AssistantMessage(content="x" * 6000), AssistantMessage(content="latest")]
         if failure == "archive"
         else [UserMessage(content="x" * 6000 if failure == "budget" else "short")]

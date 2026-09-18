@@ -5,18 +5,8 @@ from openjiuwen.core.context_engine.context.session_memory_manager import group_
 from openjiuwen.core.foundation.llm import AssistantMessage, BaseMessage, ToolMessage
 
 
-def removable_cycles(messages: list[BaseMessage], protected_ids: set[str]) -> list[tuple[int, ...]]:
-    """Return oldest complete cycles, excluding the latest cycle and protected input.
-
-    Malformed/interleaved calls are retained, never inferred to be complete.
-    The native first range can include a user input; only unprotected members
-    of that range are candidates for removal.
-    """
-    # Lazy import: the forked processor subtree imports the context engine.
-    from openjiuwen.core.context_engine.processor.forked.compressor.base import (
-        adjust_keep_recent_for_tool_boundaries,
-    )
-
+def completed_cycle_ranges(messages: list[BaseMessage]) -> list[tuple[int, int]]:
+    """Validate native completed ranges without accepting malformed tool pairs."""
     known_calls = [
         call.id for message in messages if isinstance(message, AssistantMessage) for call in message.tool_calls or []
     ]
@@ -36,6 +26,22 @@ def removable_cycles(messages: list[BaseMessage], protected_ids: set[str]) -> li
             continue
         if sorted(calls) == sorted(results):
             complete.append((start, end))
+    return complete
+
+
+def removable_cycles(messages: list[BaseMessage], protected_ids: set[str]) -> list[tuple[int, ...]]:
+    """Return oldest complete cycles, excluding the latest cycle and protected input.
+
+    Malformed/interleaved calls are retained, never inferred to be complete.
+    The native first range can include a user input; only unprotected members
+    of that range are candidates for removal.
+    """
+    # Lazy import: the forked processor subtree imports the context engine.
+    from openjiuwen.core.context_engine.processor.forked.compressor.base import (
+        adjust_keep_recent_for_tool_boundaries,
+    )
+
+    complete = completed_cycle_ranges(messages)
     if not complete:
         return []
     keep_recent = adjust_keep_recent_for_tool_boundaries(messages, len(messages) - complete[-1][0])

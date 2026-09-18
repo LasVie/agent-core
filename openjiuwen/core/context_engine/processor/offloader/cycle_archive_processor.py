@@ -8,7 +8,7 @@ from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import BaseError, build_error
 from openjiuwen.core.context_engine.base import ContextWindow, ModelContext
 from openjiuwen.core.context_engine.context.context_utils import ContextUtils
-from openjiuwen.core.context_engine.context.react_cycle import removable_cycles
+from openjiuwen.core.context_engine.context.react_cycle import completed_cycle_ranges, removable_cycles
 from openjiuwen.core.context_engine.context_engine import ContextEngine
 from openjiuwen.core.context_engine.processor.base import ContextEvent, ContextProcessor
 from openjiuwen.core.context_engine.processor.budget_guard import history_input_budget, history_window_tokens
@@ -37,7 +37,7 @@ class CycleArchiveProcessor(ContextProcessor):
         return True
 
     async def on_get_context_window(self, context: ModelContext, context_window: ContextWindow, **kwargs):
-        recorder = context._session_history
+        recorder = getattr(context, "_session_history")
         try:
             if recorder.failure is not None:
                 raise recorder.failure
@@ -55,7 +55,7 @@ class CycleArchiveProcessor(ContextProcessor):
 
     @staticmethod
     def _reference(context, messages: list[BaseMessage], *, tool: ToolMessage | None = None):
-        recorder = context._session_history
+        recorder = getattr(context, "_session_history")
         records = recorder.originals(messages)
         path = recorder.store.offload_path(records)
         fields = tool.model_dump() if tool is not None else {}
@@ -79,7 +79,7 @@ class CycleArchiveProcessor(ContextProcessor):
         candidate = list(originals)
         removed: set[int] = set()
         writes = []
-        recorder = context._session_history
+        recorder = getattr(context, "_session_history")
         for indexes in removable_cycles(originals, recorder.protected_user_ids()):
             removed.update(indexes)
             records, placeholder = self._reference(context, [originals[i] for i in sorted(removed)])
@@ -91,8 +91,15 @@ class CycleArchiveProcessor(ContextProcessor):
         if history_window_tokens(context, window.model_copy(update={"context_messages": candidate})) > budget:
             # Last-cycle tool results remain paired. Only replace a whole result
             # if its file reference is smaller; never cut a character prefix.
+            complete_indexes = {
+                index for start, end in completed_cycle_ranges(candidate) for index in range(start, end)
+            }
             for index, message in enumerate(candidate):
-                if not isinstance(message, ToolMessage) or isinstance(message, OffloadMixin):
+                if (
+                    index not in complete_indexes
+                    or not isinstance(message, ToolMessage)
+                    or isinstance(message, OffloadMixin)
+                ):
                     continue
                 records, placeholder = self._reference(context, [message], tool=message)
                 trial = candidate[:index] + [placeholder] + candidate[index + 1 :]

@@ -67,9 +67,15 @@ from openjiuwen.core.context_engine.processor.compressor.full_compact_processor 
     FullCompactProcessorConfig,
 )
 
-from openjiuwen.core.context_engine.schema.history import SessionHistoryConfig, ArchiveRecord, ArchiveRef, ExecutionRecord
+from openjiuwen.core.context_engine.schema.history import (
+    SessionHistoryConfig as SessionHistoryConfig,
+    ArchiveRecord as ArchiveRecord,
+    ArchiveRef as ArchiveRef,
+    ExecutionRecord as ExecutionRecord,
+)
 from openjiuwen.core.context_engine.processor.offloader.cycle_archive_processor import (
-    CycleArchiveProcessor, CycleArchiveProcessorConfig,
+    CycleArchiveProcessor as CycleArchiveProcessor,
+    CycleArchiveProcessorConfig as CycleArchiveProcessorConfig,
 )
 
 # context base classes

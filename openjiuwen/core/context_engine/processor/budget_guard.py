@@ -20,8 +20,12 @@ TRUNCATED_SIDE_MAX_CHARS = 2000
 
 def history_input_budget(context: ModelContext) -> int:
     """Resolve the explicit lossless-history input budget, reserving output space."""
-    config = context._history_config
-    return effective_context_budget(context) - config.output_reserve_tokens - config.safety_margin_tokens
+    config = getattr(context, "_history_config")
+    total = effective_context_budget(
+        context, model_config=getattr(context, "_model_name", None),
+        call_budget=getattr(context, "_model_context_window_tokens_override", None),
+    )
+    return total - config.output_reserve_tokens - config.safety_margin_tokens
 
 
 def history_window_tokens(context: ModelContext, window) -> int:
@@ -32,7 +36,7 @@ def history_window_tokens(context: ModelContext, window) -> int:
 
 def guard_history_window(context: ModelContext, window) -> None:
     """Fail closed only for opted-in contexts after every final-window mutator."""
-    recorder = getattr(context, "_session_history", None)
+    recorder = getattr(context, "__dict__", {}).get("_session_history")
     if recorder is None:
         return
     if recorder.failure is not None:

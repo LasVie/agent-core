@@ -6,7 +6,7 @@ import json
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
@@ -28,6 +28,9 @@ from openjiuwen.core.foundation.llm import BaseMessage
 from openjiuwen.core.foundation.tool import ToolInfo
 from openjiuwen.core.runner.callback import lazy_callback_framework as _fw
 from openjiuwen.core.runner.callback.events import ContextEvents
+
+if TYPE_CHECKING:
+    from openjiuwen.core.context_engine.history.recorder import SessionHistoryRecorder
 
 _ACTIVE_COMPRESSION_RESULT_BUSY = "busy"
 _ACTIVE_COMPRESSION_RESULT_COMPRESSED = "compressed"
@@ -56,8 +59,10 @@ class SessionModelContext(ModelContext):
         sys_operation=None,
         window_mutators: List[Callable[[ModelContext, ContextWindow], Awaitable[ContextWindow]]] = None,
     ):
-        self._session_history = None
-        self._history_config = config.session_history if config.session_history and config.session_history.enabled else None
+        self._session_history: SessionHistoryRecorder | None = None
+        self._history_config = (
+            config.session_history if config.session_history and config.session_history.enabled else None
+        )
         self._message_id = 0
         ContextUtils.validate_messages(history_messages)
         history_messages = ContextUtils.ensure_context_message_ids(history_messages or [])

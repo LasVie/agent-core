@@ -10,6 +10,7 @@ from pathlib import Path
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
+from openjiuwen.core.common.logging import logger
 from openjiuwen.core.context_engine.schema.history import ArchiveRecord, ArchiveRef
 
 
@@ -94,4 +95,7 @@ class SessionHistoryStore:
             raise build_error(StatusCode.CONTEXT_ARCHIVE_EXECUTION_ERROR, error_msg=str(error), cause=error) from error
         finally:
             if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Unable to remove history temporary file %s", temporary, exc_info=True)

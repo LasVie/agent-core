@@ -83,10 +83,12 @@ class ContextEngine:
                  sys_operation=None,
                  ):
         self._config = config or ContextEngineConfig()
+        if self.history_enabled:
+            self._config = self._config.model_copy(deep=True)
         self._workspace = workspace
         self._sys_operation = sys_operation
         self._context_pool: Dict[str, ModelContext] = dict()
-        self._history_recorders = {} if self.history_enabled else None
+        self._history_recorders: dict[str, SessionHistoryRecorder] | None = {} if self.history_enabled else None
         self._window_mutators: List[
             Callable[[ModelContext, ContextWindow], Awaitable[ContextWindow]]
         ] = []
@@ -96,6 +98,13 @@ class ContextEngine:
         """Whether this engine explicitly opts into lossless Session history."""
         history = self._config.session_history
         return history is not None and history.enabled
+
+    def _context_key(self, session_id: str, context_id: str) -> str:
+        # Preserve historical keys when disabled; length-prefix the new mode so
+        # (a_b, c) cannot alias (a, b_c).
+        if self.history_enabled:
+            return f"{len(session_id)}:{session_id}{context_id}"
+        return f"{session_id}_{context_id}"
 
     def _history_recorder(self, session_id: str) -> SessionHistoryRecorder:
         recorder = self._history_recorders.get(session_id)
@@ -110,7 +119,9 @@ class ContextEngine:
         if not self.history_enabled:
             return None
         if session is None:
-            raise build_error(StatusCode.CONTEXT_EXECUTION_ERROR, error_msg="Session history requires a native Session")
+            raise build_error(
+                StatusCode.CONTEXT_EXECUTION_ERROR, error_msg="Session history requires a native Session"
+            )
         return self._history_recorder(session.get_session_id()).begin(execution_id)
 
     async def finish_history_execution(self, session: Session, status: str = "completed"):
@@ -251,10 +262,12 @@ class ContextEngine:
         """
         context_id = self._process_context_id(context_id)
         session_id = session.get_session_id() if session else "default_session_id"
-        full_context_id = f"{session_id}_{context_id}"
+        full_context_id = self._context_key(session_id, context_id)
         if self.history_enabled:
             if session is None:
-                raise build_error(StatusCode.CONTEXT_EXECUTION_ERROR, error_msg="Session history requires a native Session")
+                raise build_error(
+                    StatusCode.CONTEXT_EXECUTION_ERROR, error_msg="Session history requires a native Session"
+                )
             if [name for name, _ in processors or []] != ["CycleArchiveProcessor"]:
                 raise build_error(StatusCode.CONTEXT_EXECUTION_ERROR,
                                   error_msg="Session history requires only CycleArchiveProcessor (preset=False)")
@@ -321,6 +334,12 @@ class ContextEngine:
         if not isinstance(config, ContextEngineConfig):
             raise TypeError("config must be a ContextEngineConfig")
 
+        next_history_enabled = config.session_history is not None and config.session_history.enabled
+        if self.history_enabled or next_history_enabled:
+            if config.session_history != self._config.session_history:
+                raise build_error(StatusCode.CONTEXT_EXECUTION_ERROR,
+                                  error_msg="Session history mode/storage cannot be changed on an existing engine")
+            config = config.model_copy(deep=True)
         self._config = config
         normalized_context_id = (
             self._process_context_id(context_id) if context_id is not None else None
@@ -363,7 +382,7 @@ class ContextEngine:
             ModelContext instance if found, otherwise None.
         """
         context_id = self._process_context_id(context_id)
-        full_context_id = f"{session_id}_{context_id}"
+        full_context_id = self._context_key(session_id, context_id)
         return self._context_pool.get(full_context_id, None)
 
     async def compress_context(
@@ -617,7 +636,7 @@ class ContextEngine:
                 return
 
             for context_id in delete_context_list:
-                full_context_id = f"{session_id}_{context_id}"
+                full_context_id = self._context_key(session_id, context_id)
                 del self._context_pool[full_context_id]
             await trigger(ContextEvents.CONTEXT_CLEARED,
                        context_id=context_id, session_id=session_id,
@@ -625,7 +644,7 @@ class ContextEngine:
             return
 
         context_id = self._process_context_id(context_id)
-        full_context_id = f"{session_id}_{context_id}"
+        full_context_id = self._context_key(session_id, context_id)
         if full_context_id not in self._context_pool:
             context_engine_logger.warning(
                 "Delete context failed, context does not exist",
@@ -669,7 +688,7 @@ class ContextEngine:
 
         for context_id in context_ids:
             context_id = self._process_context_id(context_id)
-            full_context_id = f"{session_id}_{context_id}"
+            full_context_id = self._context_key(session_id, context_id)
             context = self._context_pool.get(full_context_id)
             if context is None or not hasattr(context, "save_state"):
                 continue

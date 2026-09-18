@@ -40,3 +40,20 @@ def test_restore_does_not_retimestamp_or_rerecord(tmp_path):
     assert second.originals([message])[0] == original
     legacy = UserMessage(content="legacy")
     assert second.originals([legacy])[0].occurred_at is None
+
+
+def test_resumed_tool_keeps_original_cycle_id(tmp_path):
+    store = SessionHistoryStore(str(tmp_path), "s")
+    before = SessionHistoryRecorder(store)
+    before.begin()
+    call = AssistantMessage(
+        content="", tool_calls=[ToolCall(id="pending", type="function", name="read", arguments="{}")]
+    )
+    before.capture([call])
+    step_id = before.current_records()[0].step_id
+    before.finish("interrupted")
+    after = SessionHistoryRecorder(store)
+    after.begin()
+    after.restore(before.snapshot([call]))
+    after.capture([ToolMessage(content="resumed", tool_call_id="pending")])
+    assert after.current_records()[0].step_id == step_id

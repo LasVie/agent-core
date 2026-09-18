@@ -95,6 +95,7 @@ async def test_giant_latest_tool_saved_whole_with_pairing(tmp_path):
     guard_history_window(context, window)
     assert window.context_messages[-1].tool_call_id == "t"
     assert "OFFLOAD" in window.context_messages[-1].content
+    assert isinstance(tool.content, str)
     archive = next(tmp_path.rglob("offload/*.jsonl"))
     assert tool.content in archive.read_text("utf-8")
     result = await engine.finish_history_execution(session)
@@ -111,3 +112,17 @@ async def test_below_budget_creates_no_files_and_protected_overflow(tmp_path):
     await context.add_messages(UserMessage(content="x" * 6000))
     with pytest.raises(BaseError, match="CONTEXT_BUDGET_EXCEEDED"):
         guard_history_window(context, await context.get_context_window())
+
+
+@pytest.mark.asyncio
+async def test_partial_parallel_cycle_is_never_offloaded(tmp_path):
+    engine = make_engine(tmp_path)
+    _, context = await make_context(engine)
+    calls = [ToolCall(id=value, type="function", name="read", arguments="{}") for value in ("one", "two")]
+    messages = [AssistantMessage(content="", tool_calls=calls), ToolMessage(tool_call_id="one", content="x" * 6000)]
+    await context.add_messages(messages)
+    window = await context.get_context_window()
+    assert context.get_messages() == messages
+    assert not list(tmp_path.rglob("*.jsonl"))
+    with pytest.raises(BaseError, match="CONTEXT_BUDGET_EXCEEDED"):
+        guard_history_window(context, window)
