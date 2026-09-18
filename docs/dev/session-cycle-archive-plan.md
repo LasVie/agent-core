@@ -1,6 +1,6 @@
 # Session 私有历史与 ReAct 周期归档实施计划
 
-日期：2026-09-18。状态：规划完成，功能尚未实现。本次仅新增这份实施计划。
+日期：2026-09-18。状态：规划稿，功能尚未实现。范围已收敛为仅修改 agent-core 仓库；本次只更新实施计划。
 
 ## 1. 分支与规划依据
 
@@ -9,7 +9,7 @@
 - 代码核对基线：`6dfda012`（`feat(team): add group conversations and reliable member inputs`）。本地工作分支已包含相对原工作目录新增的 28 个提交。
 - 需求输入：工作空间 `documentation/` 中的《群聊 && 组织级 Agent功能方案设计》《群聊 && 组织级 Agent代码模块设计》《群聊与组织级Agent接口设计》，以及 Session 管理补充。它们位于本 Git 仓库之外；本计划在下面重述实现所需约束，避免远端阅读依赖本地绝对路径。
 
-本轮交付是分支和文件级计划，不创建空实现文件，不提前替换已有压缩行为。下文“新增”“修改”均指后续实现工作；除本计划外，尚未修改运行代码、测试或业务设计文件。
+本轮交付是 agent-core 的文件级提案，不创建空实现文件，不提前替换已有压缩行为。下文“新增”“修改”均指后续实现工作；除本计划外，尚未修改运行代码、测试或业务设计文件。所有实现、测试、示例和文档改动均位于本仓库，不包含 WorkSwarm 文件或依赖版本变更。
 
 ## 2. 固定需求与仓库边界
 
@@ -24,15 +24,15 @@
 - 周期包括 assistant 输出及全部对应工具结果；并行调用必须全部闭合。本轮用户输入、最新完整周期和未闭合调用受保护。
 - 归档写成功才移除，写失败不退回内存冒充成功；轮末另存完整轨迹，下一轮只恢复截断后的状态。
 
-### 责任归属
+### 本仓库的交付范围
 
 | 层 | 本次规划的职责 |
 |---|---|
 | agent-core / core | 周期识别、输入预算、原始消息记录、Session 范围内的 JSONL 归档、活跃状态更新、最终请求校验 |
 | agent-core / harness | DeepAgent 外层执行标识与记录生命周期、原生 Processor 装配、异常/中断时的记录导出与状态保留 |
-| WorkSwarm 宿主 | Agent × 群映射、业务 SessionRuntime、ContextAssembler、串行队列、权限与目录授权、群历史去重及渠道投递 |
+| agent-core / examples、tests、docs | 用两个独立原生 Session 演示和验证归档、完整轨迹保存与恢复，提供配置及接入说明 |
 
-本分支不在 `core/context_engine` 中加入 `group_chat_id`、飞书 Bot、群路由或业务 SessionManager。上下文引擎只消费宿主确定的原生 Session、执行标识和存储配置。完整产品落地需要后续 WorkSwarm 接入；完成本分支不等同于整个群聊功能完成。
+本分支实现可独立使用的 SDK 能力，不在 `core/context_engine` 中加入 `group_chat_id`、飞书 Bot、群路由或业务 SessionManager。上下文引擎只消费调用方确定的原生 Session、执行标识和存储配置。Agent × 群映射和预留 ContextAssembler 接口是接入约束，不在本提案中迁入 core 或要求改动其它仓库。验收使用原生 Session 和 SDK 示例，不依赖业务平台联调。
 
 ## 3. 已核对的原生能力与缺口
 
@@ -74,18 +74,27 @@
 
 ## 5. 计划修改的现有文件
 
+### 必须修改：8 个接入文件
+
 | 修改路径 | 精确接入点与要求 |
 |---|---|
 | `openjiuwen/core/context_engine/schema/config.py` | 增加可选历史配置，默认关闭；启用周期归档时校验与消息数上限、默认窗口提前裁剪及其它会改写原文的 Processor 不冲突 |
 | `openjiuwen/core/context_engine/__init__.py` | 导出新 Processor/Config 和必要历史配置；保留所有现有导出及默认行为 |
 | `openjiuwen/core/context_engine/context_engine.py` | 注册新 Processor；按原生 session/context 绑定记录器和存储，支持执行记录导出；保留 create_context 现有参数，不增加必填参数 |
 | `openjiuwen/core/context_engine/context/context.py` | 在消息已标准化、已有 context_message_id、尚未交给 add Processor 时记录原文；关联当前执行；set_messages 后保留原有 usage/KV 失效机制；快照保留日志元数据与归档引用，恢复不重录旧消息 |
-| `openjiuwen/core/context_engine/base.py` | 如需跨引擎访问记录或最终校验，增加默认无操作的可选能力入口，不向第三方 ModelContext 增加必须实现的抽象方法 |
 | `openjiuwen/core/context_engine/processor/budget_guard.py` | 增加本模式的最终窗口预算和失败状态检查；复用既有计数，不调用头尾字符截短函数 |
 | `openjiuwen/core/single_agent/agents/react_agent.py` | `_railed_model_call` 最终窗口确定后统一校验，覆盖 invoke/stream；传递模型预算所需参数。归档/预算错误不能被自动重试或压缩兜底当成普通模型错误；中断恢复不重执行已完成工具 |
 | `openjiuwen/core/common/exception/codes.py` | 在合法 CONTEXT 段定义归档写入与输入预算错误，遵循 StatusCode 命名规则，不写死未核对的编号；宿主映射为 ARCHIVE_FAILED / CONTEXT_BUDGET_EXCEEDED |
 | `openjiuwen/harness/deep_agent.py` | 外层 invoke/stream 绑定一次 execution_id，完成、中断或异常时冻结并提供已有记录；内层 task-loop 不重复开启业务执行。状态整理与可捕获退出保持一致，不把失败转换成正常输出 |
-| `openjiuwen/harness/rails/context_engineer/context_processor_rail.py` | 新模式的兼容性接入与配置检查；复用 `preset=False`，保留原默认预设。明确工具配对修复和异常处理不能移除未归档原文、掩盖归档失败或引入摘要兜底 |
+
+### 条件性修改：先复用，确有缺口才改
+
+| 路径 | 何时需要修改 |
+|---|---|
+| `openjiuwen/core/context_engine/base.py` | 如果最终校验或轨迹导出需要统一的 ModelContext 能力入口，增加默认无操作的可选方法；不新增第三方必须实现的抽象方法 |
+| `openjiuwen/harness/rails/context_engineer/context_processor_rail.py` | 优先使用现有 `preset=False` + 自定义 Processor 注册。只有工具配对修复、异常兜底或配置组合与新策略冲突时才调整；不得移除未归档原文、掩盖归档失败或引入摘要兜底 |
+
+### 直接复用，不预设修改
 
 `openjiuwen/core/context_engine/processor/base.py` 的旧文件卸载与内存回退默认行为不全局修改：新 Processor 采用专用严格写入路径，并复用原生 offload 消息/引用结构。`openjiuwen/core/session/agent.py` 的 commit 接口也不另起一套实现。
 
@@ -129,21 +138,21 @@
 - load 只恢复 state，不扫描历史回填；旧 checkpoint 缺少新增字段时保持可读取。历史旧消息没有发生时间时不得用当前时间冒充，兼容迁移需明确标注未知来源时间。
 - 第一版不自动清理被引用归档，不承诺仅凭轮末 save 恢复进程突然终止前的全部未落盘轨迹。
 
-## 7. WorkSwarm 后续接入位置（不在本分支修改）
+## 7. SDK 配置与调用边界
 
-下面路径相对于相邻 jiuwenswarm 仓库，是完整需求的接入清单，不表示 agent-core 将拥有这些业务模块。
+新能力采用显式配置启用，默认调用方保持当前行为。配置提供历史存储位置、输入预算所需参数和周期归档 Processor；用已有 ContextProcessorRail 的 `preset=False` 注册，不另建一条模型或工具执行循环。
 
-| 路径 | 新增 / 修改计划 |
-|---|---|
-| `jiuwenswarm/server/runtime/session/group_session_registry.py` | 新增 Agent × 群的持久唯一映射及权限绑定；底层唯一约束处理并发创建 |
-| `jiuwenswarm/server/runtime/session/group_session_runtime.py` | 新增业务 SessionRuntime 和映射适配层，持有独立 DeepAgent、core Session、ContextAssembler，空闲回收不删除身份和历史 |
-| `jiuwenswarm/server/runtime/session/context_assembler.py` | 新增业务 load/prepare/save 薄封装；prepare 提供配置及路径，save 导出本轮轨迹并提交原生状态，不管理第二份 messages |
-| `jiuwenswarm/server/runtime/session/session_manager.py` | 复用现有执行队列与关闭流程，通过适配层覆盖 load 到 save 的串行边界；它目前按 session_id 调度且新任务优先，不直接改成 Agent × 群的同名注册表 |
-| `jiuwenswarm/server/runtime/session/session_history.py`、`session_message_store.py` | 对齐公开消息与私有执行记录的职责，避免把既有 UI 历史当成完整工具轨迹；群历史按群去重、消费待办按 Agent 独立维护 |
-| `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py` | 接入新 Processor 与 session/execution 绑定；仅新业务模式选择 preset=False；从现有模型配置计算预算；统一错误和退出保存 |
-| `pyproject.toml`、`uv.lock` | agent-core 功能实现并验证后再升级 SDK 引用；当前固定的 `13ed6c2d…` 不会因本地新分支自动更新 |
+调用方使用现有 `DeepAgent.invoke(inputs, session)` / `stream` 传入原生 Session。SDK 按 session_id 隔离活跃上下文、记录器和文件空间，提供本次执行轨迹导出及严格保存能力，并复用原生状态保存和 Session.commit。示例代码负责演示轮首恢复、一次 invoke 和轮末保存，不新增群平台依赖。
 
-业务 SessionManager 的预留 get_or_create 由新增适配层提供；现有队列管理器继续作为内部执行依赖。多进程必须有同 session_id 的单一执行所有者，不能仅靠进程内 asyncio.Lock。公共群历史共享和私有目录隔离由宿主同时约束 grep/read_file/Shell，不能只在提示词中写路径限制。
+本分支明确保证：
+
+- 两个不同 session_id 的消息、发生时间、归档路径和运行错误不会串用。
+- 同一 Session 的顺序执行与重启恢复保留稳定状态和文件引用。
+- 同一 Session 不支持多个调用方同时写入；示例和接入说明要求调用方串行执行，不声称目录隔离本身提供分布式锁。
+- 历史存储只在绑定的 Session 根目录写入，不接受模型指定任意私有目录。
+- SDK 的写入范围检查不等同于 Agent 文件工具的访问授权；工具沙箱/权限仍沿用现有运行环境，本分支不新建权限平台。
+
+预留业务 `load/prepare/save` 可在以后封装这些 SDK 能力，签名和每轮调用边界保持不变。本提案不包含其它仓库的实现清单或联调阶段。
 
 ## 8. 测试、示例和文档清单
 
@@ -180,9 +189,8 @@
 | P2 周期归档 | 周期包装、预算选择、严格落盘、活跃状态与请求窗口同步替换 | 最早最少完整周期被移除，并行工具不拆分，写失败保留原文 |
 | P3 请求和生命周期接入 | 最终模型请求检查、DeepAgent invoke/stream 记录范围、退出导出与状态处理 | 工具循环不回到业务 ContextAssembler；失败/取消有记录，超预算不调用模型 |
 | P4 兼容与交付 | 回归测试、两 Session 示例、中英文说明及 harness 设计同步 | 默认行为保持不变，新配置显式启用，文档与代码一致 |
-| P5 宿主接入 | WorkSwarm 映射、ContextAssembler、权限、公开历史和依赖升级 | 才能验收两群三 Agent 六 Session、可靠逐 Agent 消费与原渠道回复 |
 
-agent-core 分支的完成边界为 P1～P4。P5 在宿主仓单独实施，不用修改底层 SDK 的方式隐式改变当前团队群聊通知规则。
+agent-core 分支的完成边界为 P1～P4，全部在本仓库内实现和验收；不包含业务群聊映射、公开消息投递或其它仓库升级。现有 agent_teams 的群聊通知规则保持原语义。
 
 未来修改 harness 时遵循其目录约定同步 S/F 文档，并将特性代码、测试、文档组织为约定的连续提交；实际关联的 issue 使用真实编号。本次计划位于根 `docs/dev/`，没有提交 harness 功能代码。
 
