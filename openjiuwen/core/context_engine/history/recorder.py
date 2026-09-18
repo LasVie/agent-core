@@ -39,6 +39,12 @@ class SessionHistoryRecorder:
         self._seq = 0
         self._step_id = f"{self.execution_id}:input"
         self._tool_steps = {}
+        # A cached context may resume without reloading a checkpoint. Keep the
+        # originating cycle for tools interrupted in an earlier outer execution.
+        for value in self._records.values():
+            record = ArchiveRecord.model_validate_json(value)
+            for call in record.message.get("tool_calls") or []:
+                self._tool_steps[call["id"]] = record.step_id
         return self.execution_id
 
     def capture(self, messages: list[BaseMessage], *, legacy: bool = False) -> None:

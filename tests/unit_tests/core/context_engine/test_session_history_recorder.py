@@ -1,5 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+import pytest
+
 from openjiuwen.core.context_engine.history.recorder import SessionHistoryRecorder
 from openjiuwen.core.context_engine.history.store import SessionHistoryStore
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall, ToolMessage, UserMessage
@@ -42,7 +44,8 @@ def test_restore_does_not_retimestamp_or_rerecord(tmp_path):
     assert second.originals([legacy])[0].occurred_at is None
 
 
-def test_resumed_tool_keeps_original_cycle_id(tmp_path):
+@pytest.mark.parametrize("reload_checkpoint", [False, True])
+def test_resumed_tool_keeps_original_cycle_id(tmp_path, reload_checkpoint):
     store = SessionHistoryStore(str(tmp_path), "s")
     before = SessionHistoryRecorder(store)
     before.begin()
@@ -52,8 +55,9 @@ def test_resumed_tool_keeps_original_cycle_id(tmp_path):
     before.capture([call])
     step_id = before.current_records()[0].step_id
     before.finish("interrupted")
-    after = SessionHistoryRecorder(store)
+    after = SessionHistoryRecorder(store) if reload_checkpoint else before
     after.begin()
-    after.restore(before.snapshot([call]))
+    if reload_checkpoint:
+        after.restore(before.snapshot([call]))
     after.capture([ToolMessage(content="resumed", tool_call_id="pending")])
     assert after.current_records()[0].step_id == step_id
