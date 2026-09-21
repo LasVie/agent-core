@@ -7,16 +7,12 @@ from openjiuwen.core.foundation.llm import AssistantMessage, BaseMessage, ToolMe
 
 def completed_cycle_ranges(messages: list[BaseMessage]) -> list[tuple[int, int]]:
     """Validate native completed ranges without accepting malformed tool pairs."""
-    known_calls = [
-        call.id for message in messages if isinstance(message, AssistantMessage) for call in message.tool_calls or []
-    ]
-    result_ids = [message.tool_call_id for message in messages if isinstance(message, ToolMessage)]
-    if len(set(known_calls)) != len(known_calls) or len(set(result_ids)) != len(result_ids):
-        return []
-    if any(value not in known_calls for value in result_ids):
-        return []
     complete = []
     for start, end in group_completed_api_rounds(messages):
+        # Native grouping closes at the last expected result. Adjacent duplicate
+        # or orphan results make this occurrence malformed, not every later one.
+        while end < len(messages) and isinstance(messages[end], ToolMessage):
+            end += 1
         assistants = [m for m in messages[start:end] if isinstance(m, AssistantMessage)]
         if len(assistants) != 1:
             continue
@@ -36,16 +32,13 @@ def removable_cycles(messages: list[BaseMessage], protected_ids: set[str]) -> li
     The native first range can include a user input; only unprotected members
     of that range are candidates for removal.
     """
-    # Lazy import: the forked processor subtree imports the context engine.
-    from openjiuwen.core.context_engine.processor.forked.compressor.base import (
-        adjust_keep_recent_for_tool_boundaries,
-    )
-
     complete = completed_cycle_ranges(messages)
     if not complete:
         return []
-    keep_recent = adjust_keep_recent_for_tool_boundaries(messages, len(messages) - complete[-1][0])
-    protected_start = len(messages) - keep_recent
+    # Every accepted range already contains its complete call/result occurrence.
+    # Matching IDs across the whole suffix would bind a replay to an older call
+    # with the same ID and incorrectly protect all intervening complete cycles.
+    protected_start = complete[-1][0]
     candidates = []
     for start, end in complete[:-1]:
         if end > protected_start:

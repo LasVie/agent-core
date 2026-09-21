@@ -2890,7 +2890,7 @@ class ReActAgent(BaseAgent):
                     if not abort_persisted:
                         await self.context_engine.save_contexts(session)
                     await session.close_stream()
-                    if not abort_persisted:
+                    if not abort_persisted and getattr(self.context_engine, "history_enabled", False) is not True:
                         await session.commit()
             finally:
                 reset_usage_attribution(attribution_token)
@@ -3034,7 +3034,7 @@ class ReActAgent(BaseAgent):
                     await self.context_engine.save_contexts(session)
                 if self.is_agent_session:
                     await session.close_stream()
-                    if not abort_persisted:
+                    if not abort_persisted and getattr(self.context_engine, "history_enabled", False) is not True:
                         await session.commit()
 
         if self.is_agent_session:
@@ -3151,7 +3151,23 @@ class ReActAgent(BaseAgent):
             return
 
         if getattr(context, "__dict__", {}).get("_session_history") is not None:
-            return  # Keep incomplete originals for strict outer-execution export.
+            # Preserve originals while making an aborted trailing tool cycle
+            # safe for the next request. Normal interrupts do not take this path.
+            pending: dict[str, str] = {}
+            for message in context.get_messages():
+                if isinstance(message, AssistantMessage):
+                    pending = {call.id: call.name for call in message.tool_calls or []}
+                elif isinstance(message, ToolMessage):
+                    pending.pop(message.tool_call_id, None)
+            if pending:
+                await context.add_messages([
+                    ToolMessage(
+                        tool_call_id=call_id,
+                        content=f"{marker} Tool {name} did not return a result; execution was aborted.",
+                    )
+                    for call_id, name in pending.items()
+                ])
+            return
         current = context.get_messages(with_history=False)
         if not current:
             return

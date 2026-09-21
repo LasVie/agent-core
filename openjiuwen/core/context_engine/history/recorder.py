@@ -27,6 +27,7 @@ class SessionHistoryRecorder:
         self._seq = 0
         self._step_id = ""
         self._tool_steps: dict[str, str] = {}
+        self._finish_status: str | None = None
 
     def begin(self, execution_id: str | None = None) -> str:
         """Bind exactly one outer execution; reject concurrent Session writers."""
@@ -36,6 +37,7 @@ class SessionHistoryRecorder:
             )
         self.execution_id = execution_id or uuid.uuid4().hex
         self.failure = None
+        self._finish_status = None
         self._seq = 0
         self._step_id = f"{self.execution_id}:input"
         self._tool_steps = {}
@@ -92,16 +94,18 @@ class SessionHistoryRecorder:
         return {record.message_id for record in self.current_records() if record.message.get("role") == "user"}
 
     def finish(self, status: str = "completed") -> ExecutionRecord | None:
-        """Publish the complete trajectory before closing the execution."""
+        """Publish once; retries retain the first terminal status and result."""
         if self.execution_id is None:
-            return None
+            return self.last_execution
         if status not in {"completed", "interrupted", "failed"}:
             raise build_error(
                 StatusCode.CONTEXT_EXECUTION_ERROR, error_msg=f"invalid history execution status: {status}"
             )
+        if self._finish_status is None:
+            self._finish_status = status
         trajectory = self.store.write_trajectory(self.execution_id, self.current_records())
         result = ExecutionRecord.model_validate(
-            {"execution_id": self.execution_id, "status": status, "trajectory": trajectory}
+            {"execution_id": self.execution_id, "status": self._finish_status, "trajectory": trajectory}
         )
         self.last_execution = result
         self.execution_id = None
