@@ -1,7 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+from unittest.mock import patch
+
 import pytest
 
+from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.context_engine.history.recorder import SessionHistoryRecorder
 from openjiuwen.core.context_engine.history.store import SessionHistoryStore
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall, ToolMessage, UserMessage
@@ -61,3 +64,23 @@ def test_resumed_tool_keeps_original_cycle_id(tmp_path, reload_checkpoint):
         after.restore(before.snapshot([call]))
     after.capture([ToolMessage(content="resumed", tool_call_id="pending")])
     assert after.current_records()[0].step_id == step_id
+
+
+@pytest.mark.parametrize("status", ["completed", "interrupted", "failed"])
+def test_finish_retry_preserves_identity_status_and_file(tmp_path, status):
+    recorder = SessionHistoryRecorder(SessionHistoryStore(str(tmp_path), "retry"))
+    execution_id = recorder.begin()
+    recorder.capture([UserMessage(content="original")])
+    with patch("openjiuwen.core.context_engine.history.store.os.link", side_effect=OSError("disk full")):
+        with pytest.raises(BaseError, match="ARCHIVE_FAILED"):
+            recorder.finish(status)
+    with pytest.raises(BaseError, match="already active"):
+        recorder.begin()
+    record = recorder.finish()
+    assert record.execution_id == execution_id
+    assert record.status == status
+    assert recorder.finish() == record
+    assert len(list(tmp_path.rglob("trajectories/*.jsonl"))) == 1
+    recorder.begin()
+    recorder.capture([UserMessage(content="next")])
+    assert recorder.finish().status == "completed"

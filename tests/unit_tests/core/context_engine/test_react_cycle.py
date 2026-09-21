@@ -42,3 +42,28 @@ def test_missing_duplicate_and_orphan_tool_ids_are_not_archived():
         ]
         ContextUtils.ensure_context_message_ids(messages)
         assert removable_cycles(messages, set()) == []
+
+
+def test_replayed_id_does_not_protect_an_older_complete_occurrence():
+    messages = [
+        call("replayed"),
+        ToolMessage(tool_call_id="replayed", content="first"),
+        call("replayed"),
+        ToolMessage(tool_call_id="replayed", content="second"),
+    ]
+    ContextUtils.ensure_context_message_ids(messages)
+    assert removable_cycles(messages, set()) == [(0, 1)]
+
+
+def test_malformed_old_cycle_does_not_disable_later_complete_cycles():
+    messages = [
+        call("old"),
+        ToolMessage(tool_call_id="old", content="first result"),
+        ToolMessage(tool_call_id="old", content="duplicate result"),
+        UserMessage(content="resume"),
+        call("old"),
+        ToolMessage(tool_call_id="old", content="replayed result"),
+        AssistantMessage(content="latest"),
+    ]
+    ContextUtils.ensure_context_message_ids(messages)
+    assert removable_cycles(messages, set()) == [(3, 4, 5)]

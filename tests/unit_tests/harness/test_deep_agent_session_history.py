@@ -2,6 +2,7 @@
 """Real DeepAgent/ReAct tool loops with deterministic provider responses."""
 
 import asyncio
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -9,7 +10,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.ext.asyncio import create_async_engine
 
+from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.context_engine import ContextEngineConfig, CycleArchiveProcessorConfig, SessionHistoryConfig
 from openjiuwen.core.foundation.llm import (
     AssistantMessage,
@@ -22,6 +25,7 @@ from openjiuwen.core.foundation.llm import (
 from openjiuwen.core.foundation.tool import LocalFunction, ToolCard
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.agent import create_agent_session
+from openjiuwen.core.session.checkpointer.checkpointer import CheckpointerConfig, CheckpointerFactory
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness import create_deep_agent
 from openjiuwen.harness.deep_agent import DeepAgent
@@ -192,6 +196,7 @@ async def test_interrupt_resume_exports_both_outer_executions(tmp_path, monkeypa
     agent = make_agent(tmp_path)
     await agent._ensure_initialized()
     session = create_agent_session(session_id="interrupted-cycle", card=agent.card)
+    original_execute = agent.react_agent.ability_manager.execute
     calls = 0
 
     async def execute(ctx, tool_call, **kwargs):
@@ -243,6 +248,14 @@ async def test_interrupt_resume_exports_both_outer_executions(tmp_path, monkeypa
         by_execution = {record["execution_id"]: record["step_id"] for record in assistants}
         assert all(record["step_id"] == by_execution[record["execution_id"]] for record in tools)
 
+    # Archival must still work after native workflow replay has reused its IDs.
+    monkeypatch.setattr(agent.react_agent.ability_manager, "execute", original_execute)
+    mock.set_responses(responses())
+    with patch.object(Model, "invoke", side_effect=mock.invoke):
+        result = await agent.invoke({"query": "inspect more logs after resuming"}, session)
+    assert result["output"] == "finished"
+    assert list(tmp_path.rglob("offload/*.jsonl"))
+
 
 @pytest.mark.asyncio
 async def test_close_stream_exports_once_without_success_answer(tmp_path):
@@ -276,3 +289,115 @@ def test_minimal_agent_restores_in_a_separate_process(tmp_path):
         )
         assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-4000:]
         assert f"ACCEPTANCE {phase}: PASS" in result.stdout
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_export", [False, True])
+async def test_stream_checkpoint_waits_for_host_after_export(tmp_path, fail_export):
+    database = create_async_engine(f"sqlite+aiosqlite:///{(tmp_path / 'state.db').as_posix()}")
+    previous = CheckpointerFactory.get_checkpointer()
+    checkpointer = await CheckpointerFactory.create(
+        CheckpointerConfig(type="persistence", conf={"db_type": "sqlite", "db_client": database})
+    )
+    CheckpointerFactory.set_default_checkpointer(checkpointer)
+    try:
+        agent = make_agent(tmp_path)
+        session = create_agent_session(session_id="stream-commit", card=agent.card)
+        await session.pre_run()
+        mock = MockLLMModel()
+        mock.set_responses(responses())
+        native_link = os.link
+
+        def publish(source, target):
+            if fail_export and "trajectories" in Path(target).parts:
+                raise OSError("trajectory disk full")
+            return native_link(source, target)
+
+        chunks = []
+        with (
+            patch.object(session, "commit", wraps=session.commit) as commit,
+            patch.object(Model, "stream", side_effect=mock.stream) as provider,
+            patch("openjiuwen.core.context_engine.history.store.os.link", side_effect=publish),
+        ):
+            if fail_export:
+                with pytest.raises(BaseError, match="ARCHIVE_FAILED"):
+                    async for chunk in agent.stream({"query": "read two logs"}, session):
+                        chunks.append(chunk)
+                assert not any(getattr(chunk, "type", None) == "answer" for chunk in chunks)
+            else:
+                chunks = [chunk async for chunk in agent.stream({"query": "read two logs"}, session)]
+                assert any(getattr(chunk, "type", None) == "answer" for chunk in chunks)
+            commit.assert_not_awaited()
+            assert provider.call_count == 3
+
+        restored = create_agent_session(session_id="stream-commit", card=agent.card)
+        await restored.pre_run()
+        assert not restored.get_state("context"), "inner stream committed before the host's save"
+
+        engine = agent.react_agent.context_engine
+        if fail_export:
+            assert not list(tmp_path.rglob("trajectories/*.jsonl"))
+            with pytest.raises(BaseError, match="already active"):
+                await agent.invoke({"query": "must not overwrite unsaved execution"}, session)
+        # Recovery only exports/snapshots; it does not call the model or tools.
+        record = await engine.finish_history_execution(session)
+        assert record.status == "completed"
+        assert await engine.finish_history_execution(session) == record
+        assert len(trajectory_records(tmp_path)) == 1
+        assert len(trajectory_records(tmp_path)[0]) == 6
+        await session.commit()
+        restored = create_agent_session(session_id="stream-commit", card=agent.card)
+        await restored.pre_run()
+        state = restored.get_state("context")["default_context_id"]
+        assert state["session_history"]["last_execution"]["execution_id"] == record.execution_id
+        assert state["messages"][-1].content == "finished"
+    finally:
+        CheckpointerFactory.set_default_checkpointer(previous)
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_aborted_parallel_calls_preserve_results_and_allow_next_request(tmp_path, cancel):
+    agent = make_agent(tmp_path)
+    await agent._ensure_initialized()
+    session = create_agent_session(session_id="aborted-tools", card=agent.card)
+    calls = [ToolCall(id=value, type="function", name="read_log", arguments="{}") for value in ("done", "pending")]
+    assistant = AssistantMessage(content="original assistant", tool_calls=calls)
+
+    async def abort_after_partial_result(ctx, **kwargs):
+        await ctx.context.add_messages(ToolMessage(tool_call_id="done", content="original successful result"))
+        if cancel:
+            raise asyncio.CancelledError()
+        raise RuntimeError("tool execution failed")
+
+    with (
+        patch.object(Model, "invoke", return_value=assistant),
+        patch.object(agent.react_agent.ability_manager, "execute", side_effect=abort_after_partial_result),
+    ):
+        with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
+            await agent.invoke({"query": "start two tools"}, session)
+    records = trajectory_records(tmp_path)[0]
+    assert [record["message"]["role"] for record in records] == ["user", "assistant", "tool", "tool"]
+    assert records[1]["message"]["content"] == "original assistant"
+    assert records[2]["message"]["content"] == "original successful result"
+    assert records[3]["message"]["tool_call_id"] == "pending"
+    assert "execution was aborted" in records[3]["message"]["content"]
+    assert records[3]["step_id"] == records[1]["step_id"]
+
+    async def verify_request(messages, **kwargs):
+        pending: set[str] = set()
+        for message in messages:
+            if message.role in {"assistant", "user"}:
+                assert not pending, "a new message followed an unanswered tool call"
+            if isinstance(message, AssistantMessage):
+                pending.update(call.id for call in message.tool_calls or [])
+            elif isinstance(message, ToolMessage):
+                assert message.tool_call_id in pending
+                pending.remove(message.tool_call_id)
+        assert not pending
+        return AssistantMessage(content="next request completed")
+
+    with patch.object(Model, "invoke", side_effect=verify_request):
+        result = await agent.invoke({"query": "continue with new work"}, session)
+    assert result["output"] == "next request completed"
