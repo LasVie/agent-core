@@ -62,6 +62,10 @@ finish_history_execution accepts completed/interrupted/failed and returns an
 ExecutionRecord(execution_id, status, trajectory). Both return None when disabled.
 Business Agent/group routing and SessionManager remain the host's responsibility.
 
+In history mode inner ReAct invoke/stream and abort cleanup never commit. When a
+host reuses the same Session object, call commit after each exported execution.
+post_run is object-level idempotent cleanup, not a repeatable per-execution commit.
+
 ## Archive contract
 
 A cycle consists of one assistant message and all matching tool results (including
@@ -71,6 +75,16 @@ files before updating active state and the outbound window. A huge result in a
 complete protected cycle may be stored whole and replaced by a paired file reference;
 incomplete cycles are never offloaded. If protected input still exceeds the budget,
 stop before the provider request.
+
+Tool IDs are matched within each cycle occurrence; different cycles may reuse an
+ID during workflow replay. Duplicate/orphan results retain their malformed cycle
+without disabling independent complete cycles later in the context. The latest
+complete range is protected without binding its IDs to earlier occurrences.
+
+Cancellation or an unrecoverable exception preserves original calls and results,
+and appends explicit aborted ToolMessages only for outstanding calls. These are
+captured in the trajectory. Normal HITL/workflow interrupts do not synthesize
+aborted results and retain the native resume path.
 
 ```text
 root_dir/sessions/<sha256(session_id)>/history/
@@ -107,6 +121,32 @@ isolation does not grant file-tool access permissions.
   storage platform are added. Abrupt process termination can lose unexported data.
 - The pre-existing generic BaseAgent instance-level aclose limitation is unchanged;
   DeepAgent method-level stream close is tested.
+
+### Retrying an export in the same process
+
+Keep the live Agent, Session and execution lock. After storage recovers, retry only
+the public finalization method; do not invoke, begin or admit a new input:
+
+```python
+engine = agent.react_agent.context_engine
+execution = await engine.finish_history_execution(session)
+agent.save_state(session)
+await session.commit()
+```
+
+The first finish attempt fixes the terminal status. A default-argument retry does
+not change failed/interrupted into completed. Execution identity, originals and
+file paths remain stable; repeated finish returns the same ExecutionRecord and
+can refresh Session state without running models/tools. A failed checkpoint commit
+requires only a host commit retry.
+
+Hosts may buffer a normal final business result in AFTER_INVOKE, but publish it only
+after export and commit succeed. Associate request_id with execution.execution_id.
+After normal completion the record also lives at
+session.get_state("context")[context_id]["session_history"]["last_execution"].
+After a failure that value may describe the previous execution; never treat it as
+the failed execution's successful record. This recovery does not recover an
+unexported execution after losing its live process.
 
 ## Offline acceptance example
 

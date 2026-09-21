@@ -56,7 +56,7 @@
 | 现有文件 / 能力 | 复用方式与缺口 |
 |---|---|
 | `openjiuwen/core/context_engine/context/session_memory_manager.py`：`group_completed_api_rounds` | 复用闭合周期的 `[start, end)` 分组。首段可能带 user 消息，需要额外保护当前输入；不启用 Session Memory |
-| `openjiuwen/core/context_engine/processor/forked/compressor/base.py`：`adjust_keep_recent_for_tool_boundaries` | 复用工具边界保护，集中封装内部依赖，不直接使用摘要压缩器 |
+| `openjiuwen/core/context_engine/processor/forked/compressor/base.py`：`adjust_keep_recent_for_tool_boundaries` | 旧压缩器继续使用；周期归档按已验证的完整周期范围保护尾部，避免该 helper 将重放 ID 绑定到更早调用 |
 | `openjiuwen/core/context_engine/context/context_utils.py`：`ensure_context_message_ids` | 已有 `metadata.context_message_id`；归档 `message_id` 直接采用它，不重新生成第二套消息身份 |
 | `openjiuwen/core/context_engine/processor/budget_guard.py`、`token/base.py` | 复用上下文上限解析、消息与工具 token 统计；现有头尾截短函数不适用于本需求 |
 | `openjiuwen/core/context_engine/processor/base.py`：`offload_messages` | 已支持批量消息和文件引用，但默认写 JSON 且文件失败回退内存；新策略需要独立的严格 JSONL 写入适配，不能直接沿用默认失败语义 |
@@ -79,7 +79,7 @@
 | 新增路径 | 主要内容 | 为什么放这里 |
 |---|---|---|
 | `openjiuwen/core/context_engine/schema/history.py` | `SessionHistoryConfig`、`ArchiveRecord`、`ArchiveRef` 及执行记录的数据结构 | 与原生上下文配置及消息 schema 同层；不引入群业务字段 |
-| `openjiuwen/core/context_engine/context/react_cycle.py` | 包装既有周期分组和工具边界函数，输出候选范围、受保护消息及最小可移除前缀 | 隔离对内部 helper 的依赖；不复制分组算法、不重写默认压缩器 |
+| `openjiuwen/core/context_engine/context/react_cycle.py` | 包装既有周期分组，按调用发生的周期验证配对并保护最新完整范围，输出候选范围、受保护消息及最小可移除前缀 | 隔离对内部 helper 的依赖；不复制分组算法、不重写默认压缩器 |
 | `openjiuwen/core/context_engine/history/__init__.py` | 历史记录与存储的必要导出 | 新增小型内部包，避免入口文件承载实现 |
 | `openjiuwen/core/context_engine/history/recorder.py` | 原始消息的不可变记录、发生时间、执行内 seq、周期关联、执行结束导出 | 记录器服务轨迹和卸载；不维护第二份可变模型上下文 |
 | `openjiuwen/core/context_engine/history/store.py` | 绑定 Session 根目录的 JSONL 写入、稳定 archive_id、重复写入校验、引用链保留 | 统一轨迹与卸载的文件语义；先确认文件发布成功，再允许移除消息 |
@@ -109,7 +109,7 @@
 | `openjiuwen/core/single_agent/rail/base.py` | 通用 rail 装饰器原本允许异常回调重试或 force_finish，可能吞掉最终守卫的错误。仅对新增的归档失败、预算超限两种状态直接透传；旧异常策略保持不变，不新增接口 |
 | `openjiuwen/harness/rails/context_engineer/context_processor_rail.py` | 复用现有 `preset=False` + 自定义 Processor 注册；仅新模式跳过原工具配对修复，避免 pop / 重新追加改写未闭合原文。旧实例的修复和默认值保持不变 |
 
-`openjiuwen/core/context_engine/base.py` 无需修改；第三方 ModelContext 不增加抽象方法。ReActAgent 的取消清理在新模式保留未闭合原文，并将持久提交交回外层，使完整轨迹先于 checkpoint 提交。
+`openjiuwen/core/context_engine/base.py` 无需修改；第三方 ModelContext 不增加抽象方法。ReActAgent 的取消清理在新模式保留未闭合原文，只为尚未返回的调用追加明确中止结果，并将持久提交交回外层，使完整轨迹先于 checkpoint 提交。正常 HITL/工作流中断不补中止结果。
 
 ### 直接复用，不预设修改
 
@@ -254,3 +254,15 @@ agent-core 分支的完成边界为 P1～P4，全部在本仓库内实现和验�
 同 Session 单写者；不提供分布式锁。存储必须支持原子 hard-link 发布。旧来源时间保持 null。offload 与完整轨迹可重复保存同一消息，引用文件不自动回收。硬终止进程可能丢失尚未导出的本轮记录。
 
 DeepAgent 方法自身的 stream 关闭路径已测试；原生 BaseAgent 通用回调包装器对 instance-level aclose 的既有限制未在此特性中改写。显式 Session 的 pre_run、commit/post_run 仍由宿主管理。归档保存失败后先重试导出，不覆盖未保存执行进入下一轮。
+
+### 2026-09-21 检视修复与复验
+
+- 修复历史模式内层流式执行提前 commit：真实 SQLite 验证导出失败时没有本轮 checkpoint，成功导出后仍等待宿主提交；原模式不改变。
+- 修复取消/不可恢复异常后未配对调用进入下一轮：保留原始 assistant 与已取得的工具结果，只追加缺失调用的明确中止结果；下一轮模型请求配对有效，正常 interrupt/resume 保持原行为。
+- 修复工作流恢复复用调用 ID 导致全部归档失效：ID 按周期匹配，畸形周期保留，独立完整周期仍可归档；最新周期不反向关联旧的同 ID 调用。
+- 完善同进程导出重试：第一次 finish 冻结状态，失败后保留执行 ID，重复完成返回同一记录。宿主保留锁与暂存业务结果，通过公开 finish/save_state/commit 恢复，不重跑工具。复用同一个 Session 时每轮使用 commit，不能依赖仅执行一次的 post_run。
+- 回归范围：全部 ContextEngine、ReActAgent 单测，以及相关 harness Processor、状态、流式、历史和事件路由测试。结果为 774 passed、1 deselected；排除项是上次已在原始基线确认的 Windows 符号链接权限用例。
+- 首次默认长临时路径触发旧召回模块的 Windows 路径长度失败；改用新的短临时目录后，全部选中用例通过，未修改旧召回代码或测试预期。
+- 小模块和测试文件通过 Ruff、格式、Pylint（源码）和 codespell。react_agent.py 的 Ruff 诊断为基线/当前各 3 项，Pylint 各 25 项；除原有模块行数提示随修改变化外没有新增诊断。该大文件原有全文件格式问题保持不变。
+- 定向类型检查使用 `mypy --follow-imports=skip`：两个小源码模块和三个测试文件通过；react_agent.py 基线/当前均只有第 2073 行已有的 summary 重复定义诊断。遍历完整导入依赖的 mypy 扫描未完成，不宣称全仓库类型检查通过。
+- 本机没有 make，使用对应检查器直接验证；未改依赖或锁文件，未运行真实模型、飞书或其他外部服务联调。实现决策见 F_06_session-history-recovery。

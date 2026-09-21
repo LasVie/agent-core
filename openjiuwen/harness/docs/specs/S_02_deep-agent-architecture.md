@@ -6,7 +6,7 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/deep_agent.py`、`openjiuwen/harness/schema/interaction.py`、`openjiuwen/harness/schema/state.py`、`openjiuwen/harness/schema/agent_mode.py` |
-| 最近一次修订日期 | 2026-09-18 |
+| 最近一次修订日期 | 2026-09-21 |
 | 关联 feature | `F_04_authoritative-terminal-stream.md` |
 
 ## 范围 / 边界
@@ -85,6 +85,9 @@
 
 16. 显式启用 `ContextEngineConfig.session_history` 时，外层 invoke/stream 在 BEFORE_INVOKE 前绑定一个执行 ID，所有内层工具与 task-loop 轮次共用它；正常、异常、中断和关闭流都在统一退出点导出原始轨迹，再更新原生 Session 状态。成功 answer 在轨迹保存之后返回；显式传入的 Session 仍由宿主 commit。未启用时不创建记录器、目录或额外状态。
 17. 原始消息在 ContextEngine add Processor 之前冻结，原文轨迹不从裁剪后的窗口反推。历史目录按稳定 session_id 隔离；同一 Session 的写入必须串行。新模式归档/预算错误不能转为模型重试或成功空回复；保存失败与原执行异常一并保留。
+18. 历史模式下，内层 ReAct 的 invoke/stream（包括取消与异常收尾）只更新 Session 状态，不提交 checkpoint；外层导出成功后才由 Session 所有者提交。宿主复用同一个 Session 对象时，每轮使用 commit；post_run 是对象级幂等收尾，不能当作每轮提交。
+19. 取消或不可恢复异常使本轮退出时，保留已记录的 assistant/tool 原文，只为尚未返回的调用追加明确的中止 ToolMessage。正常 HITL/工作流 interrupt 不补中止结果，仍沿原生恢复机制执行。
+20. 导出失败后的同进程恢复复用原 Agent、Session 和执行锁，只重试 ContextEngine.finish_history_execution，不重新 invoke/begin。第一次收尾确定终态，重试保持终态和执行 ID；重复完成返回同一 ExecutionRecord。成功结果如需延后投递，由宿主在 AFTER_INVOKE 暂存，导出与 checkpoint 提交成功后才发布。
 
 ## 接口契约
 

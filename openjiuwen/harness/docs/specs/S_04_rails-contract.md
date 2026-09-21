@@ -6,7 +6,7 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/rails/`（61 文件，7 个子目录） |
-| 最近一次修订日期 | 2026-09-18 |
+| 最近一次修订日期 | 2026-09-21 |
 | 关联 feature | `F_01_ask-user-otel-events.md`、`F_02_genai-semconv-tool-spans.md` |
 
 ## 范围 / 边界
@@ -97,7 +97,7 @@
     `openjiuwen.tool.resource_id`。Evolution rail 只清洗这套标准字段；历史输入兼容属于
     trajectory 读取边界，不属于 rail producer。
 
-13. 无压缩的周期归档仅通过 `ContextProcessorRail(preset=False, processors=[("CycleArchiveProcessor", CycleArchiveProcessorConfig())])` 和启用的 Session history 配置接入；默认 preset 与旧处理链保持不变。新模式不运行该 Rail 的旧工具配对重写，归档保留全部原始消息；没有新增 callback 事件。
+13. 无压缩的周期归档仅通过 `ContextProcessorRail(preset=False, processors=[("CycleArchiveProcessor", CycleArchiveProcessorConfig())])` 和启用的 Session history 配置接入；默认 preset 与旧处理链保持不变。新模式不运行该 Rail 的旧工具配对重写，归档保留全部原始消息；不可恢复的执行退出由 ReAct 追加缺失调用的明确中止结果，正常 interrupt 不补写。没有新增 callback 事件。
 14. 最终预算守卫在 ReAct 获取全部 window mutator 结果后、调用 provider 前执行。两种新的历史错误绕过 ON_MODEL_EXCEPTION 的重试/强制成功，不能被默认压缩兜底掩盖。工具调用和结果继续原生 append，不再次调用业务 load/prepare/save。
 
 ## 接口契约
