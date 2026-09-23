@@ -5,21 +5,29 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, ContextManager, Protocol
 
 from openjiuwen.harness_providers.claudecode.options import load_claude_sdk
 from openjiuwen.agent_teams.team_workspace.tools import WorkspaceMetaTool
 from openjiuwen.agent_teams.tools.locales import make_translator
 from openjiuwen.agent_teams.tools.team_tools import create_team_tools
 from openjiuwen.core.common.logging import team_logger
-from openjiuwen.extensions.observability.span_context import suppressed_tool_spans
 
 if TYPE_CHECKING:
     from openjiuwen.agent_teams.models.allocator import Allocation
     from openjiuwen.agent_teams.team_workspace.manager import TeamWorkspaceManager
     from openjiuwen.agent_teams.tools.team import TeamBackend
     from openjiuwen.core.foundation.tool.base import Tool
+
+
+class _ClaudeToolExecutionBridge(Protocol):
+    """Bridge that binds observability context around local Claude tools."""
+
+    def tool_execution_context(self) -> ContextManager[None]:
+        """Return a context manager for one local tool execution."""
+        ...
 
 
 def text_content(text: str) -> dict[str, Any]:
@@ -55,6 +63,7 @@ def build_claude_sdk_mcp_tool_set(
     concurrency_governor: Any = None,
     swarmflow_budget: Any = None,
     team_permissions_enabled: bool = False,
+    span_bridge: _ClaudeToolExecutionBridge | None = None,
 ) -> ClaudeSdkMcpToolSet:
     """Build a Claude SDK MCP server from the current TeamAgent backend.
 
@@ -77,6 +86,8 @@ def build_claude_sdk_mcp_tool_set(
         concurrency_governor: Optional Swarmflow concurrency governor.
         swarmflow_budget: Optional Swarmflow token budget ledger.
         team_permissions_enabled: Whether team permission tools are enabled.
+        span_bridge: Optional observability bridge that binds the active Claude
+            turn while local team tools execute.
 
     Returns:
         SDK MCP tool set containing the server config and wrapped tools.
@@ -110,7 +121,7 @@ def build_claude_sdk_mcp_tool_set(
 
     tools_by_name = {tool.card.name: tool for tool in tools}
     sdk = load_claude_sdk()
-    sdk_tools = [_wrap_team_tool(team_backend, tools_by_name, tool) for tool in tools]
+    sdk_tools = [_wrap_team_tool(team_backend, tools_by_name, tool, span_bridge=span_bridge) for tool in tools]
     server = sdk.create_sdk_mcp_server(
         name=server_name,
         version="1.0.0",
@@ -123,6 +134,8 @@ def _wrap_team_tool(
     team_backend: "TeamBackend",
     tools_by_name: dict[str, "Tool"],
     team_tool: "Tool",
+    *,
+    span_bridge: _ClaudeToolExecutionBridge | None = None,
 ) -> Any:
     """Wrap one native TeamTool as a Claude SDK MCP tool."""
     sdk = load_claude_sdk()
@@ -133,11 +146,7 @@ def _wrap_team_tool(
         if tool is None:
             return text_content(f"Unknown tool: {name}")
         try:
-            # The member called this tool and its own harness records the call
-            # in the member's lane. This server runs inside the team process,
-            # so without this the global tool callback would record it a second
-            # time, in the lane of whoever owns this context — the leader.
-            with suppressed_tool_spans(name):
+            with _tool_execution_context(span_bridge):
                 result = await tool.invoke(
                     arguments,
                     member_name=team_backend.member_name,
@@ -153,6 +162,13 @@ def _wrap_team_tool(
         description=team_tool.card.description,
         input_schema=team_tool.card.input_params,
     )(_handler)
+
+
+def _tool_execution_context(span_bridge: _ClaudeToolExecutionBridge | None) -> ContextManager[None]:
+    """Return the bridge context for local team tool execution."""
+    if span_bridge is None:
+        return nullcontext()
+    return span_bridge.tool_execution_context()
 
 
 __all__ = [

@@ -53,17 +53,7 @@ def clear_team_span() -> None:
     clear_root_span()
 
 
-def get_or_create_team_span(team_name: str, tracer, *, session_id: str | None = None) -> Span | None:
-    """Return the team's root span, creating and registering it when absent.
-
-    Args:
-        team_name: The team the root stands for.
-        tracer: Tracer to open the root with.
-        session_id: The session the root belongs to. A caller that knows it
-            states it here; the context vars are only a fallback, and an
-            unregistered root is invisible to a teammate running in a task
-            of its own.
-    """
+def get_or_create_team_span(team_name: str, tracer) -> Span | None:
     if not team_name:
         return None
     span = get_bound_root_span()
@@ -79,7 +69,7 @@ def get_or_create_team_span(team_name: str, tracer, *, session_id: str | None = 
         OJ_AGENT_MODE,
     )
 
-    session_id = str(session_id or "") or get_session_id() or get_current_session_id() or ""
+    session_id = get_session_id() or ""
 
     span = tracer.start_span(name=f"team.{team_name}", kind=SpanKind.SERVER)
     span.set_attribute(AT_TEAM_NAME, team_name)
@@ -87,11 +77,7 @@ def get_or_create_team_span(team_name: str, tracer, *, session_id: str | None = 
     span.set_attribute(AT_TEAM_ID, team_name)
     if session_id:
         span.set_attribute(GEN_AI_CONVERSATION_ID, session_id)
-    # Registered under the session, not only in this task's ContextVar: an
-    # in-process teammate runs in a task of its own and looks the root up by
-    # the session its callback carries. Left unregistered, that lookup finds
-    # nothing and the teammate's whole round goes unrecorded.
-    set_root_span(span, session_id=session_id or None)
+    set_root_span(span)
     team_logger.info(
         "otel: get_or_create_team_span CREATE new team span team_name={} "
         "trace_id={:032x} span_id={:016x}",

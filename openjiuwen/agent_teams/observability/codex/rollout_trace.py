@@ -7,8 +7,7 @@ Recent Codex App Server builds write an append-only diagnostic bundle when the
 ``CODEX_ROLLOUT_TRACE_ROOT`` environment variable is set.  Unlike its generic
 OTel spans, rollout events carry stable inference/tool identifiers and payload
 references.  This reader keeps that data local, resolves only the payloads
-needed to observe model requests, and forwards plain dictionaries to the Codex
-request observer.
+needed by Jiuwen observability, and forwards plain dictionaries to the bridge.
 """
 
 from __future__ import annotations
@@ -25,9 +24,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from openjiuwen.core.common.logging import LazyLogger, LogManager
-
-logger = LazyLogger(lambda: LogManager.get_logger("harness_providers"))
+from openjiuwen.core.common.logging import team_logger
 
 _EVENT_LOG = "trace.jsonl"
 _ROOT_PREFIX = "openjiuwen-codex-rollout-"
@@ -116,7 +113,7 @@ def _cleanup_stale_roots(
         if not root.exists():
             removed += 1
     if removed:
-        logger.info(
+        team_logger.info(
             "otel: removed {} abandoned Codex rollout trace root(s)",
             removed,
         )
@@ -135,7 +132,7 @@ def _load_payload(bundle_dir: Path, reference: Any) -> Any:
         payload_path = (bundle_dir / relative_path).resolve()
         payload_path.relative_to(bundle_root)
         if payload_path.stat().st_size > _MAX_PAYLOAD_BYTES:
-            logger.warning(
+            team_logger.warning(
                 "otel: skipped oversized Codex rollout payload path={}",
                 payload_path,
             )
@@ -143,7 +140,7 @@ def _load_payload(bundle_dir: Path, reference: Any) -> Any:
         with payload_path.open(encoding="utf-8") as payload_file:
             return json.load(payload_file)
     except (OSError, ValueError) as exc:
-        logger.warning(
+        team_logger.warning(
             "otel: failed to read Codex rollout payload {}: {}",
             relative_path,
             exc,
@@ -211,7 +208,7 @@ class CodexRolloutTraceReader:
             reader._watch(),
             name="openjiuwen-codex-rollout-reader",
         )
-        logger.info("otel: Codex rollout trace reader started root={}", root)
+        team_logger.info("otel: Codex rollout trace reader started root={}", root)
         return reader
 
     async def _watch(self) -> None:
@@ -237,7 +234,7 @@ class CodexRolloutTraceReader:
             try:
                 self._callback(event)
             except Exception as exc:  # noqa: BLE001 - tracing is best effort
-                logger.warning(
+                team_logger.warning(
                     "otel: Codex rollout callback failed: {}",
                     exc,
                 )
@@ -265,7 +262,7 @@ class CodexRolloutTraceReader:
                     try:
                         event = json.loads(line)
                     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                        logger.warning(
+                        team_logger.warning(
                             "otel: ignored invalid Codex rollout event path={} offset={}: {}",
                             event_log,
                             line_start,
@@ -278,7 +275,7 @@ class CodexRolloutTraceReader:
                         )
                 self._offsets[event_log] = stream.tell()
         except OSError as exc:
-            logger.warning(
+            team_logger.warning(
                 "otel: failed to tail Codex rollout trace {}: {}",
                 event_log,
                 exc,

@@ -7,8 +7,8 @@
 DeepAgent-style input/output contract.  This module adds the team-specific
 layer on top of it: the member's child ``AgentSession`` (checkpoint sink and
 team-context delivery baseline), the ``TeamContextTracker`` piggyback, the
-external-runtime reliability loop, the optional trajectory recorder fed from
-the protocol event stream and the authentication-fallback promotion hook.
+external-runtime reliability loop, optional observability bridges and the
+authentication-fallback promotion hook.
 """
 
 from __future__ import annotations
@@ -18,40 +18,26 @@ import dataclasses
 import inspect
 import json
 import uuid
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    AsyncIterator,
-    Awaitable,
-    Callable,
-    Optional,
-    Protocol,
-    Sequence,
-    runtime_checkable,
-)
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol, Sequence, runtime_checkable
 
-from openjiuwen.agent_teams.external.cli_agent import TEAM_MCP_SERVER_NAME
-from openjiuwen.agent_teams.harness.turn import MemberTurn, resolve_member_turn
 from openjiuwen.agent_teams.team_context import TeamContextTracker
 from openjiuwen.core.common.logging import team_logger
 from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+from openjiuwen.core.session.stream.base import OutputSchema
 from openjiuwen.harness_protocol import (
     CheckpointReason,
     CheckpointSaveReceipt,
     DiagnosticEvent,
     HarnessCheckpoint,
     HarnessContext,
-    HarnessCapability,
     HarnessEvent,
-    HarnessModelControl,
     HarnessProtocol,
     HarnessState,
     HarnessStateError,
     HostCapability,
     InteractionResponseStatus,
     McpServerConfig,
-    ModelSelection,
     ProviderEvent,
     ProviderInteractionRequest,
     ProviderInteractionResponse,
@@ -62,15 +48,11 @@ from openjiuwen.harness_protocol import (
     TurnEventKind,
     TurnLifecycleEvent,
     TurnResult,
-    UnsupportedHarnessCapabilityError,
     json_value_to_builtin,
 )
 from openjiuwen.harness_providers.base import ProviderStartupError
 from openjiuwen.harness_providers.inputs import harness_input_text
 from openjiuwen.harness_providers.io_adapter import HarnessIOAdapter, to_harness_input
-
-if TYPE_CHECKING:
-    from openjiuwen.harness_providers.trajectory import HarnessTrajectoryRecorder
 
 _EVENT_STATE = "harness.state"
 _EVENT_ROUND = "harness.round"
@@ -107,6 +89,37 @@ class TeamContextAwareRuntime(Protocol):
 
     async def announce_team_context(self) -> None:
         """Push the pending team roster announcement to the member."""
+        ...
+
+
+@runtime_checkable
+class MemberSpanBridge(Protocol):
+    """Observability bridge driven by turn lifecycle events."""
+
+    def start_turn(self, *, prompt: str, **kwargs: Any) -> None:
+        """Open the span for one member turn."""
+        ...
+
+    def finish_turn(self, *, status: str, error: Any | None = None) -> None:
+        """Close the span for the current member turn."""
+        ...
+
+
+@runtime_checkable
+class ChunkRecordingSpanBridge(MemberSpanBridge, Protocol):
+    """Span bridge that also consumes the projected output chunks."""
+
+    def record_chunk(self, chunk: OutputSchema) -> None:
+        """Record one projected output chunk."""
+        ...
+
+
+@runtime_checkable
+class NativeObservationSpanBridge(MemberSpanBridge, Protocol):
+    """Span bridge that must flush native observations before closing a turn."""
+
+    async def wait_for_native_observations(self) -> None:
+        """Wait briefly for provider-native spans to arrive."""
         ...
 
 
@@ -219,7 +232,7 @@ class ExternalHarnessMemberRuntime:
         agent_kind: str | None = None,
         cli_path: str | None = None,
         inject_mcp: bool = False,
-        mcp_server_name: str = TEAM_MCP_SERVER_NAME,
+        mcp_server_name: str = "openjiuwen-team",
     ) -> None:
         self._harness = harness
         self._context_source = context
@@ -249,11 +262,12 @@ class ExternalHarnessMemberRuntime:
         self._lifecycle_lock = asyncio.Lock()
         self._extra_mcp_servers: list[McpServerConfig] = []
         self._reliability_ctx: Any = None
-        self._trajectory: HarnessTrajectoryRecorder | None = None
+        self._span_bridge: MemberSpanBridge | None = None
         self._promote_fallback_model: PromoteFallbackModel | None = None
         self._teardown_hooks: list[Callable[[], Awaitable[None]]] = []
         self._round_seq = 0
         self._current_round_id: int | None = None
+        self._last_prompt = ""
 
     # ------------------------------------------------------------------
     # Read-only surface
@@ -277,9 +291,8 @@ class ExternalHarnessMemberRuntime:
         return self._harness.provider_session_id
 
     @property
-    def trajectory_recorder(self) -> "HarnessTrajectoryRecorder | None":
-        """Return the recorder turning this member's events into trajectory spans."""
-        return self._trajectory
+    def span_bridge(self) -> MemberSpanBridge | None:
+        return self._span_bridge
 
     @property
     def reliability_agent_kind(self) -> str | None:
@@ -296,14 +309,9 @@ class ExternalHarnessMemberRuntime:
         """Mount additional MCP servers on the next ``start``."""
         self._extra_mcp_servers.extend(servers)
 
-    def bind_trajectory_recorder(self, recorder: "HarnessTrajectoryRecorder | None") -> None:
-        """Record this member's protocol event stream as trajectory spans.
-
-        Binding a recorder also makes the host declare
-        ``HostCapability.MODEL_REQUEST_OBSERVATION``, so the provider reports
-        its model requests from the next ``start`` on.
-        """
-        self._trajectory = recorder
+    def bind_span_bridge(self, bridge: MemberSpanBridge | None) -> None:
+        """Attach an observability bridge driven by turn lifecycle events."""
+        self._span_bridge = bridge
 
     def bind_fallback_promotion(self, promote: PromoteFallbackModel | None) -> None:
         """Persist the provider's authentication fallback before it commits.
@@ -341,7 +349,7 @@ class ExternalHarnessMemberRuntime:
             messager=messager,
             leader_name=leader_name,
             update_status_cb=update_status_cb,
-            trajectory_recorder=self._trajectory,
+            span_bridge=self._span_bridge,
             cli_path=self._cli_path,
         )
 
@@ -407,8 +415,6 @@ class ExternalHarnessMemberRuntime:
         mcp_servers = tuple(context.mcp_servers) + tuple(self._extra_mcp_servers)
         if mcp_servers:
             capabilities.add(HostCapability.MCP_SERVERS)
-        if self._trajectory is not None:
-            capabilities.add(HostCapability.MODEL_REQUEST_OBSERVATION)
         return dataclasses.replace(
             context,
             host_capabilities=frozenset(capabilities),
@@ -434,10 +440,6 @@ class ExternalHarnessMemberRuntime:
         finally:
             await self._events.unregister_namespace(_EVENT_NAMESPACE)
             self._stopped = True
-            if self._trajectory is not None:
-                # A stop mid-turn emits no terminal turn event; end whatever
-                # the recorder still holds open.
-                self._trajectory.close()
             for hook in self._teardown_hooks:
                 try:
                     await hook()
@@ -450,6 +452,9 @@ class ExternalHarnessMemberRuntime:
         await self.stop()
 
     def outputs(self) -> AsyncIterator[Any]:
+        bridge = self._span_bridge
+        if isinstance(bridge, ChunkRecordingSpanBridge):
+            return _RecordingOutputs(self._adapter.outputs(), bridge)
         return self._adapter.outputs()
 
     # ------------------------------------------------------------------
@@ -463,18 +468,12 @@ class ExternalHarnessMemberRuntime:
             if isinstance(content, InteractiveInput):
                 return await self._adapter.send(content, immediate=immediate)
             external_input = to_harness_input(content)
-            delivered_text = harness_input_text(external_input)
             pending_context = await self._pending_team_context()
             if pending_context:
                 external_input = _prepend_context(external_input, pending_context)
+            self._last_prompt = harness_input_text(external_input)
             receipt = await self._adapter.send(external_input, immediate=immediate)
-            # Both halves are recorded, and the message first so it is the one
-            # the turn states as its input. A provider splits the delivery into
-            # a message per block, so the combined text would match none of
-            # them and the turn would read as if nobody had said anything.
-            self._record_input(receipt, delivered_text)
             if pending_context:
-                self._record_input(receipt, pending_context)
                 await self._commit_team_context()
             return receipt
 
@@ -483,8 +482,8 @@ class ExternalHarnessMemberRuntime:
             pending = await self._pending_team_context()
             if not pending:
                 return
-            receipt = await self._adapter.send(pending, immediate=False)
-            self._record_input(receipt, pending)
+            self._last_prompt = pending
+            await self._adapter.send(pending, immediate=False)
             await self._commit_team_context()
 
     async def abort(self, *, immediate: bool = False) -> None:
@@ -495,22 +494,6 @@ class ExternalHarnessMemberRuntime:
 
     async def resume(self, *, query: Any | None = None) -> None:
         await self._adapter.resume(query=query)
-
-    async def set_model_selection(self, selection: ModelSelection) -> bool:
-        """Switch the running harness to ``selection`` before its next turn.
-
-        Returns:
-            True when the harness switched (or queued the switch for the next
-            turn); False when it is not running, so the selection only takes
-            effect through the persisted member options at the next start.
-        """
-        harness = self._harness
-        if not harness.card.supports(HarnessCapability.MODEL_SELECTION):
-            raise UnsupportedHarnessCapabilityError(f"{harness.card.name} does not support model selection")
-        if not isinstance(harness, HarnessModelControl) or harness.state is HarnessState.TERMINATED:
-            return False
-        await harness.set_model(selection)
-        return True
 
     async def subscribe(
         self,
@@ -528,7 +511,6 @@ class ExternalHarnessMemberRuntime:
     # ------------------------------------------------------------------
 
     async def _on_event(self, envelope: HarnessEvent) -> None:
-        await self._record_event(envelope)
         payload = envelope.event
         if isinstance(payload, StateChangedEvent):
             await self._events.trigger(
@@ -562,8 +544,14 @@ class ExternalHarnessMemberRuntime:
             self._current_round_id = self._round_seq
             if self._reliability_ctx is not None:
                 self._reliability_ctx.begin_attempt(phase="turn", round_id=self._current_round_id)
+            self._span_start_turn()
         elif payload.kind is TurnEventKind.FAILED:
             await self._finalize_turn_failure(payload.result)
+            await self._span_finish_turn(status="failed", error=payload.result.error if payload.result else None)
+        elif payload.kind is TurnEventKind.ABORTED:
+            await self._span_finish_turn(status="cancelled")
+        elif payload.kind is TurnEventKind.FINISHED:
+            await self._span_finish_turn(status="ok")
         await self._events.trigger(
             _EVENT_ROUND,
             kind=kind,
@@ -635,47 +623,30 @@ class ExternalHarnessMemberRuntime:
         )
         await ctx.mark_member_error()
 
-    def _record_input(self, receipt: SendReceipt | None, text: str) -> None:
-        """Tell the recorder what the host delivered into the member's turn."""
-        recorder = self._trajectory
-        if recorder is None or receipt is None:
+    def _span_start_turn(self) -> None:
+        bridge = self._span_bridge
+        if bridge is None:
             return
         try:
-            recorder.record_input(receipt.turn_id, text)
+            bridge.start_turn(prompt=self._last_prompt, thread_id=self._harness.provider_session_id)
+        except TypeError:
+            bridge.start_turn(prompt=self._last_prompt)
         except Exception:
-            team_logger.debug("[{}] trajectory recorder rejected an input", self._member_name, exc_info=True)
+            team_logger.debug("[{}] span bridge start_turn failed", self._member_name, exc_info=True)
 
-    async def _record_event(self, envelope: HarnessEvent) -> None:
-        recorder = self._trajectory
-        if recorder is None:
+    async def _span_finish_turn(self, *, status: str, error: Any | None = None) -> None:
+        bridge = self._span_bridge
+        if bridge is None:
             return
-        payload = envelope.event
+        if isinstance(bridge, NativeObservationSpanBridge):
+            try:
+                await bridge.wait_for_native_observations()
+            except Exception:
+                team_logger.debug("[{}] span bridge flush failed", self._member_name, exc_info=True)
         try:
-            if isinstance(payload, TurnLifecycleEvent) and payload.kind is TurnEventKind.STARTED:
-                # Every provider turn is a trajectory turn of this member; the
-                # counter lives in the member session so numbering survives a
-                # restart.
-                turn = await self._open_member_turn()
-                recorder.record_turn_identity(
-                    envelope.turn_id or "",
-                    turn_id=turn.turn_id,
-                    turn_number=turn.turn_number,
-                )
-            recorder.observe(envelope)
+            bridge.finish_turn(status=status, error=error)
         except Exception:
-            team_logger.debug("[{}] trajectory recorder failed on an event", self._member_name, exc_info=True)
-
-    async def _open_member_turn(self) -> MemberTurn:
-        """Open the next trajectory turn and checkpoint the advanced counter."""
-        member_session = self._member_session
-        turn, _ = resolve_member_turn(member_session, continues_turn=False)
-        if member_session is None:
-            return turn
-        try:
-            await member_session.commit()
-        except Exception:
-            team_logger.debug("[{}] turn state commit failed", self._member_name, exc_info=True)
-        return turn
+            team_logger.debug("[{}] span bridge finish_turn failed", self._member_name, exc_info=True)
 
     # ------------------------------------------------------------------
     # Member session / team context
@@ -769,6 +740,28 @@ class ExternalHarnessMemberRuntime:
         return None
 
 
+class _RecordingOutputs:
+    """Feed projected chunks to a span bridge on their way to the consumer."""
+
+    __slots__ = ("_inner", "_bridge")
+
+    def __init__(self, inner: AsyncIterator[Any], bridge: ChunkRecordingSpanBridge) -> None:
+        self._inner = inner
+        self._bridge = bridge
+
+    def __aiter__(self) -> "_RecordingOutputs":
+        return self
+
+    async def __anext__(self) -> Any:
+        chunk = await self._inner.__anext__()
+        if isinstance(chunk, OutputSchema):
+            try:
+                self._bridge.record_chunk(chunk)
+            except Exception:
+                team_logger.debug("span bridge record_chunk failed", exc_info=True)
+        return chunk
+
+
 def _prepend_context(content: Any, prefix: str) -> Any:
     from openjiuwen.harness_protocol import HarnessInput
 
@@ -822,8 +815,11 @@ def _classify(error: TurnError | None) -> tuple[str, Any]:
 
 
 __all__ = [
+    "ChunkRecordingSpanBridge",
     "ContextFactory",
     "ExternalHarnessMemberRuntime",
+    "MemberSpanBridge",
+    "NativeObservationSpanBridge",
     "TeamContextAwareRuntime",
     "checkpoint_from_dict",
     "checkpoint_to_dict",
