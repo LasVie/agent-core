@@ -8,7 +8,7 @@
 | 范围 | `openjiuwen/harness_providers/factory.py`、`skills.py`、`__init__.py`；skill `.claude/skills/harness-provider-integration/`（脚手架、平台 wheel 构建、运行时清单） |
 | 关联 spec | S_19（不变量 9、11，接口契约，Portable skills） |
 | 测试基线 | `tests/unit_tests/harness_providers` + `tests/unit_tests/agent_teams/external` 393 通过；新增 `test_provider_discovery.py` 9 项 |
-| 验证基线 | 干净虚拟环境非 editable 安装 openjiuwen 0.1.19（本次改动），仓库外生成三种模式的包：单测与注册测试全过；opencode 1.17.18 ACP 包 23 项全过（含 6 项真实 e2e，经 entry point 走 manifest 工厂）；自带 opencode 的 macOS arm64 平台 wheel 经 jiuwenswarm 原生 `_verify_wheel_artifact` / `_safe_extract_wheel` 安装、追加 `sys.path` 后，在 PATH 无 opencode 的进程里跑通真实文本与工具 Turn；同一 wheel 可被 pip 安装。2026-10-12：自带 opencode 1.18.31 的 wheel 并入 jiuwenswarm 内置清单后，经 `install_external_cli_runtime` 从 HTTP 源下载、校验、安装为 `current`，`resolve_provider` 加载解压出的模块，在 PATH 无 opencode 的进程里跑通真实文本 Turn |
+| 验证基线 | 干净虚拟环境非 editable 安装 openjiuwen 0.1.19（本次改动），仓库外生成三种模式的包：单测与注册测试全过；opencode 1.17.18 ACP 包 23 项全过（含 6 项真实 e2e，经 entry point 走 manifest 工厂）；自带 opencode 的 macOS arm64 平台 wheel 经 jiuwenswarm 原生 `_verify_wheel_artifact` / `_safe_extract_wheel` 安装、追加 `sys.path` 后，在 PATH 无 opencode 的进程里跑通真实文本与工具 Turn；同一 wheel 可被 pip 安装。2026-10-12：自带 opencode 1.18.31 的 wheel 并入 jiuwenswarm 内置清单后，经 `install_external_cli_runtime` 从 HTTP 源下载、校验、安装为 `current`，`resolve_provider` 加载解压出的模块，在 PATH 无 opencode 的进程里跑通真实文本 Turn。kimi-code 2.1.1 ACP 包：ACP 模板只填厂商常量，指定模型（`MODEL_CONFIG_ID`）下 36 项全过，含 6 项契约 e2e 与 4 项厂商 e2e（工具参数、MCP `mcp__{server}__{tool}`、`.kimi-code/skills` 技能、非法模型拒绝）；自带 kimi + fd 的 macOS arm64 wheel 经 jiuwenswarm 托管安装后在 PATH 无 kimi 的进程里完成 ACP 握手与建会话 |
 | Refs | #2006 |
 
 ## 背景
@@ -54,6 +54,12 @@ agent 接成 harness provider，产物必须是独立 pip 包，openjiuwen 装�
 10. **构建脚本校验二进制格式**：读 Mach-O / ELF / PE 头与 CPU 类型，与目标平台不符就拒绝；平台标签
     `py3-none-<tag>`、`Root-Is-Purelib: false`、bundled 可执行强制 0755、重算 `RECORD`。
 
+11. **ACP 模板两种选模型方式并存**：opencode 只接受启动参数、拒绝会话内 `set_config_option`；kimi-code
+    正相反。模板用 `MODEL_ARGS`（启动参数）与 `MODEL_CONFIG_ID`（会话内切换，建会话 / 加载会话后调用
+    并核对回报的 `currentValue`，不在可选列表里以 `request_rejected` 启动失败）由取证结果二选一，
+    都没有时拒绝配置的模型。工具 STARTED 只在拿到参数或调用结束时发出（kimi 先发不带参数的
+    `in_progress`）。
+
 ## 拒绝的方案
 
 - **在 openjiuwen 内维护一张外部 provider 白名单或配置文件**：每接一个厂商都要发 openjiuwen 版本，
@@ -86,4 +92,5 @@ agent 接成 harness provider，产物必须是独立 pip 包，openjiuwen 装�
 - 第三方 provider 还不能作为 agent team 外部 CLI 成员：团队分派仍按 `claude` / `codex` 名字硬编码。
 - 生成包的 openjiuwen 依赖下限取生成时的已安装版本；本改动发布后需把下限改为首个包含 entry point
   发现的正式版本。
-- kimi-code 本机未登录，只核对了命令行参数，未跑真实 Turn。
+- kimi-code 额度错误与认证错误同为 `-32000` 且无结构化字段，只能归 `auth_required`；等厂商给出结构化
+  区分再细分为 `quota_exceeded`。
