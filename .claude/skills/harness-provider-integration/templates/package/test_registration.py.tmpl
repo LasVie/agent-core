@@ -1,0 +1,39 @@
+# coding: utf-8
+# Copyright (c) Huawei Technologies Co., Ltd. __YEAR__. All rights reserved.
+
+"""openjiuwen finds this provider through its installed entry point."""
+
+from __future__ import annotations
+
+from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
+from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+from openjiuwen.harness.schema.deep_agent_spec import ModelSpec
+from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
+from openjiuwen.harness_protocol import HarnessState
+from openjiuwen.harness_providers import available_providers, create_harness, resolve_provider
+from __PKG__ import __CLASS__Harness, __CLASS__HarnessProvider
+
+
+def test_installed_package_is_a_resolvable_provider() -> None:
+    # Requires ``pip install -e .``: the entry point is package metadata.
+    assert "__PROVIDER__" in available_providers()
+    provider = resolve_provider("__PROVIDER__")
+    assert provider.card == __CLASS__HarnessProvider().card
+
+
+def test_manifest_factory_builds_an_unstarted_harness_with_the_manifest_model() -> None:
+    manifest = AgentTemplateSpec(
+        agent_card=AgentCard(id="expert", name="expert", description="An expert agent"),
+        model=ModelSpec(
+            model_client_config=ModelClientConfig(client_provider="openai", api_key="k", api_base="https://llm"),
+            model_request_config=ModelRequestConfig(model="vendor-model"),
+        ),
+    )
+    endpoint = {"model": "vendor-model", "provider": "openai", "api_base": "https://llm", "api_key": "k"}
+    mapped = __CLASS__HarnessProvider.manifest_config(endpoint)
+    assert mapped["model"] == "vendor-model"
+    # Constructing a harness never launches the runtime; a configured model the
+    # CLI cannot select is rejected at start(), not here.
+    harness = create_harness(manifest, provider="__PROVIDER__")
+    assert isinstance(harness, __CLASS__Harness)
+    assert harness.state is HarnessState.TERMINATED

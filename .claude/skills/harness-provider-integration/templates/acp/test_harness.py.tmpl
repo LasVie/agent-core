@@ -1,0 +1,466 @@
+# coding: utf-8
+# Copyright (c) Huawei Technologies Co., Ltd. __YEAR__. All rights reserved.
+
+"""Unit tests for the __DISPLAY__ ACP harness, driven by a scripted ACP agent process."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import json
+import sys
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from openjiuwen.harness_protocol import (
+    DeliveryMode,
+    HarnessCapability,
+    HarnessContext,
+    HarnessEvent,
+    HarnessInput,
+    HarnessProtocol,
+    HarnessState,
+    HostCapability,
+    ItemEventKind,
+    ItemLifecycleEvent,
+    McpServerConfig,
+    McpTransport,
+    OutputChannel,
+    OutputEvent,
+    OutputOperation,
+    ProviderEvent,
+    ResumePolicy,
+    ToolApprovalDecision,
+    ToolApprovalResponse,
+    TurnEventKind,
+    TurnLifecycleEvent,
+    TurnTerminationKind,
+    UnsupportedHarnessCapabilityError,
+    UsageUpdatedEvent,
+)
+from openjiuwen.harness_providers.base import ProviderStartupError
+from __PKG__ import (
+    __CLASS__Harness,
+    __CLASS__HarnessConfig,
+    __CLASS__HarnessProvider,
+)
+from __PKG__ import bundled
+from __PKG__.harness import MODEL_ARGS
+
+logger = logging.getLogger(__name__)
+FAKE_AGENT = Path(__file__).with_name("fake_agent.py")
+TURN_TIMEOUT_S = 30.0
+
+
+def _config(state: Path, **overrides: Any) -> __CLASS__HarnessConfig:
+    values: dict[str, Any] = {
+        "command": (sys.executable, str(FAKE_AGENT)),
+        "env": {"FAKE_ACP_STATE": str(state)},
+        "shutdown_timeout_s": 2.0,
+        "initialize_timeout_s": 20.0,
+    }
+    values.update(overrides)
+    return __CLASS__HarnessConfig(**values)
+
+
+def _context(tmp_path: Path, **overrides: Any) -> HarnessContext:
+    values: dict[str, Any] = {
+        "agent_name": "worker",
+        "agent_id": "agent-1",
+        "host_session_id": "host-1",
+        "system_prompt": "",
+        "cwd": str(tmp_path),
+    }
+    values.update(overrides)
+    return HarnessContext(**values)
+
+
+def _state(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+async def _turn(harness: HarnessProtocol, turn_id: str) -> list[HarnessEvent]:
+    async def _collect() -> list[HarnessEvent]:
+        return [event async for event in harness.turn_events(turn_id)]
+
+    return await asyncio.wait_for(_collect(), TURN_TIMEOUT_S)
+
+
+def _terminal(events: list[HarnessEvent]) -> TurnLifecycleEvent:
+    payload = events[-1].event
+    assert isinstance(payload, TurnLifecycleEvent)
+    return payload
+
+
+def _of_type(events: list[HarnessEvent], kind: type) -> list[Any]:
+    return [event.event for event in events if isinstance(event.event, kind)]
+
+
+def test_config_validates_and_rejects_unknown_fields() -> None:
+    config = __CLASS__HarnessConfig.from_mapping({"command": ["x", "acp"], "env": {"K": "V"}})
+    assert config.command == ("x", "acp")
+    with pytest.raises(ValueError, match="unknown"):
+        __CLASS__HarnessConfig.from_mapping({"nope": 1})
+    with pytest.raises(TypeError):
+        __CLASS__HarnessConfig(command=("x", ""))
+    with pytest.raises(ValueError):
+        __CLASS__HarnessConfig(turn_timeout_s=0)
+
+
+def test_provider_creates_an_unstarted_harness_without_launching() -> None:
+    provider = __CLASS__HarnessProvider()
+    harness = provider.create({"command": ["definitely-not-installed-cli", "acp"]})
+    assert isinstance(harness, HarnessProtocol)
+    assert harness.card is provider.card
+    assert harness.state is HarnessState.TERMINATED
+
+
+@pytest.mark.asyncio
+async def test_missing_cli_fails_start_as_process_start_failed(tmp_path: Path) -> None:
+    harness = __CLASS__Harness(_config(tmp_path / "state.json", command=("definitely-not-installed-cli",)))
+    with pytest.raises(ProviderStartupError) as caught:
+        await harness.start(_context(tmp_path))
+    assert caught.value.error.category == "process_start_failed"
+    assert harness.state is HarnessState.TERMINATED
+
+
+@pytest.mark.asyncio
+async def test_text_turn_streams_deltas_final_and_usage(tmp_path: Path) -> None:
+    state = tmp_path / "state.json"
+    harness = __CLASS__Harness(_config(state))
+    await harness.start(_context(tmp_path, system_prompt="Be terse."))
+    try:
+        receipt = await harness.send(HarnessInput(content="hello"))
+        events = await _turn(harness, receipt.turn_id)
+        logger.info("text turn events: %s", [type(event.event).__name__ for event in events])
+        terminal = _terminal(events)
+        assert terminal.kind is TurnEventKind.FINISHED, terminal.result
+        assert terminal.result.final_output == "echo: hello"
+        outputs = _of_type(events, OutputEvent)
+        answer = [output for output in outputs if output.channel is OutputChannel.ANSWER]
+        assert [output.operation for output in answer] == [
+            OutputOperation.DELTA,
+            OutputOperation.DELTA,
+            OutputOperation.FINAL,
+        ]
+        assert any(output.channel is OutputChannel.REASONING for output in outputs)
+        assert _of_type(events, UsageUpdatedEvent)[0].usage.input_tokens == 10
+        assert terminal.result.usage.cached_input_tokens == 2
+        # Chatter between prompts never becomes a turn event.
+        assert not [event for event in _of_type(events, ProviderEvent) if "commands" in event.event_type]
+
+        second = await harness.send(HarnessInput(content="again"))
+        await _turn(harness, second.turn_id)
+        prompts = _state(state)["prompts"]
+        assert "<system-instructions>" in prompts[0] and "Be terse." in prompts[0]
+        assert "<system-instructions>" not in prompts[1]
+    finally:
+        await harness.stop()
+    assert harness.state is HarnessState.TERMINATED
+
+
+@pytest.mark.asyncio
+async def test_tool_call_starts_with_its_arguments_and_completes(tmp_path: Path) -> None:
+    harness = __CLASS__Harness(_config(tmp_path / "state.json"))
+    await harness.start(_context(tmp_path))
+    try:
+        receipt = await harness.send(HarnessInput(content="TOOL read secret.txt"))
+        events = await _turn(harness, receipt.turn_id)
+        items = [event for event in events if isinstance(event.event, ItemLifecycleEvent)]
+        assert [event.event.kind for event in items] == [ItemEventKind.STARTED, ItemEventKind.COMPLETED]
+        started, completed = items
+        assert started.item_id == completed.item_id
+        # The pending tool_call carried no input; the item waits for it.
+        assert started.event.data["arguments"] == {"filePath": "secret.txt"}
+        assert started.event.data["name"] == "read"
+        assert completed.event.data["rendered_result"] == "TOKEN-1"
+        assert completed.event.data["result"]["output"] == "1: TOKEN-1"
+        assert _terminal(events).result.final_output == "TOKEN-1"
+    finally:
+        await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_follow_up_turns_run_serially(tmp_path: Path) -> None:
+    harness = __CLASS__Harness(_config(tmp_path / "state.json"))
+    await harness.start(_context(tmp_path))
+    try:
+        first = await harness.send(HarnessInput(content="one"))
+        second = await harness.send(HarnessInput(content="two"))
+        assert second.accepted_mode is DeliveryMode.FOLLOW_UP
+        first_events = await _turn(harness, first.turn_id)
+        second_events = await _turn(harness, second.turn_id)
+        assert _terminal(first_events).result.final_output == "echo: one"
+        assert _terminal(second_events).result.final_output == "echo: two"
+        assert max(event.sequence for event in first_events) < min(event.sequence for event in second_events)
+    finally:
+        await harness.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not __CLASS__Harness.card.supports(HarnessCapability.GRACEFUL_ABORT),
+    reason="the card does not declare GRACEFUL_ABORT",
+)
+async def test_abort_cancels_the_prompt_and_the_session_survives(tmp_path: Path) -> None:
+    harness = __CLASS__Harness(_config(tmp_path / "state.json"))
+    await harness.start(_context(tmp_path))
+    try:
+        receipt = await harness.send(HarnessInput(content="SLOW count"))
+        events: list[HarnessEvent] = []
+        aborted = False
+
+        async def _consume() -> None:
+            nonlocal aborted
+            async for event in harness.turn_events(receipt.turn_id):
+                events.append(event)
+                if not aborted and isinstance(event.event, OutputEvent):
+                    aborted = True
+                    await harness.abort()
+
+        await asyncio.wait_for(_consume(), TURN_TIMEOUT_S)
+        terminal = _terminal(events)
+        assert terminal.kind is TurnEventKind.ABORTED
+        assert terminal.result.termination.kind is TurnTerminationKind.USER_ABORT
+        again = await harness.send(HarnessInput(content="after"))
+        assert _terminal(await _turn(harness, again.turn_id)).kind is TurnEventKind.FINISHED
+    finally:
+        await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_permission_requests_route_to_the_host(tmp_path: Path) -> None:
+    state = tmp_path / "state.json"
+    requests: list[Any] = []
+
+    class _Approvals:
+        async def handle(self, request: Any) -> Any:
+            requests.append(request)
+            return ToolApprovalResponse(request_id=request.request_id, decision=ToolApprovalDecision.DENY)
+
+        async def cancel(self, request_id: str, *, reason: Any = None) -> None:
+            _ = request_id, reason
+
+    harness = __CLASS__Harness(_config(state))
+    context = _context(
+        tmp_path,
+        host_capabilities=frozenset({HostCapability.TOOL_APPROVAL}),
+        interactions=_Approvals(),
+    )
+    await harness.start(context)
+    try:
+        receipt = await harness.send(HarnessInput(content="ASK to write"))
+        terminal = _terminal(await _turn(harness, receipt.turn_id))
+        assert terminal.result.final_output == "permission: reject"
+        assert requests[0].tool_name == "write"
+        assert requests[0].arguments == {"path": "a.txt"}
+    finally:
+        await harness.stop()
+    assert _state(state)["permission"] == [{"outcome": "selected", "optionId": "reject"}]
+
+
+@pytest.mark.asyncio
+async def test_permission_requests_auto_approve_without_a_host(tmp_path: Path) -> None:
+    harness = __CLASS__Harness(_config(tmp_path / "state.json"))
+    await harness.start(_context(tmp_path))
+    try:
+        receipt = await harness.send(HarnessInput(content="ASK to write"))
+        assert _terminal(await _turn(harness, receipt.turn_id)).result.final_output == "permission: allow"
+    finally:
+        await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_auth_error_fails_the_turn_as_auth_required(tmp_path: Path) -> None:
+    harness = __CLASS__Harness(_config(tmp_path / "state.json"))
+    await harness.start(_context(tmp_path))
+    try:
+        receipt = await harness.send(HarnessInput(content="FAILAUTH"))
+        terminal = _terminal(await _turn(harness, receipt.turn_id))
+        assert terminal.kind is TurnEventKind.FAILED
+        assert terminal.result.error.category == "auth_required"
+        assert terminal.result.error.code == "-32000"
+    finally:
+        await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_agent_crash_fails_the_turn_and_every_later_turn(tmp_path: Path) -> None:
+    harness = __CLASS__Harness(_config(tmp_path / "state.json"))
+    await harness.start(_context(tmp_path))
+    try:
+        receipt = await harness.send(HarnessInput(content="CRASH"))
+        terminal = _terminal(await _turn(harness, receipt.turn_id))
+        assert terminal.kind is TurnEventKind.FAILED
+        assert terminal.result.error.code == "__UPPER___CLI_EXITED"
+        again = await harness.send(HarnessInput(content="hello"))
+        assert _terminal(await _turn(harness, again.turn_id)).kind is TurnEventKind.FAILED
+    finally:
+        await harness.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not __CLASS__Harness.card.supports(HarnessCapability.CHECKPOINT),
+    reason="the card does not declare CHECKPOINT",
+)
+async def test_checkpoint_resume_loads_the_session_without_replaying_events(tmp_path: Path) -> None:
+    state = tmp_path / "state.json"
+    first = __CLASS__Harness(_config(state))
+    await first.start(_context(tmp_path, system_prompt="Be terse."))
+    receipt = await first.send(HarnessInput(content="REMEMBER zebra"))
+    assert _terminal(await _turn(first, receipt.turn_id)).kind is TurnEventKind.FINISHED
+    checkpoint = await first.export_checkpoint()
+    session_id = first.provider_session_id
+    await first.stop()
+    assert checkpoint is not None and checkpoint.data["session_id"] == session_id
+
+    second = __CLASS__Harness(_config(state))
+    await second.start(
+        _context(
+            tmp_path,
+            system_prompt="Be terse.",
+            resume_policy=ResumePolicy.REQUIRE_RESUME,
+            checkpoint=checkpoint,
+        )
+    )
+    try:
+        assert second.provider_session_id == session_id
+        receipt = await second.send(HarnessInput(content="RECALL"))
+        events = await _turn(second, receipt.turn_id)
+        assert _terminal(events).result.final_output == "recall: zebra"
+        assert not [event for event in _of_type(events, ProviderEvent) if event.event_type == "user_message_chunk"]
+    finally:
+        await second.stop()
+    recorded = _state(state)
+    assert recorded["session_load"] == [session_id]
+    # A loaded session already holds the system prompt; it is not sent again.
+    assert "<system-instructions>" not in recorded["prompts"][-1]
+
+
+@pytest.mark.asyncio
+async def test_stop_aborts_the_active_and_queued_turns(tmp_path: Path) -> None:
+    harness = __CLASS__Harness(_config(tmp_path / "state.json"))
+    await harness.start(_context(tmp_path))
+    first = await harness.send(HarnessInput(content="SLOW count"))
+    queued = await harness.send(HarnessInput(content="never runs"))
+    events: list[HarnessEvent] = []
+
+    async def _consume() -> None:
+        async for event in harness.events():
+            events.append(event)
+            if isinstance(event.event, OutputEvent) and len(_of_type(events, OutputEvent)) == 1:
+                asyncio.get_running_loop().create_task(harness.stop())
+
+    await asyncio.wait_for(_consume(), TURN_TIMEOUT_S)
+    terminals = {
+        event.turn_id: event.event
+        for event in events
+        if isinstance(event.event, TurnLifecycleEvent) and event.event.kind is not TurnEventKind.STARTED
+    }
+    assert terminals[first.turn_id].kind is TurnEventKind.ABORTED
+    assert terminals[queued.turn_id].result.termination.kind is TurnTerminationKind.HARNESS_STOP
+    assert harness.state is HarnessState.TERMINATED
+
+
+@pytest.mark.asyncio
+async def test_mcp_servers_reach_session_new_in_acp_shape(tmp_path: Path) -> None:
+    state = tmp_path / "state.json"
+    server = McpServerConfig(name="team", transport=McpTransport.STDIO, command=("srv", "--flag"), env={"K": "V"})
+    harness = __CLASS__Harness(_config(state))
+    await harness.start(replace(_context(tmp_path), mcp_servers=(server,)))
+    await harness.stop()
+    assert _state(state)["session_new"][0]["mcpServers"] == [
+        {"name": "team", "command": "srv", "args": ["--flag"], "env": [{"name": "K", "value": "V"}]}
+    ]
+    http = McpServerConfig(name="web", transport=McpTransport.HTTP, url="http://127.0.0.1:1/mcp")
+    with pytest.raises(UnsupportedHarnessCapabilityError):
+        await __CLASS__Harness(_config(state)).start(replace(_context(tmp_path), mcp_servers=(http,)))
+
+
+@pytest.mark.asyncio
+async def test_model_selection_follows_the_launch_flag(tmp_path: Path) -> None:
+    state = tmp_path / "state.json"
+    harness = __CLASS__Harness(_config(state, model="vendor/model-x"))
+    if not MODEL_ARGS:
+        with pytest.raises(UnsupportedHarnessCapabilityError):
+            await harness.start(_context(tmp_path))
+        return
+    await harness.start(_context(tmp_path))
+    await harness.stop()
+    assert "vendor/model-x" in _state(state)["argv"]
+
+
+def _install_bundle(monkeypatch: pytest.MonkeyPatch, root: Path, target: Path) -> Path:
+    """Lay out a bundled CLI whose entrypoint launches ``target`` with this interpreter."""
+    bin_dir = root / "bin"
+    bin_dir.mkdir(parents=True)
+    launcher = bin_dir / "__BINARY__"
+    launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{target}" "$@"\n', encoding="utf-8")
+    launcher.chmod(0o755)
+    metadata = {"layoutVersion": 1, "entrypoint": "bin/__BINARY__", "cliVersion": "0.0.0-test", "platform": "test"}
+    (root / "runtime.json").write_text(json.dumps(metadata), encoding="utf-8")
+    monkeypatch.setattr(bundled, "BUNDLED_ROOT", root)
+    return bin_dir.resolve()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="the bundled stand-in is a POSIX shell launcher")
+async def test_bundled_cli_is_the_fallback_when_path_lacks_the_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = tmp_path / "state.json"
+    bin_dir = _install_bundle(monkeypatch, tmp_path / "_bundled", FAKE_AGENT)
+    # command[0] exists nowhere: only the bundled CLI can serve this session.
+    harness = __CLASS__Harness(_config(state, command=("definitely-not-installed-cli", "acp")))
+    await harness.start(_context(tmp_path))
+    try:
+        receipt = await harness.send(HarnessInput(content="hello"))
+        assert _terminal(await _turn(harness, receipt.turn_id)).result.final_output == "echo: hello"
+    finally:
+        await harness.stop()
+    recorded = _state(state)
+    assert recorded["path_head"] == str(bin_dir)
+    assert recorded["argv"] == ["acp"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="the bundled stand-in is a POSIX shell launcher")
+async def test_cli_path_overrides_the_bundled_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = tmp_path / "state.json"
+    bin_dir = _install_bundle(monkeypatch, tmp_path / "_bundled", tmp_path / "never-run.py")
+    harness = __CLASS__Harness(_config(state, cli_path=sys.executable, command=("ignored", str(FAKE_AGENT))))
+    await harness.start(_context(tmp_path))
+    await harness.stop()
+    assert _state(state)["path_head"] != str(bin_dir)
+
+
+@pytest.mark.asyncio
+async def test_broken_fallback_bundle_fails_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "_bundled"
+    root.mkdir()
+    (root / "runtime.json").write_text(json.dumps({"layoutVersion": 1, "entrypoint": "bin/missing"}), encoding="utf-8")
+    monkeypatch.setattr(bundled, "BUNDLED_ROOT", root)
+    # The bundle is consulted only when the CLI is not on PATH.
+    harness = __CLASS__Harness(_config(tmp_path / "state.json", command=("definitely-not-installed-cli", "acp")))
+    with pytest.raises(ProviderStartupError) as caught:
+        await harness.start(_context(tmp_path))
+    assert caught.value.error.category == "process_start_failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="the bundled stand-in is a POSIX shell launcher")
+async def test_cli_on_path_wins_over_the_bundled_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = tmp_path / "state.json"
+    bin_dir = _install_bundle(monkeypatch, tmp_path / "_bundled", tmp_path / "never-run.py")
+    # The default test command names a CLI that exists, so the bundle stays unused.
+    harness = __CLASS__Harness(_config(state))
+    await harness.start(_context(tmp_path))
+    try:
+        receipt = await harness.send(HarnessInput(content="hello"))
+        assert _terminal(await _turn(harness, receipt.turn_id)).result.final_output == "echo: hello"
+    finally:
+        await harness.stop()
+    assert _state(state)["path_head"] != str(bin_dir)

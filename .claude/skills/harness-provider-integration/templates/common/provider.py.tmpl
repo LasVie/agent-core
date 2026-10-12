@@ -1,0 +1,51 @@
+# coding: utf-8
+# Copyright (c) Huawei Technologies Co., Ltd. __YEAR__. All rights reserved.
+
+"""Provider factory for the __DISPLAY__ harness.
+
+openjiuwen discovers this class through the ``openjiuwen.harness_providers``
+entry point declared in ``pyproject.toml``; ``create_harness(manifest,
+provider="__PROVIDER__")`` then builds harnesses from it.
+"""
+
+from __future__ import annotations
+
+from dataclasses import fields
+from typing import Any, Mapping
+
+from openjiuwen.harness_protocol import HarnessCard, JsonObject
+from __PKG__.config import __CLASS__HarnessConfig
+from __PKG__.harness import __CLASS__Harness
+
+# Manifest endpoint keys openjiuwen passes to ``manifest_config``.
+_ENDPOINT_KEYS = ("model", "provider", "api_base", "api_key")
+
+
+class __CLASS__HarnessProvider:
+    """Validate provider configuration and create an unstarted __DISPLAY__ harness."""
+
+    @property
+    def card(self) -> HarnessCard:
+        return __CLASS__Harness.card
+
+    @staticmethod
+    def create(config: JsonObject) -> __CLASS__Harness:
+        return __CLASS__Harness(__CLASS__HarnessConfig.from_mapping(config))
+
+    @staticmethod
+    def manifest_config(endpoint: Mapping[str, str | None]) -> dict[str, Any]:
+        """Map an AgentTemplate manifest's model endpoint onto this provider's config.
+
+        openjiuwen's manifest factory calls this with ``model`` / ``provider`` /
+        ``api_base`` / ``api_key``; configuration the host passes explicitly
+        still wins. Only fields the config declares are forwarded.
+        """
+        accepted = {item.name for item in fields(__CLASS__HarnessConfig)}
+        return {
+            key: value
+            for key, value in endpoint.items()
+            if key in _ENDPOINT_KEYS and key in accepted and value is not None
+        }
+
+
+__all__ = ["__CLASS__HarnessProvider"]

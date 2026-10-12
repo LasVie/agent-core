@@ -1,0 +1,162 @@
+---
+name: harness-provider-integration
+description: Turn a locally installed third-party agent harness (an agent CLI or an agent Python SDK) into a pip-installable openjiuwen harness provider package that openjiuwen discovers through the `openjiuwen.harness_providers` entry point. Covers CLIs speaking the Agent Client Protocol (ACP, e.g. `opencode acp`, `kimi acp`, gemini-cli/qwen-code/goose), one-shot CLIs with structured stdout, and vendor SDKs. Ships a scaffold script whose generated package, fake-runtime unit tests, registration test and e2e suite pass immediately, and a build script producing the wheel plus a sha256 runtime manifest for frozen hosts that download, extract and append it to sys.path, optionally bundling the vendor CLI into platform wheels as a last-resort fallback behind the CLI on PATH (like claude-agent-sdk / openai-codex-cli-bin), plus recon, capability, mapping, testing and packaging rules distilled from openjiuwen's claudecode/codex/dsh providers. Works with only `pip install openjiuwen`; no openjiuwen source checkout needed. Use whenever someone wants to plug an agent CLI or agent SDK into openjiuwen as a harness provider (接入/扩展三方 Agent Harness、CLI agent、agent SDK 到 openjiuwen), or asks how to write such a provider.
+---
+
+# 三方 Agent Harness 接入 openjiuwen（provider 包）
+
+把用户本机的三方编码 agent（CLI 或 Python SDK）接成 openjiuwen 的 `HarnessProtocol` provider，
+产物是一个**独立的 pip 包** `openjiuwen-harness-<name>`：
+
+- 包内实现 provider（config / provider / harness / mapping / failure_classifier [+ process / rpc / bundled]）；
+- `pyproject.toml` 声明 entry point `openjiuwen.harness_providers`；
+- 构建 wheel 并产出 `runtime-manifest.json`，供冻结版宿主（jiuwenswarm 桌面应用）按清单下载、校验、
+  解压、挂 `sys.path` 动态加载；CLI 模式**可选**把厂商 CLI 打进按平台区分的 wheel（`_bundled/bin/<cli>`，
+  与 claude-agent-sdk、openai-codex-cli-bin 同一做法），运行时 PATH 上的 CLI 优先，自带的只作兜底；
+- 安装后 openjiuwen 无需改代码即可解析：`create_harness(manifest, provider="<name>")`、
+  `available_providers()` 里能看到它；团队、DeepAgent IO adapter 等宿主像驱动内置的
+  Claude Code / Codex / DSH 一样驱动它。
+
+本 skill 自包含：用户机器上只需要 `pip install openjiuwen`，不需要 openjiuwen 源码仓库。
+下文 `SKILL_DIR` 指本 skill 所在目录。
+
+## 0. 准备环境
+
+```bash
+python -m venv .venv && . .venv/bin/activate        # Windows: .venv\Scripts\activate
+python -m pip install -U openjiuwen pytest pytest-asyncio
+python -c "from openjiuwen.harness_providers import HARNESS_PROVIDER_ENTRY_POINT_GROUP"   # 失败说明 openjiuwen 太旧，先升级
+<agent-cli> --version                                 # 目标 CLI 已安装、已登录；SDK 模式则 pip install 厂商 SDK
+```
+
+需要读 openjiuwen 实现时读已安装的源码（pip 包不带 md 文档）：
+
+```bash
+python -c "import openjiuwen.harness_providers as p, os; print(os.path.dirname(p.__file__))"
+```
+
+该目录下 `base.py`（`SerializedTurnHarness` 骨架）、`factory.py`（provider 解析与 manifest 映射）、
+`skills.py`、`mcp_naming.py`，以及内置 provider `codex/`（异步 SDK）、`dsh/`（同步 SDK + 回调）、
+`claudecode/`（审批交互与 Turn 边界）是最好的先例。
+
+## 1. 取证（不可跳过）
+
+按 [references/recon.md](references/recon.md) 回答 15 个必答问题，把真实运行记录落盘到临时目录。
+没有原始记录就没有映射：映射之后的数据只能证明映射本身。
+
+## 2. 选接入模式
+
+| 厂商提供 | 模式 | 模板现状 |
+|---|---|---|
+| `<cli> acp` / `--acp` 等 ACP stdio 入口 | `acp` | 标准协议，几乎零厂商代码；opencode 上开箱通过全部 e2e |
+| Python SDK（流式 API、中断、会话） | `sdk` | 调用集中在 `_sdk_*`，按真实 API 重写 |
+| 只有一次性非交互模式 + 结构化 stdout + 会话 id 续接 | `oneshot` | 映射与 argv 需按厂商记录重写 |
+| 自有常驻协议（非 ACP 的 JSON 行协议、app-server） | `acp` 骨架 + 替换 `rpc.py` 帧格式与 `mapping.py` | 参考内置 `codex/` |
+
+同一厂商多个入口时优先级：ACP > SDK > 一次性 CLI（能力依次变少：中止、审批、MCP、续会话）。
+细节：[mode-acp.md](references/mode-acp.md) · [mode-sdk.md](references/mode-sdk.md) ·
+[mode-oneshot.md](references/mode-oneshot.md)。
+
+## 3. 生成包并立即跑绿
+
+用装了 openjiuwen 的那个 Python 运行脚手架（它据此写 openjiuwen 依赖下限）：
+
+```bash
+python $SKILL_DIR/scripts/scaffold.py --name opencode --mode acp --display OpenCode --binary opencode --command "opencode acp" --out .
+python $SKILL_DIR/scripts/scaffold.py --name kimi --mode oneshot --binary kimi --command "kimi --output-format stream-json" --out .
+python $SKILL_DIR/scripts/scaffold.py --name acme --mode sdk --sdk-module acme_agent --sdk-dist acme-agent-sdk --out .
+
+cd openjiuwen-harness-<name>
+python -m pip install -e ".[test]"          # entry point 是包元数据，必须安装后 openjiuwen 才看得见
+python -m pytest -q                          # 单测 + 注册测试必须全绿；运行时缺失时 e2e 自动跳过
+```
+
+`--dry-run` 先看计划；脚本拒绝覆盖已有目录。`<name>` 是 `create_harness` 用的 provider 名
+（snake_case，不能与内置的 `native / native_v2 / claudecode / codex / dsh` 重名），包名
+`openjiuwen-harness-<name>`、模块 `openjiuwen_harness_<name>`。生成后测试不全绿就先查环境再往下走。
+
+## 4. 厂商化：关闭所有 `SCAFFOLD(<topic>)` 标记
+
+`python $SKILL_DIR/scripts/scaffold.py --check openjiuwen-harness-<name>` 列出剩余标记，结束时必须为 0。
+
+| 主题 | 做什么 | 参考 |
+|---|---|---|
+| `capabilities` | 卡片只留 e2e 证明过的能力 | [capabilities.md](references/capabilities.md) |
+| `mapping` / `turn-end` | 用真实记录重写 `consume`；确认结束信号 | [mapping.md](references/mapping.md) |
+| `sdk-calls` / `config` / `mcp-config` | 按真实 SDK API 改写调用与配置 | mode-sdk.md |
+| `argv` / `prompt-delivery` / `system-prompt` | 一次性 CLI 的命令行形态 | mode-oneshot.md |
+| `model` / `mcp-naming` | 模型启动参数；模型侧 MCP 工具名规则 | mode-acp.md、recon.md |
+| `skills-dir` | CLI 的项目级技能发现目录（没有就保持 `None`，配置技能会被拒绝） | recon.md |
+| `failure-codes` / `failure-exceptions` | 厂商错误码 / 异常类型到共享类别 | mapping.md |
+| `fixtures` | 假运行时改成真实记录的形状 | [testing.md](references/testing.md) |
+| `agents-md` | 填包内 `AGENTS.md`"验证过的厂商事实" | — |
+
+## 5. e2e 证明能力
+
+`tests/test_e2e.py` 复用包内自带的 `tests/contract.py`（与 openjiuwen 内置 provider 的 e2e 契约同源），
+按卡片能力自动选用例，并验证"装好的包能经 entry point 驱动 manifest 工厂"。真实运行时上全部通过，
+卡片才算定稿。见 [testing.md](references/testing.md)。
+
+## 6. 构建 wheel 与运行时清单（是否自带 CLI 由用户决定）
+
+CLI 模式在这一步**询问用户是否把厂商 CLI 打进 wheel**，不要替用户决定：
+
+- **不打包**：用户自己安装 CLI（开发者、服务器部署）。构建一个纯 Python wheel，覆盖所有目标平台：
+
+  ```bash
+  python $SKILL_DIR/scripts/build_runtime.py --project ./openjiuwen-harness-<name> \
+      --platform macos-arm64 --platform windows-x86_64 --base-url <发布地址前缀>
+  ```
+
+- **打包**：宿主的终端用户可能没装 CLI（桌面应用）。每个目标平台一次，用户提供该平台的 CLI 可执行：
+
+  ```bash
+  python $SKILL_DIR/scripts/build_runtime.py --project ./openjiuwen-harness-<name> \
+      --platform macos-arm64 --binary <该平台的 CLI 可执行> [--helper <辅助可执行>] --base-url <发布地址前缀>
+  ```
+
+两种情况下运行时的选用顺序都是：配置的 `cli_path` → PATH 上的 CLI → 包内自带 CLI（兜底）。产物与
+`runtime-manifest.json` 累积在 `dist/`；打包时脚本校验二进制确属目标平台、打平台标签，并在本机平台上
+模拟冻结宿主安装做冒烟。SDK 模式用 `--extra-wheel` 带上厂商 SDK 的平台 wheel。布局、清单格式、与
+jiuwenswarm 的对接、版本规则：[packaging.md](references/packaging.md)。
+
+## 硬约束（违反即返工）
+
+1. **能力真实**：卡片声明 = e2e 证明。做不到的命令让基类抛 Unsupported，不要用 stop/restart 模拟。
+2. **厂商依赖惰性**：config / provider / 包 import 不 import SDK、不解析或启动 CLI；缺失在 `start` 报
+   `HarnessError` 或 `ProviderStartupError(process_start_failed)`，且不留半开 cycle。openjiuwen 枚举
+   provider 时会 import 你的 `provider.py`，这里多一个重依赖就拖慢所有宿主。
+3. **失败只用共享类别**（`auth_required / quota_exceeded / rate_limited / request_rejected /
+   server_unavailable / network_timeout / process_start_failed / sdk_error / unknown`），按结构化字段
+   分类；stderr、凭据、环境变量、原始异常正文不进事件 / 结果 / checkpoint / 日志。
+4. **一个 Turn 恰好一个 STARTED 一个终态**，由基类发；provider 只返回 `(TurnEventKind, TurnResult)`。
+   宿主中止用 `interrupted_result`，自动区分 `USER_ABORT` / `HARNESS_STOP`。
+5. **未知记录保留为 `ProviderEvent`**；厂商对象先 `to_json_safe`。Turn 之外的通知不是 Turn 事件。
+6. **背压不绕开**：通知按序 inline await 进有界缓冲区；不加无界队列，不 fire-and-forget。
+   等宿主应答（审批 / 提问）不能阻塞读通知的那条路径。
+7. **MCP 工具命名声明**：挂了 MCP 就在系统提示词前置 `mcp_tool_naming_preamble`，规则取自真实记录。
+8. **跨平台**：子进程用 `asyncio.create_subprocess_exec` + `shutil.which`（Windows 走 PATHEXT），
+   终止走 terminate → kill；不用 `shell=True`、信号组或 POSIX 专有调用，除非两个平台都覆盖。
+9. **只用 openjiuwen 的公开扩展面**：`openjiuwen.harness_protocol`，`openjiuwen.harness_providers`
+   的 `base` / `jsonsafe` / `inputs` / `mcp_naming` / `skills` 与工厂注册接口。不要 import 内置
+   provider 的私有模块，它们随版本变化。
+
+## 验收清单
+
+- [ ] `scaffold.py --check` 输出 0 个标记
+- [ ] `python -m pytest` 全绿（单测、注册测试、e2e），e2e 在真实运行时上运行而非跳过
+- [ ] 卡片能力与 e2e 一一对应；未声明能力有"拒绝"单测
+- [ ] 包内 `AGENTS.md` 写明厂商版本与每条关键事实的出处
+- [ ] `pyproject.toml` 的 openjiuwen 下限不低于提供 entry point 发现的版本；SDK 模式写明厂商 SDK 依赖
+- [ ] 已和用户确认是否自带 CLI；自带时每个目标平台都用 `build_runtime.py` 构建并通过冒烟，非本机平台在该平台上实测过
+- [ ] `runtime-manifest.json` 的 url / mirror_url 已填为发布地址，且每个平台的产物是完整闭包
+
+## 常见坑（来自 openjiuwen 内置 provider 的真实教训）
+
+- SDK 自带 CLI 可能落后于本机配置的模型：配置允许指定 CLI 路径，e2e 用 PATH 上的 CLI。
+- 厂商的实验特性默认关闭（Codex `request_user_input` 需 `features.default_mode_request_user_input`）：
+  宿主声明对应能力时由 provider 自动打开，不要让宿主自己配。
+- 模型没拿到某工具时会把问题当文本输出再反复 `sleep`：e2e 卡住先用带硬超时的探针打印每个通知。
+- 提示词要点名厂商自己的工具名，模型才会稳定调用。
+- 已有一个 ACP 包再接第二个 ACP 厂商时，把 `process.py` / `rpc.py` / ACP 映射抽成共享基础包，
+  厂商包只留差异；不要复制第二份 ACP 客户端。
