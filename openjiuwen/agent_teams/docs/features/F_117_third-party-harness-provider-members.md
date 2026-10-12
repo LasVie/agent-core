@@ -36,9 +36,17 @@ jiuwenswarm 的设置页要让用户上传 provider 包（可附 CLI 可执行�
    （默认 `openjiuwen-team-mcp`）作为 `McpServerConfig(STDIO)` 绑定，env 只带 `MCP_SERVER_ENV_VARS`
    （`OPENJIUWEN_TEAM_JOIN` / `OPENJIUWEN_HOME`），MCP 子进程据此绑定成员身份——与适配器型 CLI
    的团队工具同一条通道。未声明 `MCP_TOOLS` 的 provider 只告警，成员没有团队工具。
-4. **三方成员不吃团队模型分配**：endpoint 到 provider 字段的映射属于 provider（F_07 的
-   `manifest_config` 钩子只服务 manifest 工厂）。spawn 时池分配 / 内置模型 / fallback 一律丢弃并记日志，
-   成员跑在 provider 自己的模型配置上；静态 `model_config` / `builtin_models` 仍只允许 claude / codex。
+4. **成员模型经 provider 的 `model_config` 协商**（同日两次修订：首版一律丢弃团队模型，自验证中
+   opencode / kimi 成员只能跑在本机 CLI 配置上；中间一版用启动后 `set_model` 加探针判断端点，被
+   harness [[F_08_provider-owned-model-config]] 的统一方案取代）。团队只表达 `ModelChoice`：
+   - **内置模型**（leader 从 `builtin_models` 挑的）与**端点模型**（池分配或静态 `model_config`）都经
+     `provider_model_config` 映射进 provider 配置，claude / codex 也走这条路，团队层不再有按 provider
+     名的模型分支；provider 不能跑的选择（如 ACP 带 effort）是 `AGENT_TEAM_CONFIG_INVALID`。
+   - 端点模型只交给声明 `ENDPOINT_MODELS` 的三方 provider；未声明时 spawn 丢弃并记日志，
+     `_provider_filter_for_cli` 也不向 leader 列出池里的模型。
+   - 认证 fallback 是 Claude / Codex 的行为，三方成员一律不带。运行中切换不变，仍是
+     `set_model_selection`（card 声明 `MODEL_SELECTION` 才可用）。
+   `ExternalCliAgentSpec` 的 `model_config` / `builtin_models` 改为只拒绝适配器型 CLI。
 5. **只拒绝真正不适用的选项**：`command_override` / `codex_bin` / `ssh_transport` / claude 与 codex
    专属超时、缓冲参数配在三方成员上时直接 `AGENT_TEAM_CONFIG_INVALID`，而不是静默忽略。
    `ExternalCliAgentSpec.cli_path` 改为只拒绝适配器型 CLI（它们用 `command` 改整条 argv）。
@@ -46,6 +54,10 @@ jiuwenswarm 的设置页要让用户上传 provider 包（可附 CLI 可执行�
    `str`，三方成员的失败 / 重试消息带 provider 名字。读方只是展示与路由，不枚举取值。
 
 ## 拒绝的方案
+
+- **启动后用 `set_model` 应用成员模型**：只覆盖声明 `MODEL_SELECTION` 的 provider，还给成员 runtime
+  多加一个概念；配置期映射对所有 provider 都成立（见 harness F_08）。
+- **探针判断 provider 能否接收端点**：能力应由 card 声明（`ENDPOINT_MODELS`），不该从钩子行为推断。
 
 - **为三方 provider 写一个通用 `CliRuntimeBase` 适配器**：等于在协议之外再维护一套 turn 状态机，
   F_96 刚把 claude / codex 迁出这条路。
@@ -67,6 +79,10 @@ jiuwenswarm 的设置页要让用户上传 provider 包（可附 CLI 可执行�
   `backend_for("opencode").kind == "provider"`，`build_cli_runtime` 建出成员 runtime：PATH 上没有
   opencode 的进程里跑通真实 Turn（回复 `pong`）；打开 `inject_mcp` 后成员能列出
   `openjiuwen-team_view_task` / `openjiuwen-team_send_message`，stdio 团队 MCP 注入生效。
+- 模型协商（同日）：harness-expert 的 opencode 包源码构建 wheel、经上传接口安装（附 opencode 2.0.27），
+  jiuwenswarm 探测出 opencode 免费模型目录，按 `opencode/big-pickle` 启动成员后会话当前模型即为它、
+  真实 Turn 回复 `pong`；运行中 `set_model_selection(opencode/nemotron-3-ultra-free)` 后当前模型切换、
+  真实 Turn 回复 `ping`。opencode 服务端已下线的模型（如 `exo-free`）在 Turn 里失败，属厂商侧。
 
 ## 已知遗留
 

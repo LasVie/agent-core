@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/external/member_runtime.py`、`openjiuwen/agent_teams/external/cli_agent/spawn.py`、`openjiuwen/agent_teams/spawn/external_cli_spawn.py` |
 | 最近一次修订日期 | 2026-10-12 |
-| 关联 feature | F_95_dsh-external-harness-adapter.md、F_96_protocol-harness-providers-and-member-migration.md、F_113_external-harness-builtin-model-selection.md、F_114_swarmflow-thirdparty-agent.md、F_115_external-session-fork.md、F_116_swarmflow-thirdparty-model-source.md、F_117_third-party-harness-provider-members.md |
+| 关联 feature | F_95_dsh-external-harness-adapter.md、F_96_protocol-harness-providers-and-member-migration.md、F_113_external-harness-builtin-model-selection.md、F_114_swarmflow-thirdparty-agent.md、F_115_external-session-fork.md、F_116_swarmflow-thirdparty-model-source.md、F_117_third-party-harness-provider-members.md、harness F_08_provider-owned-model-config.md |
 
 ## 范围 / 边界
 
@@ -93,8 +93,15 @@
     `resolve_provider(name).create(config)` 建出，`config` 只含 `cwd` / `env` / `inherit_process_env` /
     `skills` / `skill_conflict`，以及团队配置了的 `cli_path` / `system_prompt_mode`。card 声明
     `MCP_TOOLS` 时绑定 `mcp_server_command` 的 `McpServerConfig(STDIO)`（env 仅 `MCP_SERVER_ENV_VARS`），
-    否则成员没有团队工具。团队模型分配（pool / 内置模型 / fallback）不作用于三方成员；
-    `command_override` / `codex_bin` / `ssh_transport` / claude、codex 专属参数直接拒绝。
+    否则成员没有团队工具。认证 fallback 不适用于三方成员；`command_override` / `codex_bin` /
+    `ssh_transport` / claude、codex 专属参数直接拒绝。
+14. **成员模型一律经 provider 的 `model_config` 映射**（harness [[F_08_provider-owned-model-config]]）。
+    团队把内置模型（`builtin_model`）、池分配与静态 `model_config` 都转成 `ModelChoice`
+    （`cli_agent.spawn.model_choice`：无 `api_base` / `provider` 即内置），连同仅在内置模型上挂的认证
+    fallback 交给 `harness_providers.factory.provider_model_config`，并入 provider 配置；claude / codex /
+    三方没有分支，不能跑的选择即 `AGENT_TEAM_CONFIG_INVALID`。端点模型只交给声明 `ENDPOINT_MODELS`
+    的三方 provider（`backends.provider_takes_endpoint_models`）：未声明时 spawn 丢弃并记日志，
+    `_provider_filter_for_cli` 也不向 leader 列出池里的模型。运行中切换仍走 `set_model_selection`。
 
 ## 接口契约
 
