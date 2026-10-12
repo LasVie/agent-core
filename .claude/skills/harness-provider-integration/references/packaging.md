@@ -112,6 +112,16 @@ wheel；解压目录追加到 `sys.path` 后，在 PATH 上**没有** opencode �
 provider="opencode")` 由兜底的包内 opencode 1.17.18 跑通了真实的文本与工具 Turn；PATH 上有 opencode 时
 用的是 PATH 上的那个；同一 wheel 也能被 `pip install` 正常安装。
 
+### 作为 agent team 成员
+
+装好的 provider 名字就是团队 `external_cli_agents` 里可用的 `cli_agent`：openjiuwen 把它当第三类
+backend，成员拿到 `cwd` / `env` / `skills` / `skill_conflict`（配置了才有 `cli_path` /
+`system_prompt_mode`），团队工具由 stdio `openjiuwen-team-mcp` 提供——card 必须声明 `MCP_TOOLS`
+并把 `HarnessContext.mcp_servers` 的 stdio 服务器交给 CLI，否则成员没有团队工具。团队模型池不作用于
+三方成员，它跑在 provider 自己的模型配置上。
+
+jiuwenswarm 设置页“三方 Agent → 添加三方 Agent”可直接上传 wheel（可附 CLI 可执行文件），无需进内置清单。
+
 ### 发布到 jiuwenswarm 桌面版
 
 第三方 provider 随桌面版发版进入精选集合，不在运行时由终端用户导入清单：
@@ -146,5 +156,4 @@ register_harness_provider("<name>", <Class>HarnessProvider)
 
 ## 不在本包能完成的事
 
-- **作为 agent team 成员**：团队的外部 CLI 成员目前按 `claude` / `codex` 名字在 openjiuwen 内部分派。
 - **升格为内置 provider**：由 openjiuwen 维护者迁入 `openjiuwen/harness_providers/` 并登记内置名单。

@@ -87,9 +87,9 @@ agent 接成 harness provider，产物必须是独立 pip 包，openjiuwen 装�
 ## 已知遗留
 
 - 只在 macOS arm64 上实测了自带 CLI 的平台 wheel；其它平台只有格式检查，需在对应平台跑一次冒烟。
-- jiuwenswarm 桌面版只提供 `external_cli.install` / `external_cli.install_status` 接口，设置页还不展示
-  第三方 provider；等它能作为团队成员后再接 UI。
-- 第三方 provider 还不能作为 agent team 外部 CLI 成员：团队分派仍按 `claude` / `codex` 名字硬编码。
+- 第三方 provider 作为团队外部成员、jiuwenswarm 设置页上传安装已由 agent_teams
+  [[F_117_third-party-harness-provider-members]] 补齐；内置清单 `providers` 段的条目目前仍只有安装接口，
+  没有设置页入口。
 - 生成包的 openjiuwen 依赖下限取生成时的已安装版本；本改动发布后需把下限改为首个包含 entry point
   发现的正式版本。
 - kimi-code 额度错误与认证错误同为 `-32000` 且无结构化字段，只能归 `auth_required`；等厂商给出结构化

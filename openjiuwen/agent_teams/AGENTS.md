@@ -325,7 +325,9 @@ effort 目录）：声明后 leader 可在 spawn 时挑内置模型，并用 `se
 effort（落库到 `options.builtin_model`，经 `HarnessModelControl.set_model` 下一 turn 生效）；
 未声明则行为不变。见 [[F_113_external-harness-builtin-model-selection]]。当前内置 backend：claude / codex（`harness_providers` 协议 provider +
 `ExternalHarnessMemberRuntime`）与 adapter 型 gemini / openclaw / hermes / generic
-（`CliRuntimeBase` 子进程 runtime）。spawn 路径（`external_cli_spawn` → `build_cli_runtime`）按 backend
+（`CliRuntimeBase` 子进程 runtime）；此外任何经 entry point 安装或进程内注册的三方 harness provider
+名字也是合法 backend（`backend_for` 第三类 `provider`），同样走 `ExternalHarnessMemberRuntime`，
+团队工具经 stdio `openjiuwen-team-mcp` 注入，见 [[F_117_third-party-harness-provider-members]]。spawn 路径（`external_cli_spawn` → `build_cli_runtime`）按 backend
 注入进程内团队工具——claude 走 SDK 进程内 MCP（`_bind_protocol_member_team_tools` 在 `configure`
 后把 `build_claude_sdk_mcp_tool_set` 的 server 作为 `McpServerConfig(IN_PROCESS)` 挂上）、codex 在同一
 时点把真实 teammate `TeamBackend` 构造的 `ExternalTeamToolGateway` 绑定为 Dynamic Tools；Codex
