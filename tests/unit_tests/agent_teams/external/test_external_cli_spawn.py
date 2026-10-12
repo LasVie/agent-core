@@ -35,7 +35,7 @@ from openjiuwen.agent_teams.spawn.external_cli_spawn import (
 )
 from openjiuwen.agent_teams.tools.database import DatabaseConfig, DatabaseType
 from openjiuwen.core.common.exception.errors import BaseError
-from openjiuwen.harness_protocol import HarnessCapability, HarnessCard, McpTransport, ModelSelection
+from openjiuwen.harness_protocol import HarnessCapability, HarnessCard, McpTransport, ModelChoice, ModelSelection
 from openjiuwen.harness_providers import register_harness_provider, unregister_harness_provider
 from openjiuwen.harness_providers.claudecode import ClaudeCodeHarness
 from openjiuwen.harness_providers.codex import CodexHarness
@@ -614,3 +614,101 @@ def test_third_party_provider_is_a_known_backend_and_accepts_cli_path(acme_provi
     assert ExternalCliAgentSpec(cli_agent="acme", cli_path="/opt/acme").cli_path == "/opt/acme"
     with pytest.raises(ValueError, match="adapter-backed"):
         ExternalCliAgentSpec(cli_agent="gemini", cli_path="/opt/gemini")
+
+
+class _ModelAwareProvider(_ThirdPartyProvider):
+    """A third-party provider mapping models through ``model_config``."""
+
+    def __init__(self, *, endpoints: bool) -> None:
+        super().__init__(mcp_tools=False)
+        capabilities = frozenset({HarnessCapability.ENDPOINT_MODELS}) if endpoints else frozenset()
+        self._card = HarnessCard(name="acme", implementation_version="0.1.0", capabilities=capabilities)
+
+    @staticmethod
+    def model_config(choice: ModelChoice, *, fallback: ModelChoice | None = None) -> dict:
+        if fallback is not None:
+            raise ValueError("acme has no fallback model")
+        if choice.effort is not None:
+            raise ValueError("acme has no effort selector")
+        fragment = {"model": choice.model}
+        if choice.endpoint is not None:
+            fragment.update(base_url=choice.endpoint.api_base, token=choice.endpoint.api_key)
+        return fragment
+
+
+async def _provider_runtime(provider: _ThirdPartyProvider, model: ExternalCliModelConfig) -> object:
+    register_harness_provider("acme", lambda: provider)
+    token = set_session_id("sess-1")
+    try:
+        return await build_cli_runtime(
+            _ctx(member="dev-1", cli_agent="acme"),
+            inject_mcp=False,
+            external_model_config=model,
+            member_agent_id="ext_team_dev-1",
+        )
+    finally:
+        reset_session_id(token)
+        unregister_harness_provider("acme")
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        (ExternalCliModelConfig(model="vendor/model-x"), {"model": "vendor/model-x"}),
+        (
+            ExternalCliModelConfig(provider="openai", model="gpt-x", api_base="https://gw", api_key="k"),
+            {"model": "gpt-x", "base_url": "https://gw", "token": "k"},
+        ),
+    ],
+)
+async def test_provider_member_model_goes_through_model_config(model: ExternalCliModelConfig, expected: dict):
+    runtime = await _provider_runtime(_ModelAwareProvider(endpoints=True), model)
+
+    config = runtime.harness.config
+    assert {key: config[key] for key in expected} == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+@pytest.mark.parametrize(
+    ("provider", "model", "message"),
+    [
+        (_ThirdPartyProvider(mcp_tools=False), ExternalCliModelConfig(model="m"), "does not configure models"),
+        (_ModelAwareProvider(endpoints=True), ExternalCliModelConfig(model="m", effort="high"), "no effort selector"),
+        (
+            _ModelAwareProvider(endpoints=False),
+            ExternalCliModelConfig(model="gpt-x", api_base="https://gw"),
+            "does not take endpoint models",
+        ),
+    ],
+)
+async def test_provider_member_rejects_models_it_cannot_take(
+    provider: _ThirdPartyProvider,
+    model: ExternalCliModelConfig,
+    message: str,
+):
+    with pytest.raises(BaseError, match=message):
+        await _provider_runtime(provider, model)
+
+
+@pytest.mark.level0
+@pytest.mark.parametrize(("endpoints", "kept"), [(True, True), (False, False)])
+def test_spawn_hands_endpoint_models_only_to_providers_that_take_them(endpoints: bool, kept: bool):
+    from openjiuwen.agent_teams.spawn.external_cli_spawn import _negotiate_provider_endpoint
+    from openjiuwen.agent_teams.tools.tool_member import _provider_filter_for_cli
+
+    endpoint = ExternalCliModelConfig(provider="openai", model="gpt-x", api_base="https://gw")
+    builtin = ExternalCliModelConfig(model="vendor/model-x")
+    register_harness_provider("acme", lambda: _ModelAwareProvider(endpoints=endpoints))
+    try:
+        ctx = _ctx(member="dev-1", cli_agent="acme")
+        assert (_negotiate_provider_endpoint(ctx, endpoint) is endpoint) is kept
+        assert _negotiate_provider_endpoint(ctx, builtin) is builtin
+        provider_filter = _provider_filter_for_cli("acme")
+        assert (provider_filter is None) is kept
+        if provider_filter is not None:
+            assert provider_filter("openai") is False
+    finally:
+        unregister_harness_provider("acme")

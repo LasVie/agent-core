@@ -95,7 +95,7 @@ def test_sdk_static_config_accepts_model_config_alias():
     assert config.external_model_config.model == "claude-sonnet-test"
     assert config.model_dump(by_alias=True)["model_config"]["api_base"] == "https://gateway.example"
 
-    with pytest.raises(ValidationError, match="model_config is only valid"):
+    with pytest.raises(ValidationError, match="model_config is not valid for adapter-backed"):
         ExternalCliAgentSpec(
             cli_agent="generic",
             model_config={"model": "some-model"},
