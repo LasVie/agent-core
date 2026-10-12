@@ -17,9 +17,11 @@ Provider names resolve in this order:
    :data:`HARNESS_PROVIDER_ENTRY_POINT_GROUP` group, whose value is a
    ``HarnessProvider`` class (instantiated without arguments) or instance.
 
-A third-party provider may also expose ``manifest_config(endpoint)`` to map
-the manifest's model endpoint onto its own configuration; without it the
-factory passes only the model name as ``model``.
+Every provider that runs a model implements ``ModelConfigProvider.model_config``
+to map a host's ``ModelChoice`` (a built-in model, or one on a host endpoint
+when the card declares ``ENDPOINT_MODELS``) onto its own configuration; the
+manifest factory and the team spawn path both go through
+:func:`provider_model_config`.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from openjiuwen.harness.resources.extension_loader import find_agent_template_ma
 from openjiuwen.harness.resources.extension_resolver import render_agent_template_system_prompt
 from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec, McpServerSpec
 from openjiuwen.harness_protocol import (
+    HarnessCapability,
     HarnessCheckpoint,
     HarnessCheckpointSink,
     HarnessContext,
@@ -41,6 +44,9 @@ from openjiuwen.harness_protocol import (
     HostCapability,
     McpServerConfig,
     McpTransport,
+    ModelChoice,
+    ModelConfigProvider,
+    ModelEndpoint,
     ResumePolicy,
 )
 
@@ -223,9 +229,9 @@ def manifest_provider_config(
     """Derive the provider SPI configuration for ``manifest``.
 
     Explicit ``config`` keys always win; the manifest fills the model
-    endpoint and portable skills (for native providers, the whole template).
-    A third-party provider maps the endpoint through its optional
-    ``manifest_config(endpoint)`` hook, otherwise it receives ``model`` only.
+    model and portable skills (for native providers, the whole template).
+    The model reaches every other provider through its ``model_config`` hook
+    (see :func:`provider_model_config`).
     """
 
     values: dict[str, Any] = dict(config or {})
@@ -242,50 +248,60 @@ def manifest_provider_config(
             )
     if manifest.skills:
         values.setdefault("skills", [skill.model_dump(mode="json") for skill in manifest.skills])
-    model = manifest.model
-    if model is None:
+    choice = _manifest_model_choice(manifest)
+    if choice is None:
         return values
-    client = model.model_client_config
-    request = model.model_request_config
-    model_name = request.model_name if request is not None and request.model_name else None
-    api_base = client.api_base or None
-    api_key = client.api_key or None
-    if provider == "claudecode":
-        values.setdefault("model", {"model": model_name, "api_base": api_base, "api_key": api_key})
-    elif provider == "codex":
-        raw_provider = client.client_provider
-        provider_name = str(getattr(raw_provider, "value", raw_provider)) if raw_provider else None
-        values.setdefault(
-            "model",
-            {"model": model_name, "provider": provider_name, "api_base": api_base, "api_key": api_key},
-        )
-    elif provider == "dsh":
-        if model_name is not None:
-            values.setdefault("model", model_name)
-        if api_base is not None:
-            values.setdefault("base_url", api_base)
-        if api_key is not None:
-            values.setdefault("api_key", api_key)
-    else:
-        raw_provider = client.client_provider
-        endpoint = {
-            "model": model_name,
-            "provider": str(getattr(raw_provider, "value", raw_provider)) if raw_provider else None,
-            "api_base": api_base,
-            "api_key": api_key,
-        }
-        for key, value in _third_party_manifest_config(provider, endpoint).items():
-            values.setdefault(key, value)
+    for key, value in provider_model_config(provider, choice).items():
+        values.setdefault(key, value)
     return values
 
 
-def _third_party_manifest_config(provider: str, endpoint: Mapping[str, str | None]) -> dict[str, Any]:
-    """Map the manifest model endpoint for a registered or installed provider."""
-    hook = getattr(resolve_provider(provider), "manifest_config", None)
-    if callable(hook):
-        return dict(hook(dict(endpoint)))
-    model_name = endpoint.get("model")
-    return {"model": model_name} if model_name is not None else {}
+def _manifest_model_choice(manifest: AgentTemplateSpec) -> ModelChoice | None:
+    """Return the manifest's model, served by its endpoint when it names an API base."""
+    model = manifest.model
+    if model is None:
+        return None
+    client = model.model_client_config
+    request = model.model_request_config
+    model_name = request.model_name if request is not None and request.model_name else None
+    if not client.api_base:
+        return ModelChoice(model=model_name)
+    raw_provider = client.client_provider
+    endpoint = ModelEndpoint(
+        api_base=client.api_base,
+        api_key=client.api_key or None,
+        provider=str(getattr(raw_provider, "value", raw_provider)) if raw_provider else None,
+    )
+    return ModelChoice(model=model_name, endpoint=endpoint)
+
+
+def provider_model_config(
+    provider: str,
+    choice: ModelChoice,
+    *,
+    fallback: ModelChoice | None = None,
+) -> dict[str, Any]:
+    """Map a model choice onto a provider's configuration through its ``model_config``.
+
+    Args:
+        provider: Any resolvable provider name.
+        choice: The model to run, built-in or on a host endpoint.
+        fallback: Optional model the provider may switch to on its own.
+
+    Returns:
+        The configuration fragment to merge into the provider's ``create`` mapping.
+
+    Raises:
+        ValueError: When the provider configures no models, takes no endpoint
+            models while ``choice`` names an endpoint, or rejects the choice.
+    """
+    resolved = resolve_provider(provider)
+    if not isinstance(resolved, ModelConfigProvider):
+        raise ValueError(f"harness provider {provider!r} does not configure models")
+    uses_endpoint = choice.endpoint is not None or (fallback is not None and fallback.endpoint is not None)
+    if uses_endpoint and not resolved.card.supports(HarnessCapability.ENDPOINT_MODELS):
+        raise ValueError(f"harness provider {provider!r} does not take endpoint models")
+    return dict(resolved.model_config(choice, fallback=fallback))
 
 
 def create_harness(
@@ -388,6 +404,7 @@ __all__ = [
     "load_manifest",
     "manifest_mcp_servers",
     "manifest_provider_config",
+    "provider_model_config",
     "register_harness_provider",
     "resolve_provider",
     "unregister_harness_provider",

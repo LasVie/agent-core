@@ -26,6 +26,7 @@ _FACTORY_EXPORTS = frozenset(
         "available_providers",
         "build_harness_context",
         "create_harness",
+        "provider_model_config",
         "register_harness_provider",
         "resolve_provider",
         "unregister_harness_provider",

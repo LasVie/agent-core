@@ -122,6 +122,7 @@ class ClaudeCodeHarness(SerializedTurnHarness):
                 HarnessCapability.MCP_TOOLS,
                 HarnessCapability.MODEL_SELECTION,
                 HarnessCapability.MODEL_DISCOVERY,
+                HarnessCapability.ENDPOINT_MODELS,
             }
         ),
         optional_host_capabilities=frozenset(

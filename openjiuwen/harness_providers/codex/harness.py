@@ -126,6 +126,7 @@ class CodexHarness(SerializedTurnHarness):
                 HarnessCapability.MCP_TOOLS,
                 HarnessCapability.MODEL_SELECTION,
                 HarnessCapability.MODEL_DISCOVERY,
+                HarnessCapability.ENDPOINT_MODELS,
                 HarnessCapability.NATIVE_TOOLS,
             }
         ),
