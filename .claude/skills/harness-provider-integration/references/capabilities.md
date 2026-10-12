@@ -17,6 +17,7 @@
 | `NATIVE_TOOLS` | 宿主工具网关（`context.tools`）的工具能被厂商调用 | 动态工具（Codex `item/tool/call`） | 专门 e2e |
 | `MODEL_SELECTION` | `set_model` 在 idle 时立即生效、运行中延后到下一轮生效，跨重连保持 | `_apply_model_selection` | 单测 + e2e |
 | `MODEL_DISCOVERY` | `list_models` 返回真实目录 | `_list_models` | 单测 + e2e |
+| `ENDPOINT_MODELS` | `model_config` 能把宿主端点（`ModelEndpoint` 的 `api_base` / `api_key`）映射进配置 | provider 的 `model_config` | 单测（模板注册测试按此分支） |
 | `PAUSE_RESUME` | 暂停后原地续跑 | 基类默认不支持 | — |
 | `HOOKS` | 宿主 hook 改写/拒绝工具调用 | — | — |
 

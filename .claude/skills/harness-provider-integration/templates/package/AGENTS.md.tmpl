@@ -7,7 +7,7 @@
 ## 模块职责
 
 __MODULE_TABLE__
-- `provider.py`：openjiuwen 发现入口；`manifest_config` 把 manifest 的模型端点映射成本包配置。
+- `provider.py`：openjiuwen 发现入口；`model_config` 把宿主的 `ModelChoice`（内置模型，或 card 声明 `ENDPOINT_MODELS` 时的端点模型）映射成本包配置，manifest 工厂与团队成员都走它。
 
 生命周期状态机、输入队列、有界事件流、交互与 checkpoint 由 openjiuwen 的
 `openjiuwen.harness_providers.base.SerializedTurnHarness` 提供，本包只实现 `_open_session` /

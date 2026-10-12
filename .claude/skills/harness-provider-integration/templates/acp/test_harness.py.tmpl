@@ -21,6 +21,7 @@ from openjiuwen.harness_protocol import (
     HarnessCapability,
     HarnessContext,
     HarnessEvent,
+    HarnessProtocolError,
     HarnessInput,
     HarnessProtocol,
     HarnessState,
@@ -29,6 +30,7 @@ from openjiuwen.harness_protocol import (
     ItemLifecycleEvent,
     McpServerConfig,
     McpTransport,
+    ModelSelection,
     OutputChannel,
     OutputEvent,
     OutputOperation,
@@ -514,3 +516,40 @@ async def test_cli_on_path_wins_over_the_bundled_cli(tmp_path: Path, monkeypatch
     finally:
         await harness.stop()
     assert _state(state)["path_head"] != str(bin_dir)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(MODEL_CONFIG_ID is None, reason="the agent selects no model per session")
+async def test_models_are_listed_with_or_without_a_running_session(tmp_path: Path) -> None:
+    harness = __CLASS__Harness(_config(tmp_path / "state.json"))
+    assert harness.card.supports(HarnessCapability.MODEL_DISCOVERY)
+    assert harness.card.supports(HarnessCapability.MODEL_SELECTION)
+
+    probed = await harness.list_models()
+    await harness.start(_context(tmp_path))
+    live = await harness.list_models()
+    await harness.stop()
+
+    for options in (probed, live):
+        assert [option.model_id for option in options] == ["vendor/default", "vendor/model-x", "vendor/sticky"]
+        assert [option.is_default for option in options] == [True, False, False]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(MODEL_CONFIG_ID is None, reason="the agent selects no model per session")
+async def test_set_model_switches_the_live_session(tmp_path: Path) -> None:
+    state = tmp_path / "state.json"
+    harness = __CLASS__Harness(_config(state))
+    await harness.start(_context(tmp_path))
+    session_id = harness.provider_session_id
+
+    await harness.set_model(ModelSelection(model="vendor/model-x"))
+    current = [option.model_id for option in await harness.list_models() if option.is_default]
+    with pytest.raises(HarnessProtocolError, match="vendor/missing"):
+        await harness.set_model(ModelSelection(model="vendor/missing"))
+    with pytest.raises(UnsupportedHarnessCapabilityError, match="effort"):
+        await harness.set_model(ModelSelection(effort="high"))
+    await harness.stop()
+
+    assert current == ["vendor/model-x"]
+    assert _state(state)["sessions"][session_id]["model"] == "vendor/model-x"

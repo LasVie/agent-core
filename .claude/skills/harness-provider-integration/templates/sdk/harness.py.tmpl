@@ -90,7 +90,9 @@ class __CLASS__Harness(SerializedTurnHarness):
         # end. Hooks already wired: GRACEFUL_ABORT (_sdk_cancel), CHECKPOINT +
         # PERSISTENT_SESSION (_sdk_resume_session), MCP_TOOLS (_sdk_new_session's
         # mcp_servers). STEER needs a ``_steer`` override first.
-        capabilities=frozenset(),
+        # ENDPOINT_MODELS: the config takes ``api_base`` / ``api_key``, so a
+        # host may run this agent on its own model endpoint.
+        capabilities=frozenset({HarnessCapability.ENDPOINT_MODELS}),
         optional_host_capabilities=frozenset({HostCapability.CHECKPOINT_SINK, HostCapability.MCP_SERVERS}),
     )
 

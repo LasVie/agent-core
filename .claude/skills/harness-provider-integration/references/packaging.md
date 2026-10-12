@@ -117,8 +117,10 @@ provider="opencode")` 由兜底的包内 opencode 1.17.18 跑通了真实的文�
 装好的 provider 名字就是团队 `external_cli_agents` 里可用的 `cli_agent`：openjiuwen 把它当第三类
 backend，成员拿到 `cwd` / `env` / `skills` / `skill_conflict`（配置了才有 `cli_path` /
 `system_prompt_mode`），团队工具由 stdio `openjiuwen-team-mcp` 提供——card 必须声明 `MCP_TOOLS`
-并把 `HarnessContext.mcp_servers` 的 stdio 服务器交给 CLI，否则成员没有团队工具。团队模型池不作用于
-三方成员，它跑在 provider 自己的模型配置上。
+并把 `HarnessContext.mcp_servers` 的 stdio 服务器交给 CLI，否则成员没有团队工具。成员模型经 provider 的
+`model_config(ModelChoice)` 映射进配置（leader 挑的内置模型，或 card 声明 `ENDPOINT_MODELS` 时团队模型池
+的端点模型）；声明 `MODEL_SELECTION` 才能运行中切换，声明 `MODEL_DISCOVERY` 时 jiuwenswarm 自动生成内置
+模型目录。
 
 jiuwenswarm 设置页“三方 Agent → 添加三方 Agent”可直接上传 wheel（可附 CLI 可执行文件），无需进内置清单。
 

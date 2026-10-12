@@ -29,6 +29,8 @@ from openjiuwen.harness_protocol import (
     HarnessProtocolError,
     HostCapability,
     McpTransport,
+    ModelOption,
+    ModelSelection,
     ResumePolicy,
     ToolApprovalDecision,
     ToolApprovalRequest,
@@ -82,6 +84,14 @@ _SYSTEM_PROMPT_FENCE = "<system-instructions>\n{prompt}\n</system-instructions>\
 _ALLOW_KINDS = ("allow_once", "allow_always")
 _ALLOW_SESSION_KINDS = ("allow_always", "allow_once")
 _REJECT_KINDS = ("reject_once", "reject_always")
+# A per-session model selector is also a live one: the same
+# ``session/set_config_option`` switches the model between turns, and the
+# selector's ``options`` list what the agent offers.
+_MODEL_CAPABILITIES = (
+    frozenset({HarnessCapability.MODEL_DISCOVERY, HarnessCapability.MODEL_SELECTION})
+    if MODEL_CONFIG_ID is not None
+    else frozenset()
+)
 
 
 class __CLASS__Harness(SerializedTurnHarness):
@@ -103,7 +113,8 @@ class __CLASS__Harness(SerializedTurnHarness):
                 HarnessCapability.PERSISTENT_SESSION,
                 HarnessCapability.CHECKPOINT,
             }
-        ),
+        )
+        | _MODEL_CAPABILITIES,
         optional_host_capabilities=frozenset(
             {
                 HostCapability.TOOL_APPROVAL,
@@ -125,6 +136,8 @@ class __CLASS__Harness(SerializedTurnHarness):
         self._rpc: JsonRpcConnection | None = None
         self._agent_capabilities: dict[str, Any] = {}
         self._acp_session_id: str | None = None
+        # The live session's ``configOptions`` as last reported by the agent.
+        self._config_options: Any = None
         self._accumulator: __CLASS__TurnAccumulator | None = None
         self._prelude = ""
 
@@ -169,13 +182,14 @@ class __CLASS__Harness(SerializedTurnHarness):
             rpc.start()
             await self._initialize(rpc)
             session_id, resumed, config_options = await self._open_acp_session(rpc, context, cwd)
-            await self._select_model(rpc, session_id, config_options)
+            config_options = await self._select_model(rpc, session_id, config_options)
         except (asyncio.CancelledError, ProviderStartupError, HarnessProtocolError, UnsupportedHarnessCapabilityError):
             raise
         except Exception as exc:
             error = classify_exception(exc)
             raise ProviderStartupError(f"__DISPLAY__ startup failed: {type(exc).__name__}", error=error) from exc
         self._acp_session_id = session_id
+        self._config_options = config_options
         self._prelude = "" if resumed else self._system_prelude(context)
         if self.card.supports(HarnessCapability.CHECKPOINT):
             await self._publish_checkpoint(
@@ -190,6 +204,7 @@ class __CLASS__Harness(SerializedTurnHarness):
         self._rpc = None
         self._accumulator = None
         self._acp_session_id = None
+        self._config_options = None
         # Shut the child down first so the reader keeps draining stdout until
         # EOF; cancelling the reader first could leave the child blocked on a
         # full pipe until the terminate deadline.
@@ -236,6 +251,58 @@ class __CLASS__Harness(SerializedTurnHarness):
     async def _interrupt_turn(self, turn: PendingTurn, mode: AbortMode) -> None:
         _ = turn, mode
         await self._cancel_prompt()
+
+    async def _list_models(self) -> tuple[ModelOption, ...]:
+        config_options = self._config_options
+        if config_options is None:
+            config_options = await self._probe_config_options()
+        selector = _model_option(config_options)
+        current = selector.get("currentValue")
+        return tuple(
+            ModelOption(
+                model_id=value,
+                display_name=str(entry.get("name") or value),
+                description=str(entry.get("description") or ""),
+                is_default=value == current,
+            )
+            for entry, value in _offered_entries(selector)
+        )
+
+    async def _apply_model_selection(self, selection: ModelSelection) -> None:
+        if selection.effort is not None:
+            raise UnsupportedHarnessCapabilityError("__DISPLAY__ has no reasoning effort selector")
+        if selection.model is None:
+            return
+        rpc, session_id = self._rpc, self._acp_session_id
+        if rpc is None or rpc.closed or session_id is None:
+            raise HarnessProtocolError("__DISPLAY__ has no live session to switch the model of")
+        try:
+            self._config_options = await self._switch_model(rpc, session_id, self._config_options, selection.model)
+        except ProviderStartupError as exc:
+            raise HarnessProtocolError(exc.error.message) from exc
+
+    async def _probe_config_options(self) -> Any:
+        """Read the session ``configOptions`` from a throwaway agent; prompts nothing."""
+        cwd = os.path.abspath(self._config.cwd or os.getcwd())
+        env: dict[str, str] = dict(os.environ) if self._config.inherit_process_env else {}
+        env.update(self._config.env)
+        executable = select_executable(self._config.cli_path, self._config.command[0], env)
+        process = CliProcess(max_line_bytes=self._config.max_line_bytes)
+        argv = (executable, *self._config.command[1:], *self._config.extra_args)
+        await process.start(CliLaunch(argv=argv, env=env, cwd=cwd))
+        rpc = JsonRpcConnection(process, on_notification=_ignore_notification, on_request=_refuse_request)
+        rpc.start()
+        try:
+            await self._initialize(rpc)
+            created = await rpc.request(
+                "session/new",
+                {"cwd": cwd, "mcpServers": []},
+                timeout_s=self._config.initialize_timeout_s,
+            )
+            return created.get("configOptions")
+        finally:
+            await process.shutdown(self._config.shutdown_timeout_s)
+            await rpc.close()
 
     # ------------------------------------------------------------------
     # ACP session setup
@@ -312,11 +379,14 @@ class __CLASS__Harness(SerializedTurnHarness):
             raise HarnessProtocolError("__DISPLAY__ session/new returned no sessionId")
         return session_id, False, created.get("configOptions")
 
-    async def _select_model(self, rpc: JsonRpcConnection, session_id: str, config_options: Any) -> None:
+    async def _select_model(self, rpc: JsonRpcConnection, session_id: str, config_options: Any) -> Any:
         """Switch the session to the configured model and confirm the switch.
 
         Only for agents selecting the model per session (``MODEL_CONFIG_ID``);
         a launch flag already applied it.
+
+        Returns:
+            The session ``configOptions`` after the switch.
 
         Raises:
             ProviderStartupError: When the session does not offer the model or
@@ -324,7 +394,19 @@ class __CLASS__Harness(SerializedTurnHarness):
         """
         model = self._config.model
         if model is None or MODEL_CONFIG_ID is None:
-            return
+            return config_options
+        return await self._switch_model(rpc, session_id, config_options, model)
+
+    async def _switch_model(self, rpc: JsonRpcConnection, session_id: str, config_options: Any, model: str) -> Any:
+        """Set the session model through its selector and check the agent applied it.
+
+        Returns:
+            The session ``configOptions`` the agent reported after the switch.
+
+        Raises:
+            ProviderStartupError: When the session does not offer the model or
+                the agent kept another one.
+        """
         offered = _offered_models(_model_option(config_options))
         if model not in offered:
             error = turn_error(
@@ -339,7 +421,8 @@ class __CLASS__Harness(SerializedTurnHarness):
             {"sessionId": session_id, "configId": MODEL_CONFIG_ID, "value": model},
             timeout_s=self._config.initialize_timeout_s,
         )
-        current = _model_option(result.get("configOptions")).get("currentValue")
+        updated = result.get("configOptions")
+        current = _model_option(updated).get("currentValue")
         if current != model:
             error = turn_error(
                 f"__DISPLAY__ kept model {current!r} instead of {model!r}",
@@ -347,6 +430,7 @@ class __CLASS__Harness(SerializedTurnHarness):
                 code="__UPPER___MODEL_NOT_APPLIED",
             )
             raise ProviderStartupError("__DISPLAY__ did not switch the model", error=error)
+        return updated
 
     def _acp_mcp_servers(self, context: HarnessContext) -> list[dict[str, Any]]:
         mcp_capabilities = self._agent_capabilities.get("mcpCapabilities")
@@ -539,12 +623,26 @@ def _model_option(config_options: Any) -> Mapping[str, Any]:
     return {}
 
 
-def _offered_models(option: Mapping[str, Any]) -> list[str]:
+def _offered_entries(option: Mapping[str, Any]) -> list[tuple[Mapping[str, Any], str]]:
+    """Return the selector's choices with their ``value``, skipping malformed ones."""
     values = option.get("options")
     if not isinstance(values, list):
         return []
-    names = [value.get("value") for value in values if isinstance(value, Mapping)]
-    return [name for name in names if isinstance(name, str)]
+    entries = [value for value in values if isinstance(value, Mapping)]
+    return [(entry, entry["value"]) for entry in entries if isinstance(entry.get("value"), str)]
+
+
+def _offered_models(option: Mapping[str, Any]) -> list[str]:
+    return [value for _entry, value in _offered_entries(option)]
+
+
+async def _ignore_notification(method: str, params: dict[str, Any]) -> None:
+    _ = method, params
+
+
+async def _refuse_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    _ = params
+    raise MethodNotFound(method)
 
 
 __all__ = ["ACP_PROTOCOL_VERSION", "ADAPTER_VERSION", "__CLASS__Harness"]

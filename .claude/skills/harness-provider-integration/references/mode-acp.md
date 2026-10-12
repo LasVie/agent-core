@@ -34,7 +34,7 @@ CliProcess (process.py)            启动 / 行读写 / stderr 丢弃 / 关闭�
 | 标记 | 怎么关 |
 |---|---|
 | `capabilities` | 跑 e2e；`initialize` 不报 `loadSession` 就删 `PERSISTENT_SESSION` / `CHECKPOINT` |
-| `model` | 两条路都在真实 CLI 上试：启动 flag 填 `MODEL_ARGS = ("--model", "{model}")`；会话内切填 `MODEL_CONFIG_ID`（`session/new` 的 `configOptions` 里模型选择项的 `id`），适配器建会话后调 `session/set_config_option` 并核对 `currentValue`。opencode 1.17 只能走 flag，opencode 2.0 与 kimi-code 走会话内切；都不行就保持默认（配置了 model 会在 start 被拒） |
+| `model` | 两条路都在真实 CLI 上试：启动 flag 填 `MODEL_ARGS = ("--model", "{model}")`；会话内切填 `MODEL_CONFIG_ID`（`session/new` 的 `configOptions` 里模型选择项的 `id`），适配器建会话后调 `session/set_config_option` 并核对 `currentValue`。opencode 1.17 只能走 flag，opencode 2.0 与 kimi-code 走会话内切；都不行就保持默认（配置了 model 会在 start 被拒）。填了 `MODEL_CONFIG_ID` 的卡片自动声明 `MODEL_DISCOVERY` / `MODEL_SELECTION`：`list_models` 读选择项的 `options`（未启动时起一个只做 `initialize` + `session/new` 的临时 agent），`set_model` 在会话里再调一次 `session/set_config_option`；ACP 没有推理强度选项，带 effort 的选择直接拒绝。openjiuwen 团队据此让 leader 给成员挑模型、运行中切换（jiuwenswarm 自动把 `list_models` 写成该 Agent 的内置模型目录） |
 | `mcp-naming` | 挂一个 FastMCP fixture，看 `tool_call` 的 `title` 与 `rawInput`：opencode 1.17 是 `{server}_{tool}`，opencode 2.0 是代码模式（`execute` 工具里的 `tools.{server}.{tool}`），kimi-code 是 `mcp__{server}__{tool}` |
 | `failure-codes` | 触发真实错误（未登录、错模型），把厂商自有 JSON-RPC 错误码加进 `_VENDOR_RPC_CODE_CATEGORY` |
 | `fixtures` | 用录到的真实往返改写 `fake_agent.py` 的记录形状 |
