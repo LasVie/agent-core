@@ -62,7 +62,7 @@ def test_sdk_static_config_accepts_cli_path():
     assert claude_config.cli_path == "/opt/claude"
     assert codex_config.cli_path == "/opt/codex"
 
-    with pytest.raises(ValidationError, match="cli_path is only valid"):
+    with pytest.raises(ValidationError, match="not valid for adapter-backed"):
         ExternalCliAgentSpec(cli_agent="generic", cli_path="/opt/generic")
 
 

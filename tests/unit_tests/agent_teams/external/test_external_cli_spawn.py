@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from openjiuwen.agent_teams.context import reset_session_id, set_session_id
+from openjiuwen.agent_teams.external.cli_agent.backends import available_backends, backend_for
 from openjiuwen.agent_teams.external.cli_agent.spawn import (
     build_cli_runtime,
     descriptor_from_context,
@@ -19,6 +20,7 @@ from openjiuwen.agent_teams.external.runtime import ExternalCliRuntime, Reinvoke
 from openjiuwen.agent_teams.messager.base import MessagerTransportConfig
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.schema.build_context import BuildContext
+from openjiuwen.agent_teams.schema.ssh_transport import SshTransportConfig
 from openjiuwen.agent_teams.schema.team import (
     ExternalCliAgentSpec,
     ExternalCliMemberSpec,
@@ -33,7 +35,8 @@ from openjiuwen.agent_teams.spawn.external_cli_spawn import (
 )
 from openjiuwen.agent_teams.tools.database import DatabaseConfig, DatabaseType
 from openjiuwen.core.common.exception.errors import BaseError
-from openjiuwen.harness_protocol import ModelSelection
+from openjiuwen.harness_protocol import HarnessCapability, HarnessCard, McpTransport, ModelSelection
+from openjiuwen.harness_providers import register_harness_provider, unregister_harness_provider
 from openjiuwen.harness_providers.claudecode import ClaudeCodeHarness
 from openjiuwen.harness_providers.codex import CodexHarness
 from tests.test_logger import logger
@@ -498,3 +501,116 @@ async def test_member_on_an_endpoint_takes_no_auth_fallback(cli_agent: str):
 
     assert runtime.harness._config.fallback_model is None
     logger.info("%s member on an endpoint runs without an auth fallback", cli_agent)
+
+
+class _RecordingProviderHarness:
+    """Stands in for a third-party provider harness; records its creation config."""
+
+    def __init__(self, config: dict, card: HarnessCard) -> None:
+        self.config = config
+        self.card = card
+
+
+class _ThirdPartyProvider:
+    """A third-party provider registered in process, with or without MCP tools."""
+
+    def __init__(self, *, mcp_tools: bool) -> None:
+        capabilities = frozenset({HarnessCapability.MCP_TOOLS}) if mcp_tools else frozenset()
+        self._card = HarnessCard(name="acme", implementation_version="0.1.0", capabilities=capabilities)
+
+    @property
+    def card(self) -> HarnessCard:
+        return self._card
+
+    def create(self, config: dict) -> _RecordingProviderHarness:
+        return _RecordingProviderHarness(dict(config), self._card)
+
+
+@pytest.fixture
+def acme_provider():
+    provider = _ThirdPartyProvider(mcp_tools=True)
+    register_harness_provider("acme", lambda: provider)
+    yield provider
+    unregister_harness_provider("acme")
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_build_cli_runtime_dispatches_third_party_provider(acme_provider):
+    token = set_session_id("sess-1")
+    try:
+        runtime = await build_cli_runtime(
+            _ctx(member="dev-1", cli_agent="acme"),
+            cwd="/workspace",
+            cli_path="/opt/acme",
+            inject_mcp=True,
+            mcp_server_name="team",
+            system_prompt="ROLE: isolated developer",
+            system_prompt_mode="replace",
+            skills=({"dir": "/portable-skills"},),
+            skill_conflict="replace",
+            member_agent_id="ext_team_dev-1",
+        )
+    finally:
+        reset_session_id(token)
+
+    assert isinstance(runtime, ExternalHarnessMemberRuntime)
+    assert runtime.reliability_agent_kind == "acme"
+    config = runtime.harness.config
+    assert config["cwd"] == "/workspace"
+    assert config["cli_path"] == "/opt/acme"
+    assert config["system_prompt_mode"] == "replace"
+    assert config["inherit_process_env"] is False
+    assert config["skill_conflict"] == "replace"
+    assert config["skills"] == ({"dir": "/portable-skills"},)
+    assert "OPENJIUWEN_TEAM_JOIN" in config["env"]
+    (server,) = runtime._extra_mcp_servers
+    assert server.name == "team"
+    assert server.transport is McpTransport.STDIO
+    assert server.command == ("openjiuwen-team-mcp",)
+    assert set(server.env) == {"OPENJIUWEN_TEAM_JOIN", "OPENJIUWEN_HOME"}
+    context = runtime._context_source
+    assert context.system_prompt == "ROLE: isolated developer"
+    assert context.agent_id == "ext_team_dev-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_third_party_provider_without_mcp_tools_gets_no_team_server():
+    register_harness_provider("acme", lambda: _ThirdPartyProvider(mcp_tools=False))
+    token = set_session_id("sess-1")
+    try:
+        runtime = await build_cli_runtime(_ctx(member="dev-1", cli_agent="acme"), inject_mcp=True)
+    finally:
+        reset_session_id(token)
+        unregister_harness_provider("acme")
+
+    assert "cli_path" not in runtime.harness.config
+    assert "system_prompt_mode" not in runtime.harness.config
+    assert runtime._extra_mcp_servers == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_third_party_provider_rejects_backend_specific_options(acme_provider):
+    token = set_session_id("sess-1")
+    try:
+        with pytest.raises(BaseError, match="does not support: codex_bin, ssh_transport"):
+            await build_cli_runtime(
+                _ctx(member="dev-1", cli_agent="acme"),
+                codex_bin="/opt/codex",
+                ssh_transport=SshTransportConfig(host="remote", agent=True),
+            )
+    finally:
+        reset_session_id(token)
+
+
+def test_third_party_provider_is_a_known_backend_and_accepts_cli_path(acme_provider):
+    backend = backend_for("acme")
+
+    assert backend is not None
+    assert backend.kind == "provider"
+    assert "acme" in available_backends()
+    assert ExternalCliAgentSpec(cli_agent="acme", cli_path="/opt/acme").cli_path == "/opt/acme"
+    with pytest.raises(ValueError, match="adapter-backed"):
+        ExternalCliAgentSpec(cli_agent="gemini", cli_path="/opt/gemini")
