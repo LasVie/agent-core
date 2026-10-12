@@ -15,7 +15,7 @@ from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.schema.deep_agent_spec import BuiltinToolSpec, ModelSpec
 from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec, PromptSectionSpec
-from openjiuwen.harness_protocol import HarnessCard, HarnessProvider
+from openjiuwen.harness_protocol import HarnessCapability, HarnessCard, HarnessProvider, ModelChoice, ModelEndpoint
 from openjiuwen.harness_providers import (
     HARNESS_PROVIDER_ENTRY_POINT_GROUP,
     available_providers,
@@ -40,7 +40,7 @@ class FakeHarness:
 
 
 class FakeProvider:
-    """A provider without a ``manifest_config`` hook."""
+    """A provider without a ``model_config`` hook."""
 
     @property
     def card(self) -> HarnessCard:
@@ -52,11 +52,32 @@ class FakeProvider:
 
 
 class EndpointAwareProvider(FakeProvider):
-    """A provider mapping the manifest endpoint onto its own fields."""
+    """A provider mapping built-in and endpoint models onto its own fields."""
+
+    @property
+    def card(self) -> HarnessCard:
+        return HarnessCard(
+            name="fake-cli",
+            implementation_version="0.1.0",
+            capabilities=frozenset({HarnessCapability.ENDPOINT_MODELS}),
+        )
 
     @staticmethod
-    def manifest_config(endpoint: dict[str, str | None]) -> dict[str, Any]:
-        return {"model_name": endpoint["model"], "base_url": endpoint["api_base"], "token": endpoint["api_key"]}
+    def model_config(choice: ModelChoice, *, fallback: ModelChoice | None = None) -> dict[str, Any]:
+        _ = fallback
+        fragment: dict[str, Any] = {"model_name": choice.model}
+        if choice.endpoint is not None:
+            fragment.update(base_url=choice.endpoint.api_base, token=choice.endpoint.api_key)
+        return fragment
+
+
+class BuiltinModelProvider(FakeProvider):
+    """A provider running only models its CLI offers on its own login."""
+
+    @staticmethod
+    def model_config(choice: ModelChoice, *, fallback: ModelChoice | None = None) -> dict[str, Any]:
+        _ = fallback
+        return {"model": choice.model}
 
 
 def _manifest(**overrides: Any) -> AgentTemplateSpec:
@@ -90,17 +111,30 @@ def test_installed_entry_point_resolves_and_creates_harnesses(installed: list[En
     assert isinstance(provider, HarnessProvider)
     assert provider.card.name == "fake-cli"
     assert "fakecli" in available_providers()
-    harness = create_harness(_manifest(), provider="fakecli", config={"cwd": "/w"})
+    harness = create_harness(_manifest(model=None), provider="fakecli", config={"cwd": "/w"})
     logger.info("third-party config: %s", harness.config)
     assert isinstance(harness, FakeHarness)
-    # Without a manifest_config hook only the model name is passed on.
-    assert harness.config == {"cwd": "/w", "model": "gpt-x"}
+    assert harness.config == {"cwd": "/w"}
+    # A provider without model_config cannot take the manifest's model.
+    with pytest.raises(ValueError, match="does not configure models"):
+        create_harness(_manifest(), provider="fakecli")
 
 
-def test_manifest_config_hook_maps_the_endpoint_and_explicit_config_wins(installed: list[EntryPoint]) -> None:
+def test_model_config_maps_the_endpoint_and_explicit_config_wins(installed: list[EntryPoint]) -> None:
     installed.append(EntryPoint("aware", f"{_THIS_MODULE}:EndpointAwareProvider", HARNESS_PROVIDER_ENTRY_POINT_GROUP))
     harness = create_harness(_manifest(), provider="aware", config={"token": "override"})
     assert harness.config == {"token": "override", "model_name": "gpt-x", "base_url": "https://llm"}
+
+
+def test_endpoint_models_need_the_card_capability(installed: list[EntryPoint]) -> None:
+    installed.append(EntryPoint("builtin", f"{_THIS_MODULE}:BuiltinModelProvider", HARNESS_PROVIDER_ENTRY_POINT_GROUP))
+    endpoint = ModelEndpoint(api_base="https://gw", api_key="k", provider="openai")
+
+    assert factory.provider_model_config("builtin", ModelChoice(model="vendor/a")) == {"model": "vendor/a"}
+    with pytest.raises(ValueError, match="does not take endpoint models"):
+        factory.provider_model_config("builtin", ModelChoice(model="gpt-x", endpoint=endpoint))
+    with pytest.raises(ValueError, match="does not take endpoint models"):
+        create_harness(_manifest(), provider="builtin")
 
 
 def test_third_party_providers_reject_deepagent_only_sections(installed: list[EntryPoint]) -> None:
