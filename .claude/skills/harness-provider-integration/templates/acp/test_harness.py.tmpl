@@ -49,7 +49,7 @@ from __PKG__ import (
     __CLASS__HarnessProvider,
 )
 from __PKG__ import bundled
-from __PKG__.harness import MODEL_ARGS
+from __PKG__.harness import MODEL_ARGS, MODEL_CONFIG_ID
 
 logger = logging.getLogger(__name__)
 FAKE_AGENT = Path(__file__).with_name("fake_agent.py")
@@ -59,7 +59,7 @@ TURN_TIMEOUT_S = 30.0
 def _config(state: Path, **overrides: Any) -> __CLASS__HarnessConfig:
     values: dict[str, Any] = {
         "command": (sys.executable, str(FAKE_AGENT)),
-        "env": {"FAKE_ACP_STATE": str(state)},
+        "env": {"FAKE_ACP_STATE": str(state), "FAKE_ACP_MODEL_CONFIG_ID": MODEL_CONFIG_ID or "model"},
         "shutdown_timeout_s": 2.0,
         "initialize_timeout_s": 20.0,
     }
@@ -383,16 +383,66 @@ async def test_mcp_servers_reach_session_new_in_acp_shape(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(bool(MODEL_ARGS) or MODEL_CONFIG_ID is not None, reason="the adapter selects models")
+async def test_model_without_a_selection_mechanism_is_rejected(tmp_path: Path) -> None:
+    harness = __CLASS__Harness(_config(tmp_path / "state.json", model="vendor/model-x"))
+    with pytest.raises(UnsupportedHarnessCapabilityError):
+        await harness.start(_context(tmp_path))
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not MODEL_ARGS, reason="the CLI has no model launch flag")
 async def test_model_selection_follows_the_launch_flag(tmp_path: Path) -> None:
     state = tmp_path / "state.json"
     harness = __CLASS__Harness(_config(state, model="vendor/model-x"))
-    if not MODEL_ARGS:
-        with pytest.raises(UnsupportedHarnessCapabilityError):
-            await harness.start(_context(tmp_path))
-        return
     await harness.start(_context(tmp_path))
     await harness.stop()
     assert "vendor/model-x" in _state(state)["argv"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(MODEL_CONFIG_ID is None, reason="the agent selects no model per session")
+async def test_model_is_switched_through_the_session_config_option(tmp_path: Path) -> None:
+    state = tmp_path / "state.json"
+    first = __CLASS__Harness(_config(state, model="vendor/model-x"))
+    await first.start(_context(tmp_path))
+    checkpoint = await first.export_checkpoint()
+    session_id = first.provider_session_id
+    await first.stop()
+    recorded = _state(state)
+    assert recorded["set_config_option"] == [
+        {"sessionId": session_id, "configId": MODEL_CONFIG_ID, "value": "vendor/model-x"}
+    ]
+    if not __CLASS__Harness.card.supports(HarnessCapability.CHECKPOINT):
+        return
+    # A loaded session gets the configured model again.
+    second = __CLASS__Harness(_config(state, model="vendor/default"))
+    await second.start(_context(tmp_path, checkpoint=checkpoint, resume_policy=ResumePolicy.REQUIRE_RESUME))
+    await second.stop()
+    assert _state(state)["sessions"][session_id]["model"] == "vendor/default"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(MODEL_CONFIG_ID is None, reason="the agent selects no model per session")
+@pytest.mark.parametrize(
+    ("model", "category", "code"),
+    [
+        ("vendor/missing", "request_rejected", "__UPPER___UNKNOWN_MODEL"),
+        ("vendor/sticky", "sdk_error", "__UPPER___MODEL_NOT_APPLIED"),
+    ],
+)
+async def test_model_the_session_cannot_use_fails_startup(
+    tmp_path: Path,
+    model: str,
+    category: str,
+    code: str,
+) -> None:
+    harness = __CLASS__Harness(_config(tmp_path / "state.json", model=model))
+    with pytest.raises(ProviderStartupError) as caught:
+        await harness.start(_context(tmp_path))
+    assert caught.value.error.category == category
+    assert caught.value.error.code == code
+    assert harness.state is HarnessState.TERMINATED
 
 
 def _install_bundle(monkeypatch: pytest.MonkeyPatch, root: Path, target: Path) -> Path:

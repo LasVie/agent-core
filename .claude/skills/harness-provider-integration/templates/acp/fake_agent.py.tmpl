@@ -32,7 +32,15 @@ _write_lock = threading.Lock()
 def _load_state() -> dict[str, Any]:
     if STATE_PATH.exists():
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    return {"argv": [], "prompts": [], "session_new": [], "session_load": [], "permission": [], "sessions": {}}
+    return {
+        "argv": [],
+        "prompts": [],
+        "session_new": [],
+        "session_load": [],
+        "set_config_option": [],
+        "permission": [],
+        "sessions": {},
+    }
 
 
 STATE = _load_state()
@@ -52,6 +60,25 @@ def _send(message: dict[str, Any]) -> None:
 
 def _notify(session_id: str, update: dict[str, Any]) -> None:
     _send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": session_id, "update": update}})
+
+
+# The model selector id the adapter switches (``MODEL_CONFIG_ID``) and the
+# models offered; "vendor/sticky" is offered but never applied.
+MODEL_CONFIG_ID = os.environ.get("FAKE_ACP_MODEL_CONFIG_ID", "model")
+MODELS = ("vendor/default", "vendor/model-x", "vendor/sticky")
+
+
+def _config_options(model: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "select",
+            "id": MODEL_CONFIG_ID,
+            "name": "Model",
+            "category": "model",
+            "currentValue": model,
+            "options": [{"value": value, "name": value} for value in MODELS],
+        }
+    ]
 
 
 def _chunk(session_id: str, kind: str, message_id: str, text: str) -> None:
@@ -100,20 +127,29 @@ class Agent:
     async def rpc_session_new(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = "ses_" + uuid.uuid4().hex[:12]
         STATE["session_new"].append(params)
-        STATE["sessions"][session_id] = {"memory": None, "history": []}
+        STATE["sessions"][session_id] = {"memory": None, "history": [], "model": MODELS[0]}
         _save()
         # Agents chat between prompts; this must never surface as a turn event.
         _notify(session_id, {"sessionUpdate": "available_commands_update", "availableCommands": []})
-        return {"sessionId": session_id}
+        return {"sessionId": session_id, "configOptions": _config_options(MODELS[0])}
+
+    async def rpc_session_set_config_option(self, params: dict[str, Any]) -> dict[str, Any]:
+        STATE["set_config_option"].append(params)
+        session = STATE["sessions"][params["sessionId"]]
+        if params.get("value") != "vendor/sticky":
+            session["model"] = params.get("value")
+        _save()
+        return {"configOptions": _config_options(session["model"])}
 
     async def rpc_session_load(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = params["sessionId"]
         STATE["session_load"].append(session_id)
         _save()
-        for role, text in STATE["sessions"].get(session_id, {}).get("history", []):
+        session = STATE["sessions"].get(session_id, {})
+        for role, text in session.get("history", []):
             kind = "user_message_chunk" if role == "user" else "agent_message_chunk"
             _chunk(session_id, kind, "replay", text)
-        return {}
+        return {"configOptions": _config_options(session.get("model", MODELS[0]))}
 
     async def rpc_session_prompt(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = params["sessionId"]

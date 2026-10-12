@@ -19,7 +19,7 @@
 | 10 | 工具审批 / 向用户提问以什么形态出现？ | TOOL_APPROVAL / USER_INPUT |
 | 11 | 文本是否有增量？推理是否可见？用量在哪里报？ | OutputEvent DELTA/FINAL、UsageUpdatedEvent |
 | 12 | 错误以什么结构出现？有无稳定错误码 / HTTP 状态？ | failure_classifier |
-| 13 | 模型怎么选？（启动 flag、会话配置项、配置文件） | `MODEL_ARGS`、MODEL_SELECTION |
+| 13 | 模型怎么选？（启动 flag、会话配置项、配置文件）两种都实测，厂商之间相反 | `MODEL_ARGS` / `MODEL_CONFIG_ID` |
 | 14 | 技能（skills）从哪个项目目录发现？ | `SKILLS_SCAN_DIR` |
 | 15 | 需要登录吗？未登录时报什么？ | `auth_required` 映射；e2e 前置条件 |
 
@@ -72,7 +72,8 @@ ACP：用一个最小 JSON-RPC 客户端录下全部往返（initialize → sess
 - ACP `initialize` 回 `agentCapabilities.loadSession=true`、`mcpCapabilities.http=true`，
   `sessionCapabilities` 还有 `resume/fork/list/close`。
 - `session/new` 回 `configOptions`（含 `category: model` 的选择项）；但 `session/set_config_option`
-  对列表里的合法值也回 `-32602 model not found`——**ACP 内切模型不可移植**，模型走启动参数。
+  对列表里的合法值也回 `-32602 model not found`——在 opencode 上会话内切模型不可用，模型走启动参数
+  （kimi-code 正相反，见下）。
 - 工具调用：先 `tool_call`（`status: pending`、`rawInput: {}`），再 `tool_call_update`
   （`in_progress`，此时才带 `rawInput`），最后 `completed`（`content` 为渲染文本，`rawOutput`
   为结构化结果）。`title` 第一次是工具名，完成时变成文件路径。
@@ -86,9 +87,21 @@ ACP：用一个最小 JSON-RPC 客户端录下全部往返（initialize → sess
 - 本 skill 的 ACP 模板在 opencode 上零厂商代码通过 text / tool / follow-up / abort / resume 五项 e2e，
   MCP stdio 挂载与调用也通过。
 
-### kimi-code 0.28.1
+### kimi-code 2.1.1
 
-- 入口：`kimi acp`（ACP over stdio）；`kimi -p <prompt> --output-format stream-json`，
-  会话 `-S <id>` 恢复、`-c` 继续上次。
-- `-p` 不能与 `--yolo` 同用。
-- 未登录时一次性模式报 `auth.login_required`（stderr）并以退出码 1 结束——e2e 前先确认已登录。
+- 入口：`kimi acp`（ACP v1，stdio）；`initialize` 回 `loadSession: true`、`mcpCapabilities.http/sse`。
+  ACP 模板只填常量即通过 text / tool / follow-up / abort / resume / entry point 六项契约 e2e，
+  外加工具参数、MCP、技能、模型四项厂商 e2e。
+- **模型只能会话内切**：`kimi acp -m` 报 unknown option，`kimi -m <model> acp` 被静默忽略；
+  `session/set_config_option`（`configId: "model"`）生效并回报 `currentValue`，`session/load` 保持切换后的
+  模型。→ `MODEL_CONFIG_ID = "model"`。
+- 工具调用：`tool_call` 以 `pending`、`rawInput: null`、标题 `Read` 到达，随后**数条不带 `rawInput` 的
+  `in_progress`**，参数在之后一条 `in_progress` 里；`rawOutput` 是字符串。
+- 文本块不带 `messageId`；`session/prompt` 应答不带 token 用量，`usage_update` 是上下文窗口占用。
+- MCP 工具名 `mcp__{server}__{tool}`；项目技能目录 `.kimi-code/skills`（`.agents/skills` 也会被发现）。
+- 错误只有 ACP 标准码：订阅不含所选模型与 5 小时额度耗尽**都是** `-32000`（"Authentication required:
+  401/403 …"），无结构化字段可区分，只能归 `auth_required`；`config.toml` 里不存在的模型是 `-32603`。
+  反复跑真实 e2e 会耗尽额度，之后所有 Turn 都失败——e2e 大面积失败先看错误正文是不是额度。
+- 凭据在 `~/.kimi-code`：测试里改写 `HOME` 时要把真实 `HOME` 传给子进程，否则 `session/new` 回 `-32000`。
+- 一次性模式：`kimi -p <prompt> --output-format stream-json`，会话 `-S <id>` 恢复、`-c` 继续上次；
+  `-p` 不能与 `--yolo` 同用；未登录时报 `auth.login_required`（stderr）并以退出码 1 结束。

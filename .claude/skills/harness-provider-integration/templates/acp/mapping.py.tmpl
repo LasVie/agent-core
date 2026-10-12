@@ -265,7 +265,11 @@ class __CLASS__TurnAccumulator:
             call.raw_input = raw_input
         status = _string(update.get("status")) or "pending"
         mapped: list[MappedEvent] = []
-        if not call.started and (_has_value(call.raw_input) or status != "pending"):
+        # Start once the arguments are known; an in_progress update without
+        # them (Kimi Code sends several) is not enough. A call that settles
+        # without ever showing arguments still starts before it completes.
+        ready = _has_value(call.raw_input) or status in _SETTLED_TOOL_STATUSES
+        if not call.started and ready:
             call.started = True
             mapped.append(
                 MappedEvent(

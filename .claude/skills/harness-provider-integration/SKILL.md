@@ -85,7 +85,7 @@ python -m pytest -q                          # 单测 + 注册测试必须全绿
 | `mapping` / `turn-end` | 用真实记录重写 `consume`；确认结束信号 | [mapping.md](references/mapping.md) |
 | `sdk-calls` / `config` / `mcp-config` | 按真实 SDK API 改写调用与配置 | mode-sdk.md |
 | `argv` / `prompt-delivery` / `system-prompt` | 一次性 CLI 的命令行形态 | mode-oneshot.md |
-| `model` / `mcp-naming` | 模型启动参数；模型侧 MCP 工具名规则 | mode-acp.md、recon.md |
+| `model` / `mcp-naming` | 模型启动参数或会话内切换；模型侧 MCP 工具名规则 | mode-acp.md、recon.md |
 | `skills-dir` | CLI 的项目级技能发现目录（没有就保持 `None`，配置技能会被拒绝） | recon.md |
 | `failure-codes` / `failure-exceptions` | 厂商错误码 / 异常类型到共享类别 | mapping.md |
 | `fixtures` | 假运行时改成真实记录的形状 | [testing.md](references/testing.md) |

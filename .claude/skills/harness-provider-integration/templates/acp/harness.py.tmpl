@@ -60,12 +60,17 @@ ACP_PROTOCOL_VERSION = 1
 # skills in (e.g. ".opencode/skills"); ``None`` when it has none, in which
 # case configured skills are rejected instead of silently ignored.
 SKILLS_SCAN_DIR: str | None = None
-# SCAFFOLD(model): the CLI's launch flag selecting a model, with ``{model}``
-# where the name goes, e.g. ("--model", "{model}"). ACP's
-# ``session/set_config_option`` is not portable (opencode 1.17 rejects even
-# the values it lists), so the model is a launch argument. Leave it empty
-# when the CLI has no such flag; a configured model is then rejected.
+# SCAFFOLD(model): how this CLI selects a model. Try both on the real CLI and
+# keep what works, agents differ: opencode 1.17 answers
+# ``session/set_config_option`` with "model not found" even for the values it
+# lists, while Kimi Code 2.1.1 rejects a launch flag but switches through it.
+# MODEL_ARGS is the launch flag with ``{model}`` where the name goes, e.g.
+# ("--model", "{model}"). MODEL_CONFIG_ID is the ``id`` of the model selector
+# in ``session/new``'s ``configOptions`` (e.g. "model"); the session is then
+# switched and the reported ``currentValue`` checked. With neither, a
+# configured model is rejected at start.
 MODEL_ARGS: tuple[str, ...] = ()
+MODEL_CONFIG_ID: str | None = None
 # SCAFFOLD(mcp-naming): how this CLI names an MCP server's tools to the model,
 # with ``{server}`` and ``{tool}``, e.g. "mcp__{server}__{tool}". Read it from
 # the ``title`` of a real ``tool_call`` for a tool of a mounted server; keep
@@ -140,8 +145,8 @@ class __CLASS__Harness(SerializedTurnHarness):
             raise UnsupportedHarnessCapabilityError("system_prompt_delivery='none' cannot carry a system prompt")
         if self._config.skills and SKILLS_SCAN_DIR is None:
             raise UnsupportedHarnessCapabilityError("__DISPLAY__ has no skill discovery directory for portable skills")
-        if self._config.model is not None and not MODEL_ARGS:
-            raise UnsupportedHarnessCapabilityError("__DISPLAY__ cannot select a model at launch")
+        if self._config.model is not None and not MODEL_ARGS and MODEL_CONFIG_ID is None:
+            raise UnsupportedHarnessCapabilityError("__DISPLAY__ cannot select a model")
 
     async def _open_session(self, context: HarnessContext) -> str | None:
         cwd = os.path.abspath(context.cwd or self._config.cwd or os.getcwd())
@@ -163,7 +168,8 @@ class __CLASS__Harness(SerializedTurnHarness):
             self._rpc = rpc
             rpc.start()
             await self._initialize(rpc)
-            session_id, resumed = await self._open_acp_session(rpc, context, cwd)
+            session_id, resumed, config_options = await self._open_acp_session(rpc, context, cwd)
+            await self._select_model(rpc, session_id, config_options)
         except (asyncio.CancelledError, ProviderStartupError, HarnessProtocolError, UnsupportedHarnessCapabilityError):
             raise
         except Exception as exc:
@@ -264,8 +270,13 @@ class __CLASS__Harness(SerializedTurnHarness):
         rpc: JsonRpcConnection,
         context: HarnessContext,
         cwd: str,
-    ) -> tuple[str, bool]:
-        """Load the checkpointed session when asked and possible, else create one."""
+    ) -> tuple[str, bool, Any]:
+        """Load the checkpointed session when asked and possible, else create one.
+
+        Returns:
+            The ACP session id, whether it was resumed, and the session's
+            ``configOptions`` as the agent reported them.
+        """
         mcp_servers = self._acp_mcp_servers(context)
         restored = self._restored_checkpoint_data(context)
         restored_id = restored.get("session_id") if restored else None
@@ -278,12 +289,12 @@ class __CLASS__Harness(SerializedTurnHarness):
             if self._agent_capabilities.get("loadSession") is True:
                 # The agent replays the history as session/update notifications
                 # before it answers; no turn is active, so they are not events.
-                await rpc.request(
+                loaded = await rpc.request(
                     "session/load",
                     {"sessionId": restored_id, "cwd": cwd, "mcpServers": mcp_servers},
                     timeout_s=self._config.initialize_timeout_s,
                 )
-                return restored_id, True
+                return restored_id, True, loaded.get("configOptions")
             if policy is ResumePolicy.REQUIRE_RESUME:
                 error = turn_error(
                     "__DISPLAY__ does not advertise loadSession",
@@ -299,7 +310,43 @@ class __CLASS__Harness(SerializedTurnHarness):
         session_id = created.get("sessionId")
         if not isinstance(session_id, str) or not session_id:
             raise HarnessProtocolError("__DISPLAY__ session/new returned no sessionId")
-        return session_id, False
+        return session_id, False, created.get("configOptions")
+
+    async def _select_model(self, rpc: JsonRpcConnection, session_id: str, config_options: Any) -> None:
+        """Switch the session to the configured model and confirm the switch.
+
+        Only for agents selecting the model per session (``MODEL_CONFIG_ID``);
+        a launch flag already applied it.
+
+        Raises:
+            ProviderStartupError: When the session does not offer the model or
+                the agent did not apply it.
+        """
+        model = self._config.model
+        if model is None or MODEL_CONFIG_ID is None:
+            return
+        offered = _offered_models(_model_option(config_options))
+        if model not in offered:
+            error = turn_error(
+                f"__DISPLAY__ does not offer model {model!r}",
+                category="request_rejected",
+                code="__UPPER___UNKNOWN_MODEL",
+                provider_data={"offered": offered},
+            )
+            raise ProviderStartupError("__DISPLAY__ model is not available", error=error)
+        result = await rpc.request(
+            "session/set_config_option",
+            {"sessionId": session_id, "configId": MODEL_CONFIG_ID, "value": model},
+            timeout_s=self._config.initialize_timeout_s,
+        )
+        current = _model_option(result.get("configOptions")).get("currentValue")
+        if current != model:
+            error = turn_error(
+                f"__DISPLAY__ kept model {current!r} instead of {model!r}",
+                category="sdk_error",
+                code="__UPPER___MODEL_NOT_APPLIED",
+            )
+            raise ProviderStartupError("__DISPLAY__ did not switch the model", error=error)
 
     def _acp_mcp_servers(self, context: HarnessContext) -> list[dict[str, Any]]:
         mcp_capabilities = self._agent_capabilities.get("mcpCapabilities")
@@ -480,6 +527,24 @@ def _pick_option(options: list[Mapping[str, Any]], decision: ToolApprovalDecisio
             if option.get("kind") == kind and isinstance(option_id, str):
                 return option_id
     return None
+
+
+def _model_option(config_options: Any) -> Mapping[str, Any]:
+    """Return the session's model selector from ACP ``configOptions``, or ``{}``."""
+    if not isinstance(config_options, list):
+        return {}
+    for option in config_options:
+        if isinstance(option, Mapping) and option.get("id") == MODEL_CONFIG_ID:
+            return option
+    return {}
+
+
+def _offered_models(option: Mapping[str, Any]) -> list[str]:
+    values = option.get("options")
+    if not isinstance(values, list):
+        return []
+    names = [value.get("value") for value in values if isinstance(value, Mapping)]
+    return [name for name in names if isinstance(name, str)]
 
 
 __all__ = ["ACP_PROTOCOL_VERSION", "ADAPTER_VERSION", "__CLASS__Harness"]
