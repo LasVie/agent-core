@@ -1,5 +1,8 @@
 # SDK 模式：厂商 Python SDK 驱动其运行时
 
+接入优先级最高：进程、帧格式、请求配对与类型都由厂商维护，provider 代码最少。没有 SDK、SDK 缺关键能力
+或宿主不能接受这个依赖时，依次退到原生协议、一次性模式、ACP（见 SKILL.md 第 2 节）。
+
 适用：厂商提供 Python SDK（多数在内部拉起自己的 CLI 子进程），能拿到结构化流、中断、
 会话恢复等 API。仓库先例：`claudecode/`（claude-agent-sdk）、`codex/`（openai-codex）、
 `dsh/`（deepseek-harness，同步 SDK + 回调）。

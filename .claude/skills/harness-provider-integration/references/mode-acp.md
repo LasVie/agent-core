@@ -1,5 +1,8 @@
 # ACP 模式：CLI 作为 Agent Client Protocol agent 常驻
 
+接入优先级最低：同一厂商还有 SDK 或原生协议（常驻全双工或带会话续接的一次性模式）时先用它们，
+见 SKILL.md 第 2 节。
+
 适用：CLI 能以 `<cli> acp` / `--acp` / `--experimental-acp` 之类方式在 stdio 上跑 ACP
 （opencode、kimi-code、gemini-cli、qwen-code、goose 等）。ACP 是标准协议，所以模板里的
 `rpc.py`、`mapping.py`、`harness.py` 基本**不需要厂商代码**——在 opencode 上零改动通过了全部 e2e。
@@ -31,8 +34,8 @@ CliProcess (process.py)            启动 / 行读写 / stderr 丢弃 / 关闭�
 | 标记 | 怎么关 |
 |---|---|
 | `capabilities` | 跑 e2e；`initialize` 不报 `loadSession` 就删 `PERSISTENT_SESSION` / `CHECKPOINT` |
-| `model` | 两条路都在真实 CLI 上试：启动 flag 填 `MODEL_ARGS = ("--model", "{model}")`；会话内切填 `MODEL_CONFIG_ID`（`session/new` 的 `configOptions` 里模型选择项的 `id`），适配器建会话后调 `session/set_config_option` 并核对 `currentValue`。opencode 只能走 flag，kimi-code 只能走会话内切；都不行就保持默认（配置了 model 会在 start 被拒） |
-| `mcp-naming` | 挂一个 FastMCP fixture，看 `tool_call` 的 `title`：opencode 是 `{server}_{tool}`，kimi-code 是 `mcp__{server}__{tool}` |
+| `model` | 两条路都在真实 CLI 上试：启动 flag 填 `MODEL_ARGS = ("--model", "{model}")`；会话内切填 `MODEL_CONFIG_ID`（`session/new` 的 `configOptions` 里模型选择项的 `id`），适配器建会话后调 `session/set_config_option` 并核对 `currentValue`。opencode 1.17 只能走 flag，opencode 2.0 与 kimi-code 走会话内切；都不行就保持默认（配置了 model 会在 start 被拒） |
+| `mcp-naming` | 挂一个 FastMCP fixture，看 `tool_call` 的 `title` 与 `rawInput`：opencode 1.17 是 `{server}_{tool}`，opencode 2.0 是代码模式（`execute` 工具里的 `tools.{server}.{tool}`），kimi-code 是 `mcp__{server}__{tool}` |
 | `failure-codes` | 触发真实错误（未登录、错模型），把厂商自有 JSON-RPC 错误码加进 `_VENDOR_RPC_CODE_CATEGORY` |
 | `fixtures` | 用录到的真实往返改写 `fake_agent.py` 的记录形状 |
 | `skills-dir` | CLI 的项目级技能发现目录，例如 `.opencode/skills`（以厂商文档为准） |

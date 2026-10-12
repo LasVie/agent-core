@@ -7,7 +7,7 @@
 
 | # | 问题 | 决定什么 |
 |---|---|---|
-| 1 | 厂商提供哪些驱动入口？Python SDK / ACP（`<cli> acp`、`--acp`、`--experimental-acp`）/ 结构化 stdout 的一次性模式（`-p ... --output-format stream-json`、`run --format json`）/ HTTP server？ | 接入模式（见 SKILL.md 决策表） |
+| 1 | 厂商提供哪些驱动入口？Python SDK（是否覆盖中断、会话恢复、审批 / 提问回调）/ 原生常驻协议（`codex app-server` 这类，看有没有 `generate-json-schema` / `generate-ts` 之类的协议导出）/ 结构化 stdout 的一次性模式（`-p ... --output-format stream-json`、`run --format json`、`exec --json`）/ ACP（`<cli> acp`、`--acp`）/ HTTP server？ | 接入模式（见 SKILL.md 优先级表） |
 | 2 | 一个外部 Turn 对应厂商的什么？（一次 `session/prompt`、一次进程调用、一次 `thread.turn()`） | `_execute_turn` 的边界 |
 | 3 | Turn 结束的信号是什么？（RPC 响应的 `stopReason`、`turn_end` 记录、EOF+退出码） | 终态判定；`STREAM_END_IS_TURN_END` |
 | 4 | 会话怎么延续？进程内常驻 / 会话 id + resume 参数 / `session/load` | PERSISTENT_SESSION、CHECKPOINT |
@@ -48,6 +48,15 @@ ACP：用一个最小 JSON-RPC 客户端录下全部往返（initialize → sess
 - `initialize` 时 `clientCapabilities` 的 `fs` / `terminal` 设 `false`，让 agent 用自己的工具；
 - 统计 `session/update` 里 `sessionUpdate` 的种类分布，每种取一条样本。
 
+### 原生常驻协议
+
+- 先找协议的机器可读定义：`<cli> app-server generate-json-schema --out <dir>` 之类的导出，列出全部请求、
+  通知、服务端请求及参数，比读 SDK 源码可靠。
+- 再用最小客户端录真实往返：握手 → 开会话 → 文本 Turn → 工具 Turn → 运行中追加输入 → 中断 → 换进程续会话
+  → 审批（把策略调到会问）→ 挂 MCP → 向用户提问（常要打开特性开关）。服务端请求要回包，否则 Turn 一直等。
+- 厂商自己落盘的记录（Codex 的 `~/.codex/sessions/**/rollout-*.jsonl`）是判定"模型侧看到什么"的依据：
+  MCP 工具名、实际使用的模型都从这里读，不从协议通知推断。
+
 ### SDK
 
 - 读安装目录里的 SDK 源码（`python -c "import x, inspect; print(inspect.getsourcefile(x))"`），
@@ -72,8 +81,8 @@ ACP：用一个最小 JSON-RPC 客户端录下全部往返（initialize → sess
 - ACP `initialize` 回 `agentCapabilities.loadSession=true`、`mcpCapabilities.http=true`，
   `sessionCapabilities` 还有 `resume/fork/list/close`。
 - `session/new` 回 `configOptions`（含 `category: model` 的选择项）；但 `session/set_config_option`
-  对列表里的合法值也回 `-32602 model not found`——在 opencode 上会话内切模型不可用，模型走启动参数
-  （kimi-code 正相反，见下）。
+  对列表里的合法值也回 `-32602 model not found`——在 opencode 1.17 上会话内切模型不可用（2.0 起可用，
+  见下）。
 - 工具调用：先 `tool_call`（`status: pending`、`rawInput: {}`），再 `tool_call_update`
   （`in_progress`，此时才带 `rawInput`），最后 `completed`（`content` 为渲染文本，`rawOutput`
   为结构化结果）。`title` 第一次是工具名，完成时变成文件路径。
@@ -86,6 +95,38 @@ ACP：用一个最小 JSON-RPC 客户端录下全部往返（initialize → sess
   `sessionID`；没有显式 turn 结束记录，**EOF + 退出码 0 即结束**（`STREAM_END_IS_TURN_END = True`）。
 - 本 skill 的 ACP 模板在 opencode 上零厂商代码通过 text / tool / follow-up / abort / resume 五项 e2e，
   MCP stdio 挂载与调用也通过。
+
+### opencode 2.0.27（与 1.17 的差异）
+
+- `session/set_config_option`（`configId: "model"`）生效，可选列表含 `opencode/*-free` 免费模型；`acp`
+  仍无模型参数。→ `MODEL_CONFIG_ID = "model"`。
+- **MCP 改为代码模式**：模型调用 `execute` 工具，在 JavaScript 里写 `tools.<server>.<tool>`（也会写成
+  `tools.<server>["<tool>"]`）；工具 item 名是 `execute`，内部调用记在 `completed` 的
+  `rawOutput.metadata.toolCalls`。→ `MCP_TOOL_NAME_PATTERN = "tools.{server}.{tool}"`，e2e 按
+  `toolCalls` 断言而不是按代码字符串。
+- 读文件参数字段由 `filePath` 改为 `path`；`completed` 的 `rawOutput` 只剩 `metadata`，渲染文本在
+  `content`；`tool_call` 多了非标准的 `name` 字段。
+- 用量多了 `thoughtTokens`；`usage_update` 带 `cost`。
+- 项目技能目录 `.opencode/skills`、`.opencode/skill`、`.agents/skills`、`.claude/skills` 都会被发现。
+- 不存在的模型 / 会话都回 `-32602`，`data` 带对应 id。
+- ACP 模板只填常量、按真实形状改夹具，即通过 6 项契约 e2e 与工具参数、MCP、技能、模型四项厂商 e2e。
+
+### codex-cli 0.162.1（`codex app-server`，原生协议）
+
+- JSON-RPC 消息不带 `jsonrpc` 成员，但接受带它的；握手 `initialize`（`capabilities.experimentalApi`）+
+  `initialized` 通知；`generate-json-schema` 导出完整协议（105 个客户端请求、84 种通知、10 种服务端请求）。
+- Turn：`turn/start` → 同 `turn.id` 的 `turn/completed`（`completed` / `interrupted` / `failed`）；
+  `turn/steer` 要带 `expectedTurnId`，追加内容并入同一 Turn；`turn/interrupt` 后 thread 可继续。
+- `thread/start` 的 `developerInstructions` 是原生系统提示词；`thread/resume` 跨进程续会话。
+- `turn/start` 的 `model` / `effort` 对后续 Turn 一直生效（只发一次）；rollout 的 `turn_context.model`
+  证明切换生效。
+- 审批：`approvalPolicy: never` 下未审批的 MCP 调用直接失败，需 `mcp_servers.<key>.default_tools_approval_mode="approve"`；
+  宿主接管时 MCP 审批以 `mcpServer/elicitation/request`（`_meta.codex_approval_kind: mcp_tool_call`）到达，
+  只给服务名，工具名要和最近的 `mcpToolCall` item 对上。
+- `request_user_input` 默认关闭，需 `-c features.default_mode_request_user_input=true`。
+- **MCP 是代码模式**：模型调用 `exec`，写 `tools.mcp__<key>__<tool>(...)`，rollout 里的工具名是
+  `mcp__<key>__<tool>`（openjiuwen 内置 codex provider 声明的 `mcp__<key>.<tool>` 与此版本不符）。
+- 项目技能目录 `.agents/skills`；错误按 `codexErrorInfo`（字符串或带 `httpStatusCode` 的对象变体）分类。
 
 ### kimi-code 2.1.1
 

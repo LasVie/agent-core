@@ -1,6 +1,6 @@
 ---
 name: harness-provider-integration
-description: Turn a locally installed third-party agent harness (an agent CLI or an agent Python SDK) into a pip-installable openjiuwen harness provider package that openjiuwen discovers through the `openjiuwen.harness_providers` entry point. Covers CLIs speaking the Agent Client Protocol (ACP, e.g. `opencode acp`, `kimi acp`, gemini-cli/qwen-code/goose), one-shot CLIs with structured stdout, and vendor SDKs. Ships a scaffold script whose generated package, fake-runtime unit tests, registration test and e2e suite pass immediately, and a build script producing the wheel plus a sha256 runtime manifest for frozen hosts that download, extract and append it to sys.path, optionally bundling the vendor CLI into platform wheels as a last-resort fallback behind the CLI on PATH (like claude-agent-sdk / openai-codex-cli-bin), plus recon, capability, mapping, testing and packaging rules distilled from openjiuwen's claudecode/codex/dsh providers. Works with only `pip install openjiuwen`; no openjiuwen source checkout needed. Use whenever someone wants to plug an agent CLI or agent SDK into openjiuwen as a harness provider (接入/扩展三方 Agent Harness、CLI agent、agent SDK 到 openjiuwen), or asks how to write such a provider.
+description: Turn a locally installed third-party agent harness (an agent CLI or an agent Python SDK) into a pip-installable openjiuwen harness provider package that openjiuwen discovers through the `openjiuwen.harness_providers` entry point. Covers, in order of preference, vendor Python SDKs (least adapter code), a vendor's native full-duplex protocol driven directly (e.g. `codex app-server` JSON-RPC), native one-shot CLIs with structured stdout and session resume, and CLIs speaking the Agent Client Protocol (ACP, e.g. `opencode acp`, `kimi acp`, gemini-cli/qwen-code/goose). Ships a scaffold script whose generated package, fake-runtime unit tests, registration test and e2e suite pass immediately, and a build script producing the wheel plus a sha256 runtime manifest for frozen hosts that download, extract and append it to sys.path, optionally bundling the vendor CLI into platform wheels as a last-resort fallback behind the CLI on PATH (like claude-agent-sdk / openai-codex-cli-bin), plus recon, capability, mapping, testing and packaging rules distilled from openjiuwen's claudecode/codex/dsh providers. Works with only `pip install openjiuwen`; no openjiuwen source checkout needed. Use whenever someone wants to plug an agent CLI or agent SDK into openjiuwen as a harness provider (接入/扩展三方 Agent Harness、CLI agent、agent SDK 到 openjiuwen), or asks how to write such a provider.
 ---
 
 # 三方 Agent Harness 接入 openjiuwen（provider 包）
@@ -46,16 +46,31 @@ python -c "import openjiuwen.harness_providers as p, os; print(os.path.dirname(p
 
 ## 2. 选接入模式
 
-| 厂商提供 | 模式 | 模板现状 |
-|---|---|---|
-| `<cli> acp` / `--acp` 等 ACP stdio 入口 | `acp` | 标准协议，几乎零厂商代码；opencode 上开箱通过全部 e2e |
-| Python SDK（流式 API、中断、会话） | `sdk` | 调用集中在 `_sdk_*`，按真实 API 重写 |
-| 只有一次性非交互模式 + 结构化 stdout + 会话 id 续接 | `oneshot` | 映射与 argv 需按厂商记录重写 |
-| 自有常驻协议（非 ACP 的 JSON 行协议、app-server） | `acp` 骨架 + 替换 `rpc.py` 帧格式与 `mapping.py` | 参考内置 `codex/` |
+按优先级从高到低：
 
-同一厂商多个入口时优先级：ACP > SDK > 一次性 CLI（能力依次变少：中止、审批、MCP、续会话）。
-细节：[mode-acp.md](references/mode-acp.md) · [mode-sdk.md](references/mode-sdk.md) ·
-[mode-oneshot.md](references/mode-oneshot.md)。
+| 优先级 | 厂商提供 | 模式 | 模板现状 |
+|---|---|---|---|
+| 优先级 | 厂商提供 | 模式 | 模板现状 |
+|---|---|---|---|
+| 1 | Python SDK（流式 API、中断、会话、服务端请求回调） | `sdk` | 调用集中在 `_sdk_*`，按真实 API 重写；内置 claudecode / codex / dsh 都走这条 |
+| 2 | 原生常驻全双工协议（`codex app-server` 这类 stdio JSON-RPC：运行中追加输入、中断、审批与提问都在一条连接上） | 原生：`--mode acp` 生成骨架，按 [mode-native.md](references/mode-native.md) 重写协议层 | codex app-server 实例通过 6 项契约 + 8 项厂商 e2e |
+| 3 | 原生一次性模式：结构化 stdout + 会话 id 续接（`run --format json`、`exec --json` + `resume`） | `oneshot` | 映射与 argv 需按厂商记录重写 |
+| 4 | `<cli> acp` / `--acp` 等 ACP stdio 入口 | `acp` | 标准协议，常量 + 夹具即可；opencode、kimi-code 实测通过 |
+
+为什么这样排：
+
+- **SDK 最优先**：进程管理、帧格式、请求 / 响应配对、类型化的通知与错误都由厂商维护，provider 只写映射
+  与少量调用，底层代码最少，厂商协议升级也跟着 SDK 走。代价是多一个依赖：SDK 自带的 CLI 可能落后于本机
+  （配置要允许指定 CLI 路径），生成类型可能缺某些请求（Codex 的 `request_user_input` 要从原始参数里取）。
+  厂商没有 SDK、SDK 缺关键能力、或宿主不能接受这个依赖时，再往下选。
+- **原生协议优先于 ACP**：原生协议给出厂商的全部能力与结构化数据（运行中追加输入、审批、向用户提问、
+  结构化错误码、模型列表），只是传输层要自己写；ACP 是各厂商的公分母，实现参差不齐（opencode 1.17 拒绝
+  会话内切模型，kimi-code 的额度耗尽与认证失败同一个错误码、无法区分）。
+- **全双工常驻优先于单次 Turn**：单次 Turn 每轮冷启动，失去运行中追加输入、审批、向用户提问和温和中断，
+  但仍是厂商原生的结构化输出，并靠会话 id 续接，所以排在 ACP 前面。
+
+细节：[mode-sdk.md](references/mode-sdk.md) · [mode-native.md](references/mode-native.md) ·
+[mode-oneshot.md](references/mode-oneshot.md) · [mode-acp.md](references/mode-acp.md)。
 
 ## 3. 生成包并立即跑绿
 
