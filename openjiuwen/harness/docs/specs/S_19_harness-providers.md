@@ -6,7 +6,7 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness_providers/`（`base.py` / `stream.py` / `io_adapter.py` / `factory.py` / `inputs.py` / `jsonsafe.py` / `native/` / `claudecode/` / `codex/` / `dsh/`） |
-| 最近一次修订日期 | 2026-09-18 |
+| 最近一次修订日期 | 2026-10-10 |
 | 关联 feature | F_03_harness-providers-and-manifest-factory.md、agent_teams F_113_external-harness-builtin-model-selection.md |
 
 ## 范围 / 边界
@@ -75,7 +75,9 @@
    "event_buffer_capacity"})`）；对 `claudecode` / `codex` / `dsh` 只把 `model` 端点映射进 provider
    配置（显式 `config` 优先），manifest 的 `tools` / `rails` / `subagents` 非空时
    `ValueError`。`build_harness_context` 对三方 provider 渲染 prompt sections 与 MCP，对 `native`
-   只放 `extra_system_prompt`。
+   只放 `extra_system_prompt`。注册/安装的第三方 provider 同样拒绝这三段；模型端点交给 provider 可选的
+   `manifest_config(endpoint)`（`endpoint = {model, provider, api_base, api_key}`，返回值逐键
+   `setdefault`），无此钩子时只传 `model`。
 10. **模型控制由骨架承担**（F_113）：`SerializedTurnHarness` 实现 `HarnessModelControl`——`list_models`
     / `set_model` 先按 card 门控；`set_model` 在 `_command_lock` 内判空闲则立即经
     `_apply_model_selection` 应用，否则按字段合并进暂存选择，由 supervisor 在 STARTED 之后、
@@ -87,18 +89,30 @@
     的 `models`，Codex 调 `model/list`（过滤 hidden），未启动时用临时 client，只握手不请求模型。
     Codex 仅 `CodexModelConfig.is_external`（有 `provider` 或 `api_base`）时强制
     `deny_all + full_access`；官方内置模型保留 auto-review reviewer。
+11. **provider 名的解析顺序固定**（F_07）：内置 `PROVIDER_NAMES` 是封闭集合且永远优先；其次
+    `register_harness_provider` 的进程内注册（内置名不可注册）；最后是已安装包在 entry point 组
+    `HARNESS_PROVIDER_ENTRY_POINT_GROUP = "openjiuwen.harness_providers"` 中的同名入口，值为
+    `HarnessProvider` 类（无参实例化）或实例，加载 / 实例化失败或不满足 SPI 都抛带原因的
+    `ValueError`，不静默跳过。组名是对外稳定 API。每次解析都重新读取安装元数据，所以运行中
+    `pip install` 的 wheel 下一次解析即可见。
 
 ## 接口契约
 
 ```python
-def create_harness(manifest: AgentTemplateSpec | str | Path, *, provider: HarnessProviderName,
+def create_harness(manifest: AgentTemplateSpec | str | Path, *, provider: str,
                    config: Mapping[str, Any] | None = None, language: str | None = None) -> HarnessProtocol
 def build_harness_context(manifest, *, provider, host_session_id, agent_id=None, agent_name=None,
                           language="cn", cwd=None, env=None, extra_system_prompt=None,
                           host_capabilities=frozenset(), resume_policy=ResumePolicy.NEW,
                           checkpoint=None, checkpoint_sink=None, interactions=None, metadata=None) -> HarnessContext
-def resolve_provider(provider: str) -> HarnessProvider
+def resolve_provider(provider: str) -> HarnessProvider          # 内置 > 注册 > entry point
+def available_providers() -> tuple[str, ...]
+def register_harness_provider(name: str, factory: Callable[[], HarnessProvider]) -> None
+def unregister_harness_provider(name: str) -> None
 PROVIDER_NAMES == ("native", "native_v2", "claudecode", "codex", "dsh")
+HARNESS_PROVIDER_ENTRY_POINT_GROUP == "openjiuwen.harness_providers"
+# 第三方 provider 可选钩子：manifest_config(endpoint: Mapping[str, str | None]) -> dict
+def install_skills(sources, *, provider, cwd, conflict="skip", scan_dir=None) -> tuple[Path, ...]
 
 class HarnessIOAdapter:
     def __init__(self, harness, *, event_observer=None, auto_approve_tools=True,
@@ -163,7 +177,8 @@ bundle 的 library。包路径按现有 manifest loader 解析为绝对路径，
 同名的 config.skills 显式覆盖 manifest 声明；skill_conflict 为 skip（Provider 默认）、replace 或 append。
 
 start 在 SDK 启动前复制完整目录到 cwd/.claude/skills（claudecode）、cwd/.agents/skills（codex）、
-cwd/.dsh/skills（dsh）。cwd 优先取 HarnessContext，再取 provider config，再取当前进程目录。
+cwd/.dsh/skills（dsh）；第三方 provider 没有内置条目，必须传 `scan_dir`（项目内相对路径，越界拒绝），
+缺省时 `install_skills` 抛 `ValueError`。cwd 优先取 HarnessContext，再取 provider config，再取当前进程目录。
 名称取 SKILL.md front matter.name，缺省取目录名；同名按不区分大小写比较，同时识别已有目录里的
 声明名。enabled_skills 非空时筛选声明名；mode 仍被解析校验，但原生 CLI 决定加载/调用方式，
 不仿造 DeepAgent 的 auto_list 工具。skip 保留已有目录全部内容，replace 完整替换（清除旧文件），

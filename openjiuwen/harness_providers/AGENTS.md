@@ -25,13 +25,17 @@ harness_providers/
 └── dsh/            # DshHarness over deepseek-harness (moved from agent_teams.external.dsh; see dsh/AGENTS.md)
 ```
 
-Provider names accepted by the factory: `native`, `native_v2`, `claudecode`, `codex`, `dsh`.
+Built-in provider names accepted by the factory: `native`, `native_v2`, `claudecode`, `codex`, `dsh`.
+Third-party providers resolve after them: in-process `register_harness_provider(name, factory)`,
+then installed packages declaring an entry point in the `openjiuwen.harness_providers` group
+(`HARNESS_PROVIDER_ENTRY_POINT_GROUP`, a stable public name). `available_providers()` lists all.
 The provider card names are `deepagent`, `native_v2`, `claude-code`, `codex`, `deepseek-harness`.
 `native_v2` is resolved lazily to `agent_teams.harness.protocol_adapter.NativeV2HarnessProvider`;
 its implementation stays in the team package and reuses NativeHarness manifest construction.
 
 Design records: spec `openjiuwen/harness/docs/specs/S_19_harness-providers.md`, feature
-`openjiuwen/harness/docs/features/F_03_harness-providers-and-manifest-factory.md`, team wiring
+`openjiuwen/harness/docs/features/F_03_harness-providers-and-manifest-factory.md`, third-party
+provider packages `openjiuwen/harness/docs/features/F_07_third-party-harness-provider-packages.md`, team wiring
 `openjiuwen/agent_teams/docs/specs/S_27_external-harness-member-runtime.md` and
 `openjiuwen/agent_teams/docs/features/F_96_protocol-harness-providers-and-member-migration.md`.
 
@@ -167,6 +171,9 @@ Design records: spec `openjiuwen/harness/docs/specs/S_19_harness-providers.md`, 
    `skill_conflict` defaults to skip; replace stages a complete bundle before
    renaming the existing directory. Never remove copied skills at stop.
    Manifests carrying `tools` / `rails` / `subagents` are still rejected.
+   Third-party providers map the manifest endpoint through an optional
+   `manifest_config(endpoint)` hook (else they get `model` only) and pass their
+   own skill directory to `install_skills(..., scan_dir=...)`.
 10. **Model control is base-class owned.** `SerializedTurnHarness` implements
     `HarnessModelControl`: `list_models` / `set_model` gate on the card,
     `set_model` applies under `_command_lock` while idle and otherwise merges
@@ -220,7 +227,12 @@ Design records: spec `openjiuwen/harness/docs/specs/S_19_harness-providers.md`, 
 
 ## Change requirements
 
-- New provider: subclass `SerializedTurnHarness`, add a `*HarnessProvider`,
+- Third-party providers are separate pip packages generated with the
+  `harness-provider-integration` skill; they may only depend on `harness_protocol`
+  and on `base` / `jsonsafe` / `inputs` / `mcp_naming` / `skills` / the factory
+  registration API here. Treat those as public: changing them breaks installed
+  provider packages.
+- New built-in provider: subclass `SerializedTurnHarness`, add a `*HarnessProvider`,
   register the name in `factory.resolve_provider` / `PROVIDER_NAMES`, add
   fake-SDK unit tests under `tests/unit_tests/harness_providers/` and a real
   CLI suite under `tests/system_tests/harness_providers/` reusing
