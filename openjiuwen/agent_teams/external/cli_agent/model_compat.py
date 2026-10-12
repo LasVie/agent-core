@@ -24,12 +24,24 @@ def is_anthropic_provider(provider: str) -> bool:
 
 
 def provider_filter_for_cli(cli_agent: str) -> Callable[[str], bool] | None:
-    """Return a provider filter for the CLI kind, or None for unknown kinds."""
+    """Return a provider filter for the CLI kind, or None for unknown kinds.
+
+    A third-party harness provider either declares ``ENDPOINT_MODELS`` and
+    maps any endpoint through its ``model_config`` (no filter), or takes none
+    at all, in which case no pool entry is offered for it.
+    """
     if cli_agent == "claude":
         return is_anthropic_provider
     if cli_agent == "codex":
         return lambda p: not is_anthropic_provider(p)
-    return None
+    from openjiuwen.agent_teams.external.cli_agent.backends import backend_for, provider_takes_endpoint_models
+
+    backend = backend_for(cli_agent)
+    if backend is None or backend.kind != "provider":
+        return None
+    if provider_takes_endpoint_models(cli_agent):
+        return None
+    return lambda _provider: False
 
 
 def compatible_pool_model_names(cli_agent: str, pool: Sequence[Any]) -> list[str]:

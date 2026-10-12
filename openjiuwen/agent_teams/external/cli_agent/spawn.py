@@ -37,7 +37,14 @@ from openjiuwen.agent_teams.team_workspace.models import TeamWorkspaceConfig
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import raise_error
 from openjiuwen.core.common.logging import team_logger
-from openjiuwen.harness_protocol import HarnessCapability, HarnessContext, McpServerConfig, McpTransport
+from openjiuwen.harness_protocol import (
+    HarnessCapability,
+    HarnessContext,
+    McpServerConfig,
+    McpTransport,
+    ModelChoice,
+    ModelEndpoint,
+)
 from openjiuwen.harness_providers.skills import normalize_skills
 from openjiuwen.harness_providers.claudecode import (
     DEFAULT_CLAUDE_MAX_BUFFER_SIZE,
@@ -47,7 +54,7 @@ from openjiuwen.harness_providers.claudecode import (
 )
 from openjiuwen.harness_providers.claudecode.options import strip_parent_claude_env
 from openjiuwen.harness_providers.codex import CodexHarness, CodexHarnessConfig, CodexModelConfig
-from openjiuwen.harness_providers.factory import resolve_provider
+from openjiuwen.harness_providers.factory import provider_model_config, resolve_provider
 from openjiuwen.harness_providers.skills import SkillSource
 
 MemberRuntimeLike = CliRuntimeBase | ExternalHarnessMemberRuntime
@@ -399,7 +406,7 @@ async def build_cli_runtime(
             "command_override": command_override,
             "codex_bin": codex_bin,
             "ssh_transport": ssh_transport,
-            "external_model_config": external_model_config,
+            "fallback_external_model_config": fallback_external_model_config,
             "claude_turn_idle_timeout_s": claude_turn_idle_timeout_s,
             "claude_max_buffer_size": claude_max_buffer_size,
             "codex_turn_idle_timeout_s": codex_turn_idle_timeout_s,
@@ -419,6 +426,7 @@ async def build_cli_runtime(
             inject_mcp=inject_mcp,
             mcp_server_name=mcp_server_name,
             mcp_server_command=mcp_server_command,
+            external_model_config=external_model_config,
             system_prompt=system_prompt,
             system_prompt_mode=system_prompt_mode,
             skills=skills,
@@ -590,7 +598,7 @@ async def build_cli_workflow_runtime(
             env=env,
             inherit_process_env=False,
             cli_path=entry.cli_path,
-            model=_claude_model(model_config),
+            model=ClaudeModelConfig.from_mapping(_member_model_config("claudecode", model_config, None).get("model")),
             max_buffer_size=entry.claude_max_buffer_size or DEFAULT_CLAUDE_MAX_BUFFER_SIZE,
         )
         harness = ClaudeCodeHarness(config)
@@ -605,7 +613,7 @@ async def build_cli_workflow_runtime(
             "env": env,
             "inherit_process_env": False,
             "codex_bin": entry.codex_bin or entry.cli_path,
-            "model": _codex_model(model_config),
+            "model": CodexModelConfig.from_mapping(_member_model_config("codex", model_config, None).get("model")),
             "bypass_approvals_and_sandbox": entry.codex_bypass_approvals_and_sandbox,
             "client_name": "openjiuwen_swarmflow",
             "client_title": f"OpenJiuwen Swarmflow Member {member_name}",
@@ -667,27 +675,46 @@ def _is_native_endpoint(config: ExternalCliModelConfig | None) -> bool:
     return config is None or (config.api_base is None and config.provider is None)
 
 
-def _claude_model(config: ExternalCliModelConfig | None) -> ClaudeModelConfig | None:
+def model_choice(config: ExternalCliModelConfig | None) -> ModelChoice | None:
+    """Translate the team's model config into the provider-neutral ``ModelChoice``.
+
+    A config with neither ``api_base`` nor ``provider`` names a built-in
+    model (the CLI's own login); otherwise it is served by that endpoint.
+    """
     if config is None:
         return None
-    return ClaudeModelConfig(
-        model=config.model,
-        api_base=config.api_base,
-        api_key=config.api_key,
-        effort=config.effort,
-    )
+    endpoint = None
+    if not _is_native_endpoint(config):
+        endpoint = ModelEndpoint(api_base=config.api_base, api_key=config.api_key, provider=config.provider)
+    return ModelChoice(model=config.model, effort=config.effort, endpoint=endpoint)
 
 
-def _codex_model(config: ExternalCliModelConfig | None) -> CodexModelConfig | None:
-    if config is None:
-        return None
-    return CodexModelConfig(
-        model=config.model,
-        provider=config.provider,
-        api_base=config.api_base,
-        api_key=config.api_key,
-        effort=config.effort,
-    )
+def _member_model_config(
+    provider_name: str,
+    primary: ExternalCliModelConfig | None,
+    fallback: ExternalCliModelConfig | None,
+) -> dict[str, Any]:
+    """Map a member's model (and authentication fallback) through its provider.
+
+    The fallback only guards a member on the CLI's own login: one already on
+    an endpoint has nothing to fall back from, so it is dropped there.
+
+    Raises:
+        BaseError: ``AGENT_TEAM_CONFIG_INVALID`` when the provider cannot run
+            the model.
+    """
+    choice = model_choice(primary)
+    fallback_choice = model_choice(fallback) if _is_native_endpoint(primary) else None
+    if choice is None and fallback_choice is None:
+        return {}
+    try:
+        mapped = provider_model_config(provider_name, choice or ModelChoice(), fallback=fallback_choice)
+    except ValueError as exc:
+        raise_error(StatusCode.AGENT_TEAM_CONFIG_INVALID, reason=str(exc), cause=exc)
+    if choice is None:
+        # Only the fallback was chosen: the member keeps the CLI's default model.
+        mapped.pop("model", None)
+    return mapped
 
 
 def _claude_process_env(
@@ -743,9 +770,7 @@ async def _build_claude_member_runtime(
         "OPENJIUWEN_TEAM_JOIN" in env,
         ssh_transport is not None,
     )
-    fallback_model = None
-    if _is_native_endpoint(external_model_config) and fallback_external_model_config is not None:
-        fallback_model = _claude_model(fallback_external_model_config)
+    model = _member_model_config("claudecode", external_model_config, fallback_external_model_config)
     config = ClaudeCodeHarnessConfig(
         skills=skills,
         skill_conflict=skill_conflict,
@@ -755,8 +780,8 @@ async def _build_claude_member_runtime(
         env=env,
         inherit_process_env=False,
         cli_path=cli_path,
-        model=_claude_model(external_model_config),
-        fallback_model=fallback_model,
+        model=ClaudeModelConfig.from_mapping(model.get("model")),
+        fallback_model=ClaudeModelConfig.from_mapping(model.get("fallback_model")),
         max_buffer_size=max_buffer_size,
     )
     transport_factory = None
@@ -824,9 +849,7 @@ async def _build_codex_member_runtime(
         inject_mcp,
         "OPENJIUWEN_TEAM_JOIN" in env,
     )
-    fallback_model = None
-    if _is_native_endpoint(external_model_config) and fallback_external_model_config is not None:
-        fallback_model = _codex_model(fallback_external_model_config)
+    model = _member_model_config("codex", external_model_config, fallback_external_model_config)
     config_kwargs: dict[str, Any] = {
         "skills": skills,
         "skill_conflict": skill_conflict,
@@ -835,8 +858,8 @@ async def _build_codex_member_runtime(
         "env": env,
         "inherit_process_env": False,
         "codex_bin": codex_bin,
-        "model": _codex_model(external_model_config),
-        "fallback_model": fallback_model,
+        "model": CodexModelConfig.from_mapping(model.get("model")),
+        "fallback_model": CodexModelConfig.from_mapping(model.get("fallback_model")),
         "bypass_approvals_and_sandbox": bypass_approvals_and_sandbox,
         "mcp_env_passthrough": tuple(MCP_SERVER_ENV_VARS),
         "mcp_default_tools_approval_mode": mcp_default_tools_approval_mode,
@@ -877,6 +900,7 @@ def _build_provider_member_runtime(
     inject_mcp: bool,
     mcp_server_name: str,
     mcp_server_command: tuple[str, ...],
+    external_model_config: ExternalCliModelConfig | None,
     system_prompt: str | None,
     system_prompt_mode: str | None,
     skills: tuple[SkillSource, ...],
@@ -887,6 +911,11 @@ def _build_provider_member_runtime(
     team_context_tracker: Any,
 ) -> ExternalHarnessMemberRuntime:
     """Build a member runtime on a third-party harness provider.
+
+    The member's model reaches the provider like Claude's and Codex's: as a
+    ``ModelChoice`` mapped by the provider's ``model_config``. The spawn path
+    only hands over an endpoint model when the card declares
+    ``ENDPOINT_MODELS``; the authentication fallback is Claude / Codex only.
 
     The provider receives only the configuration keys every generated
     provider package shares (``cwd`` / ``env`` / ``inherit_process_env`` /
@@ -909,6 +938,7 @@ def _build_provider_member_runtime(
         config["cli_path"] = cli_path
     if system_prompt_mode is not None:
         config["system_prompt_mode"] = system_prompt_mode
+    config.update(_member_model_config(provider_name, external_model_config, None))
     harness = resolve_provider(provider_name).create(config)
     team_logger.info(
         "[external-cli] preparing provider member {} provider={} cwd={} cli_path_configured={} inject_mcp={}",

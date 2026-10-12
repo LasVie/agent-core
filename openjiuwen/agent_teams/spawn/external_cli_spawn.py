@@ -45,6 +45,31 @@ if TYPE_CHECKING:
     from openjiuwen.agent_teams.tools.team import TeamBackend
 
 
+def _negotiate_provider_endpoint(
+    ctx: "TeamRuntimeContext",
+    config: ExternalCliModelConfig | None,
+) -> ExternalCliModelConfig | None:
+    """Drop an endpoint model a third-party provider cannot run on.
+
+    A built-in model passes through (the provider's ``model_config`` decides
+    whether it can run it); an endpoint model reaches the provider only when
+    its card declares ``ENDPOINT_MODELS``, otherwise the member keeps the
+    endpoints its CLI is configured with.
+    """
+    if config is None or (config.api_base is None and config.provider is None):
+        return config
+    from openjiuwen.agent_teams.external.cli_agent.backends import provider_takes_endpoint_models
+
+    if provider_takes_endpoint_models(ctx.cli_agent or ""):
+        return config
+    team_logger.info(
+        "[external-cli] provider {} takes no endpoint models; member {} keeps its CLI's own model",
+        ctx.cli_agent,
+        ctx.member_name,
+    )
+    return None
+
+
 def _external_cli_config_for_member(
     spec: "TeamAgentSpec",
     member_name: str | None,
@@ -440,16 +465,11 @@ async def external_cli_spawn(
             ctx.fallback_member_model,
             cli_agent=ctx.cli_agent,
         )
-    if backend is not None and backend.kind == "provider" and external_model_config is not None:
-        # A third-party provider maps endpoints through its own configuration;
-        # team model allocations do not apply to it.
-        team_logger.info(
-            "[external-cli] member {} runs on provider {}'s own model configuration; ignoring team model",
-            ctx.member_name,
-            ctx.cli_agent,
-        )
-        external_model_config = None
+    if backend is not None and backend.kind == "provider":
+        # The authentication fallback is Claude / Codex behaviour; a
+        # third-party provider has none to switch to.
         fallback_external_model_config = None
+        external_model_config = _negotiate_provider_endpoint(ctx, external_model_config)
 
     async def promote_fallback_model() -> bool:
         """Persist the fallback model as this member's active model."""

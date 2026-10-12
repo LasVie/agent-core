@@ -469,8 +469,9 @@ class ExternalCliAgentSpec(BaseModel):
 
     Non-empty enables ``spawn_external_cli(builtin_model=..., effort=...)`` and
     the ``set_member_model`` tool for members of this kind; empty keeps the
-    member on ``model_config`` / the pool / the CLI default. Only valid for
-    ``cli_agent`` ``"claude"`` / ``"codex"``.
+    member on ``model_config`` / the pool / the CLI default. Valid for Claude,
+    Codex and third-party harness providers (whose card must declare
+    ``MODEL_SELECTION`` for a member to run one); not for adapter-backed CLIs.
     """
 
     ssh_transport: SshTransportConfig | None = None
@@ -521,10 +522,11 @@ class ExternalCliAgentSpec(BaseModel):
         # including ``None``, and must still validate for non-Claude members.
         if self.cli_agent != "claude" and self.claude_max_buffer_size is not None:
             raise ValueError("claude_max_buffer_size is only valid when cli_agent='claude'")
-        if self.cli_agent not in {"claude", "codex"} and self.external_model_config is not None:
-            raise ValueError("model_config is only valid when cli_agent is 'claude' or 'codex'")
-        if self.cli_agent not in {"claude", "codex"} and self.builtin_models:
-            raise ValueError("builtin_models is only valid when cli_agent is 'claude' or 'codex'")
+        adapter_backed = self.cli_agent in available_adapters()
+        if adapter_backed and self.external_model_config is not None:
+            raise ValueError("model_config is not valid for adapter-backed CLI agents")
+        if adapter_backed and self.builtin_models:
+            raise ValueError("builtin_models is not valid for adapter-backed CLI agents")
         names = [model.name for model in self.builtin_models]
         if len(names) != len(set(names)):
             raise ValueError("builtin_models names must be unique")

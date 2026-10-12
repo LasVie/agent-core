@@ -104,6 +104,19 @@ def third_party_providers() -> tuple[str, ...]:
     return tuple(name for name in available_providers() if name not in PROVIDER_NAMES)
 
 
+def provider_takes_endpoint_models(name: str) -> bool:
+    """Return whether third-party provider ``name`` runs models on host endpoints.
+
+    True only when the provider maps models at all (``ModelConfigProvider``)
+    and its card declares ``ENDPOINT_MODELS``.
+    """
+    from openjiuwen.harness_protocol import HarnessCapability, ModelConfigProvider
+    from openjiuwen.harness_providers.factory import resolve_provider
+
+    provider = resolve_provider(name)
+    return isinstance(provider, ModelConfigProvider) and provider.card.supports(HarnessCapability.ENDPOINT_MODELS)
+
+
 def available_backends() -> tuple[str, ...]:
     """Return all supported external CLI backend names."""
     known = (*_SDK_BACKENDS, *available_adapters())
@@ -144,5 +157,6 @@ __all__ = [
     "backend_for",
     "is_known_backend",
     "missing_sdk_requirement",
+    "provider_takes_endpoint_models",
     "third_party_providers",
 ]
