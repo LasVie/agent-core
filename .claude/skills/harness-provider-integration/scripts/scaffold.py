@@ -11,7 +11,10 @@ vendor-specific work; every place that still needs vendor knowledge carries
 a ``SCAFFOLD(<topic>)`` marker.
 
 Run it with the Python environment that has ``openjiuwen`` installed (the
-package is generated against that version)::
+package is generated against that version). openjiuwen may come from PyPI or
+from a source checkout (``pip install -e <agent-core clone>``); a source
+install makes the generated package depend on the openjiuwen git repository
+instead of a released version::
 
     python scaffold.py --name opencode --mode acp --display OpenCode --binary opencode --command "opencode acp"
     python scaffold.py --name kimi --mode oneshot --binary kimi --command "kimi --output-format stream-json"
@@ -26,11 +29,12 @@ from __future__ import annotations
 import argparse
 import datetime
 import importlib.util
+import json
 import re
 import shlex
 import sys
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -39,6 +43,8 @@ MARKER = re.compile(r"SCAFFOLD\(([a-z0-9-]+)\)")
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 # Built-in openjiuwen provider names; a third-party entry point cannot shadow them.
 RESERVED = {"native", "native_v2", "claudecode", "codex", "dsh"}
+# The openjiuwen repository a source-installed openjiuwen is assumed to track.
+OPENJIUWEN_GIT = "git+https://gitcode.com/openJiuwen/agent-core.git@develop"
 
 # template (relative to templates/) -> destination (relative to the project root)
 _COMMON = {
@@ -178,23 +184,52 @@ class Spec:
 
 
 def detect_openjiuwen() -> str:
-    """Return the requirement pinning the installed openjiuwen, after checking it can load plugins."""
+    """Return the openjiuwen requirement for the generated package, after checking it can load plugins.
+
+    A release from an index pins ``openjiuwen>=<installed>``. An install from
+    a source checkout or a git URL (``pip install -e <clone>``) has no
+    released version to pin, so the package depends on the git repository:
+    the VCS URL and commit pip recorded, else :data:`OPENJIUWEN_GIT`.
+    """
     try:
         installed = version("openjiuwen")
     except PackageNotFoundError:
         raise SystemExit(
-            "openjiuwen is not installed in this interpreter; run `pip install openjiuwen` "
-            "(a virtualenv is fine) and invoke this script with that Python"
+            "openjiuwen is not installed in this interpreter; run `pip install openjiuwen`, or "
+            "`pip install -e <agent-core clone>` for a source checkout, and invoke this script with that Python"
         ) from None
     # Read the source instead of importing it: importing openjiuwen initializes
     # its logging, which writes a logs/ directory into the current directory.
     spec = importlib.util.find_spec("openjiuwen.harness_providers.factory")
     source = Path(spec.origin).read_text(encoding="utf-8") if spec is not None and spec.origin else ""
     if "HARNESS_PROVIDER_ENTRY_POINT_GROUP" not in source:
+        origin = Path(spec.origin).parent if spec is not None and spec.origin else "openjiuwen"
         raise SystemExit(
-            f"openjiuwen {installed} cannot discover third-party harness providers; upgrade openjiuwen"
+            f"openjiuwen {installed} ({origin}) cannot discover third-party harness providers: its "
+            "harness_providers/factory.py has no HARNESS_PROVIDER_ENTRY_POINT_GROUP. Upgrade the release, or "
+            "check out a source revision that includes entry point discovery"
         )
-    return f"openjiuwen>={installed}"
+    source_requirement = _source_requirement()
+    return source_requirement or f"openjiuwen>={installed}"
+
+
+def _source_requirement() -> str | None:
+    """Return a git requirement when openjiuwen was installed from source, else ``None``."""
+    try:
+        raw = distribution("openjiuwen").read_text("direct_url.json")
+    except PackageNotFoundError:
+        return None
+    if not raw:
+        return None
+    direct = json.loads(raw)
+    vcs = direct.get("vcs_info")
+    if isinstance(vcs, dict) and vcs.get("vcs") == "git":
+        revision = vcs.get("commit_id") or vcs.get("requested_revision")
+        url = direct.get("url", "")
+        return f"openjiuwen @ git+{url}@{revision}" if revision else f"openjiuwen @ git+{url}"
+    if isinstance(direct.get("dir_info"), dict):
+        return f"openjiuwen @ {OPENJIUWEN_GIT}"
+    return None
 
 
 def render(text: str, tokens: dict[str, str]) -> str:
@@ -277,7 +312,10 @@ def main() -> None:
     parser.add_argument("--command", help="default argv for the CLI, shell-quoted")
     parser.add_argument("--sdk-module", help="vendor SDK import name (sdk mode)")
     parser.add_argument("--sdk-dist", help="vendor SDK distribution name (sdk mode)")
-    parser.add_argument("--openjiuwen-requirement", help="override the detected openjiuwen requirement")
+    parser.add_argument(
+        "--openjiuwen-requirement",
+        help="override the detected openjiuwen requirement (e.g. 'openjiuwen>=0.2.0' before publishing to PyPI)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print the plan without writing")
     parser.add_argument("--check", metavar="PROJECT", help="list the SCAFFOLD markers still open in PROJECT")
     args = parser.parse_args()

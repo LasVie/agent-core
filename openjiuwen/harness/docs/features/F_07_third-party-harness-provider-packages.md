@@ -36,6 +36,9 @@ agent 接成 harness provider，产物必须是独立 pip 包，openjiuwen 装�
 7. **生成 skill 自包含**：pip 包不带 md 文档，skill 自带规则、模板与契约副本；脚手架在任意目录生成
    src 布局包（含 entry point、假运行时单测、注册测试、e2e 与 `contract.py`），生成即绿，厂商相关处
    以 `SCAFFOLD(topic)` 标记、`--check` 归零。三种模式：ACP 常驻、一次性 CLI、Python SDK。
+   openjiuwen 可来自 PyPI，也可来自克隆的 develop 源码（`pip install -e <clone>`）：脚手架读
+   `direct_url.json` 区分两者，前者写 `openjiuwen>=<已装版本>`，后者写指向 develop 的 git 依赖（从 git URL
+   装的写 pip 记录的 commit）；两种都先读源码确认 factory 支持 entry point 发现，不支持就拒绝生成。
 
 8. **动态加载单位是 provider 包，厂商 CLI 打在包内**：内置 claudecode / codex 随 openjiuwen 发布，
    jiuwenswarm 冻结版只下载它们的厂商 SDK（SDK wheel 自带 CLI）；第三方 provider 不在 openjiuwen 里，

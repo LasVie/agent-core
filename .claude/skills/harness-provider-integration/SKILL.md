@@ -1,6 +1,6 @@
 ---
 name: harness-provider-integration
-description: Turn a locally installed third-party agent harness (an agent CLI or an agent Python SDK) into a pip-installable openjiuwen harness provider package that openjiuwen discovers through the `openjiuwen.harness_providers` entry point. Covers, in order of preference, vendor Python SDKs (least adapter code), a vendor's native full-duplex protocol driven directly (e.g. `codex app-server` JSON-RPC), native one-shot CLIs with structured stdout and session resume, and CLIs speaking the Agent Client Protocol (ACP, e.g. `opencode acp`, `kimi acp`, gemini-cli/qwen-code/goose). Ships a scaffold script whose generated package, fake-runtime unit tests, registration test and e2e suite pass immediately, and a build script producing the wheel plus a sha256 runtime manifest for frozen hosts that download, extract and append it to sys.path, optionally bundling the vendor CLI into platform wheels as a last-resort fallback behind the CLI on PATH (like claude-agent-sdk / openai-codex-cli-bin), plus recon, capability, mapping, testing and packaging rules distilled from openjiuwen's claudecode/codex/dsh providers. Works with only `pip install openjiuwen`; no openjiuwen source checkout needed. Use whenever someone wants to plug an agent CLI or agent SDK into openjiuwen as a harness provider (接入/扩展三方 Agent Harness、CLI agent、agent SDK 到 openjiuwen), or asks how to write such a provider.
+description: Turn a locally installed third-party agent harness (an agent CLI or an agent Python SDK) into a pip-installable openjiuwen harness provider package that openjiuwen discovers through the `openjiuwen.harness_providers` entry point. Covers, in order of preference, vendor Python SDKs (least adapter code), a vendor's native full-duplex protocol driven directly (e.g. `codex app-server` JSON-RPC), native one-shot CLIs with structured stdout and session resume, and CLIs speaking the Agent Client Protocol (ACP, e.g. `opencode acp`, `kimi acp`, gemini-cli/qwen-code/goose). Ships a scaffold script whose generated package, fake-runtime unit tests, registration test and e2e suite pass immediately, and a build script producing the wheel plus a sha256 runtime manifest for frozen hosts that download, extract and append it to sys.path, optionally bundling the vendor CLI into platform wheels as a last-resort fallback behind the CLI on PATH (like claude-agent-sdk / openai-codex-cli-bin), plus recon, capability, mapping, testing and packaging rules distilled from openjiuwen's claudecode/codex/dsh providers. Works with openjiuwen installed from PyPI or from a clone of the agent-core develop branch (source dependency on the provider SPI). Use whenever someone wants to plug an agent CLI or agent SDK into openjiuwen as a harness provider (接入/扩展三方 Agent Harness、CLI agent、agent SDK 到 openjiuwen), or asks how to write such a provider.
 ---
 
 # 三方 Agent Harness 接入 openjiuwen（provider 包）
@@ -17,19 +17,36 @@ description: Turn a locally installed third-party agent harness (an agent CLI or
   `available_providers()` 里能看到它；团队、DeepAgent IO adapter 等宿主像驱动内置的
   Claude Code / Codex / DSH 一样驱动它。
 
-本 skill 自包含：用户机器上只需要 `pip install openjiuwen`，不需要 openjiuwen 源码仓库。
+本 skill 自包含：openjiuwen 可以从 PyPI 安装，也可以克隆源码仓库安装，两种都不需要改 openjiuwen。
 下文 `SKILL_DIR` 指本 skill 所在目录。
 
 ## 0. 准备环境
 
+openjiuwen 二选一：
+
 ```bash
 python -m venv .venv && . .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+# A. 已发布版本
 python -m pip install -U openjiuwen pytest pytest-asyncio
-python -c "from openjiuwen.harness_providers import HARNESS_PROVIDER_ENTRY_POINT_GROUP"   # 失败说明 openjiuwen 太旧，先升级
+
+# B. 源码：最新 develop 分支的 provider 接口定义（尚未发布的 SPI 改动也能用）
+git clone -b develop https://gitcode.com/openJiuwen/agent-core.git
+python -m pip install -e ./agent-core pytest pytest-asyncio
+
+python -c "from openjiuwen.harness_providers import HARNESS_PROVIDER_ENTRY_POINT_GROUP"   # 失败说明 openjiuwen 不支持 entry point 发现
 <agent-cli> --version                                 # 目标 CLI 已安装、已登录；SDK 模式则 pip install 厂商 SDK
 ```
 
-需要读 openjiuwen 实现时读已安装的源码（pip 包不带 md 文档）：
+脚手架按 openjiuwen 的来源写生成包的依赖：A 写 `openjiuwen>=<已装版本>`；B 写
+`openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@develop`（从 git URL 装的则写 pip 记录的
+URL 与 commit）。B 下安装生成包要加 `--no-deps`（测试依赖第 0 步已装），否则 pip 会按 git 依赖重新从 gitcode
+拉 openjiuwen、覆盖你的源码安装。发布到 PyPI 前用 `--openjiuwen-requirement 'openjiuwen>=<首个支持的正式版>'`
+重新生成或手改 `pyproject.toml`：PyPI 不接受 URL 依赖。
+
+需要读 openjiuwen 实现时：A 读已安装的源码（pip 包不带 md 文档）；B 直接读克隆目录，
+`openjiuwen/harness_providers/AGENTS.md` 与 `openjiuwen/harness/docs/specs/S_19_harness-providers.md`
+是 provider 接口的设计说明。
 
 ```bash
 python -c "import openjiuwen.harness_providers as p, os; print(os.path.dirname(p.__file__))"
@@ -83,6 +100,7 @@ python $SKILL_DIR/scripts/scaffold.py --name acme --mode sdk --sdk-module acme_a
 
 cd openjiuwen-harness-<name>
 python -m pip install -e ".[test]"          # entry point 是包元数据，必须安装后 openjiuwen 才看得见
+                                             # openjiuwen 来自源码克隆时改用：python -m pip install -e . --no-deps
 python -m pytest -q                          # 单测 + 注册测试必须全绿；运行时缺失时 e2e 自动跳过
 ```
 
