@@ -11,7 +11,7 @@ from typing import Literal
 
 from openjiuwen.agent_teams.external.cli_agent.adapters import available_adapters, build_adapter
 
-BackendKind = Literal["sdk", "adapter"]
+BackendKind = Literal["sdk", "adapter", "provider"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +67,13 @@ _SDK_BACKENDS: dict[str, ExternalCliBackend] = {
 
 
 def backend_for(name: str) -> ExternalCliBackend | None:
-    """Return backend metadata for ``name``, or None when unsupported."""
+    """Return backend metadata for ``name``, or None when unsupported.
+
+    Lookup order: SDK backends, subprocess adapters, then third-party harness
+    providers (registered in process or installed through the
+    ``openjiuwen.harness_providers`` entry point group). Built-in providers are
+    not member backends; Claude Code and Codex members use their SDK backends.
+    """
     sdk_backend = _SDK_BACKENDS.get(name)
     if sdk_backend is not None:
         return sdk_backend
@@ -79,12 +85,29 @@ def backend_for(name: str) -> ExternalCliBackend | None:
             supports_command_override=True,
             injects_system_prompt_via_arg=adapter.injects_system_prompt_via_arg(),
         )
+    if name in third_party_providers():
+        # The system prompt travels in HarnessContext.system_prompt; the
+        # provider decides how its runtime receives it.
+        return ExternalCliBackend(
+            name=name,
+            kind="provider",
+            supports_command_override=False,
+            injects_system_prompt_via_arg=True,
+        )
     return None
+
+
+def third_party_providers() -> tuple[str, ...]:
+    """Return the harness provider names that are not built into openjiuwen."""
+    from openjiuwen.harness_providers.factory import PROVIDER_NAMES, available_providers
+
+    return tuple(name for name in available_providers() if name not in PROVIDER_NAMES)
 
 
 def available_backends() -> tuple[str, ...]:
     """Return all supported external CLI backend names."""
-    return (*_SDK_BACKENDS, *available_adapters())
+    known = (*_SDK_BACKENDS, *available_adapters())
+    return (*known, *(name for name in third_party_providers() if name not in known))
 
 
 def is_known_backend(name: str) -> bool:
@@ -121,4 +144,5 @@ __all__ = [
     "backend_for",
     "is_known_backend",
     "missing_sdk_requirement",
+    "third_party_providers",
 ]

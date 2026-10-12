@@ -342,10 +342,12 @@ class ExternalCliAgentSpec(BaseModel):
 
     cli_agent: str
     """External agent kind identifier (``"claude"`` / ``"codex"`` /
-    ``"openclaw"`` / ``"hermes"``). ``"claude"`` selects the SDK backend,
-    ``"codex"`` the Codex Python SDK backend, and other values built-in adapters.
-    This is passed to ``spawn_member(cli_agent=...)``. See
-    ``agent_teams/external/cli_agent``."""
+    ``"openclaw"`` / ``"hermes"`` / a third-party harness provider name).
+    ``"claude"`` selects the SDK backend, ``"codex"`` the Codex Python SDK
+    backend, built-in adapter names their subprocess adapters, and any other
+    value a third-party harness provider installed through the
+    ``openjiuwen.harness_providers`` entry point group. This is passed to
+    ``spawn_member(cli_agent=...)``. See ``agent_teams/external/cli_agent``."""
 
     skills: list[str | dict[str, Any]] = Field(default_factory=list)
     """Portable skill directories or manifest SkillSpec mappings for local CLI members."""
@@ -363,11 +365,12 @@ class ExternalCliAgentSpec(BaseModel):
     """
 
     cli_path: str | None = Field(default=None, min_length=1)
-    """Optional executable path for SDK-backed CLI agents.
+    """Optional executable path for SDK- and provider-backed CLI agents.
 
     For Claude this is passed to ``ClaudeAgentOptions.cli_path``. For Codex it
-    maps to ``CodexConfig.codex_bin``. Adapter-backed CLIs should continue to
-    use :attr:`command` when overriding the full launch argv.
+    maps to ``CodexConfig.codex_bin``. A third-party harness provider receives
+    it as its ``cli_path`` configuration key. Adapter-backed CLIs should
+    continue to use :attr:`command` when overriding the full launch argv.
     """
 
     codex_bin: str | None = Field(default=None, min_length=1)
@@ -491,8 +494,12 @@ class ExternalCliAgentSpec(BaseModel):
             raise ValueError(
                 "Codex SDK config does not support command; use cli_path to select a custom executable",
             )
-        if self.cli_agent not in {"claude", "codex"} and self.cli_path is not None:
-            raise ValueError("cli_path is only valid when cli_agent is 'claude' or 'codex'")
+        # Imported here: the adapter registry lives in the external package,
+        # which imports this schema module.
+        from openjiuwen.agent_teams.external.cli_agent.adapters import available_adapters
+
+        if self.cli_path is not None and self.cli_agent in available_adapters():
+            raise ValueError("cli_path is not valid for adapter-backed CLI agents; use command instead")
         if self.cli_agent != "codex" and self.codex_bin is not None:
             raise ValueError("codex_bin is only valid when cli_agent='codex'")
         if self.cli_agent != "codex" and self.mcp_default_tools_approval_mode is not None:

@@ -440,6 +440,16 @@ async def external_cli_spawn(
             ctx.fallback_member_model,
             cli_agent=ctx.cli_agent,
         )
+    if backend is not None and backend.kind == "provider" and external_model_config is not None:
+        # A third-party provider maps endpoints through its own configuration;
+        # team model allocations do not apply to it.
+        team_logger.info(
+            "[external-cli] member {} runs on provider {}'s own model configuration; ignoring team model",
+            ctx.member_name,
+            ctx.cli_agent,
+        )
+        external_model_config = None
+        fallback_external_model_config = None
 
     async def promote_fallback_model() -> bool:
         """Persist the fallback model as this member's active model."""

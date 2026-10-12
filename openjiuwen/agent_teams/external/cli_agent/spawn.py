@@ -37,7 +37,7 @@ from openjiuwen.agent_teams.team_workspace.models import TeamWorkspaceConfig
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import raise_error
 from openjiuwen.core.common.logging import team_logger
-from openjiuwen.harness_protocol import HarnessContext
+from openjiuwen.harness_protocol import HarnessCapability, HarnessContext, McpServerConfig, McpTransport
 from openjiuwen.harness_providers.skills import normalize_skills
 from openjiuwen.harness_providers.claudecode import (
     DEFAULT_CLAUDE_MAX_BUFFER_SIZE,
@@ -47,6 +47,7 @@ from openjiuwen.harness_providers.claudecode import (
 )
 from openjiuwen.harness_providers.claudecode.options import strip_parent_claude_env
 from openjiuwen.harness_providers.codex import CodexHarness, CodexHarnessConfig, CodexModelConfig
+from openjiuwen.harness_providers.factory import resolve_provider
 from openjiuwen.harness_providers.skills import SkillSource
 
 MemberRuntimeLike = CliRuntimeBase | ExternalHarnessMemberRuntime
@@ -383,6 +384,41 @@ async def build_cli_runtime(
             external_model_config=external_model_config,
             fallback_external_model_config=fallback_external_model_config,
             promote_fallback_model=promote_fallback_model,
+            system_prompt=system_prompt,
+            system_prompt_mode=system_prompt_mode,
+            skills=skills,
+            skill_conflict=skill_conflict,
+            extra_env=extra_env,
+            resume_external_backend=resume_external_backend,
+            member_agent_id=member_agent_id,
+            team_context_tracker=team_context_tracker,
+        )
+    backend = backend_for(ctx.cli_agent)
+    if backend is not None and backend.kind == "provider":
+        unsupported = {
+            "command_override": command_override,
+            "codex_bin": codex_bin,
+            "ssh_transport": ssh_transport,
+            "external_model_config": external_model_config,
+            "claude_turn_idle_timeout_s": claude_turn_idle_timeout_s,
+            "claude_max_buffer_size": claude_max_buffer_size,
+            "codex_turn_idle_timeout_s": codex_turn_idle_timeout_s,
+            "codex_turn_idle_retries": codex_turn_idle_retries,
+        }
+        configured = sorted(name for name, value in unsupported.items() if value is not None)
+        if configured:
+            raise_error(
+                StatusCode.AGENT_TEAM_CONFIG_INVALID,
+                reason=f"harness provider member '{ctx.cli_agent}' does not support: {', '.join(configured)}",
+            )
+        return _build_provider_member_runtime(
+            ctx,
+            descriptor,
+            cwd=cwd,
+            cli_path=cli_path,
+            inject_mcp=inject_mcp,
+            mcp_server_name=mcp_server_name,
+            mcp_server_command=mcp_server_command,
             system_prompt=system_prompt,
             system_prompt_mode=system_prompt_mode,
             skills=skills,
@@ -829,6 +865,86 @@ async def _build_codex_member_runtime(
         inject_mcp=inject_mcp,
     )
     runtime.bind_fallback_promotion(promote_fallback_model)
+    return runtime
+
+
+def _build_provider_member_runtime(
+    ctx: TeamRuntimeContext,
+    descriptor: TeamJoinDescriptor,
+    *,
+    cwd: str | None,
+    cli_path: str | None,
+    inject_mcp: bool,
+    mcp_server_name: str,
+    mcp_server_command: tuple[str, ...],
+    system_prompt: str | None,
+    system_prompt_mode: str | None,
+    skills: tuple[SkillSource, ...],
+    skill_conflict: str,
+    extra_env: dict[str, str] | None,
+    resume_external_backend: bool,
+    member_agent_id: str | None,
+    team_context_tracker: Any,
+) -> ExternalHarnessMemberRuntime:
+    """Build a member runtime on a third-party harness provider.
+
+    The provider receives only the configuration keys every generated
+    provider package shares (``cwd`` / ``env`` / ``inherit_process_env`` /
+    ``skills`` / ``skill_conflict``), plus ``cli_path`` and
+    ``system_prompt_mode`` when the team configured them. Team tools reach the
+    member through the ``openjiuwen-team-mcp`` stdio server, which inherits
+    the team-join descriptor from its environment; providers whose card does
+    not declare MCP tools run without them.
+    """
+    provider_name = ctx.cli_agent or ""
+    env = _with_home_env({**dict(os.environ), **(extra_env or {}), **descriptor.to_env()})
+    config: dict[str, Any] = {
+        "cwd": cwd,
+        "env": env,
+        "inherit_process_env": False,
+        "skills": skills,
+        "skill_conflict": skill_conflict,
+    }
+    if cli_path is not None:
+        config["cli_path"] = cli_path
+    if system_prompt_mode is not None:
+        config["system_prompt_mode"] = system_prompt_mode
+    harness = resolve_provider(provider_name).create(config)
+    team_logger.info(
+        "[external-cli] preparing provider member {} provider={} cwd={} cli_path_configured={} inject_mcp={}",
+        ctx.member_name,
+        provider_name,
+        cwd,
+        cli_path is not None,
+        inject_mcp,
+    )
+    runtime = ExternalHarnessMemberRuntime(
+        harness=harness,
+        context=_member_context(ctx, descriptor, member_agent_id=member_agent_id, system_prompt=system_prompt, cwd=cwd),
+        team_context_tracker=team_context_tracker,
+        resume_external_backend=resume_external_backend,
+        agent_kind=provider_name,
+        cli_path=cli_path,
+        inject_mcp=inject_mcp,
+        mcp_server_name=mcp_server_name,
+    )
+    if inject_mcp and harness.card.supports(HarnessCapability.MCP_TOOLS):
+        runtime.bind_mcp_servers(
+            [
+                McpServerConfig(
+                    name=mcp_server_name,
+                    transport=McpTransport.STDIO,
+                    command=mcp_server_command,
+                    env={key: env[key] for key in MCP_SERVER_ENV_VARS if key in env},
+                )
+            ]
+        )
+    elif inject_mcp:
+        team_logger.warning(
+            "[external-cli] provider {} declares no MCP tools; member {} runs without team tools",
+            provider_name,
+            ctx.member_name,
+        )
     return runtime
 
 
