@@ -6,8 +6,8 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness_providers/`（`base.py` / `stream.py` / `io_adapter.py` / `factory.py` / `inputs.py` / `jsonsafe.py` / `native/` / `claudecode/` / `codex/` / `dsh/`） |
-| 最近一次修订日期 | 2026-10-10 |
-| 关联 feature | F_03_harness-providers-and-manifest-factory.md、agent_teams F_113_external-harness-builtin-model-selection.md |
+| 最近一次修订日期 | 2026-10-12 |
+| 关联 feature | F_03_harness-providers-and-manifest-factory.md、F_07_third-party-harness-provider-packages.md、F_08_provider-owned-model-config.md、agent_teams F_113_external-harness-builtin-model-selection.md |
 
 ## 范围 / 边界
 
@@ -72,12 +72,13 @@
    原生端点并让当前 Turn 按原 `auth_required` 失败，不发布 `auth_fallback_activated`。
 9. **manifest 是 DeepAgent-first**：`create_harness` 对 `native` 传整份 template
    （`NativeHarnessProvider.create({"deep_agent", "agent_template", "session_id", "language",
-   "event_buffer_capacity"})`）；对 `claudecode` / `codex` / `dsh` 只把 `model` 端点映射进 provider
-   配置（显式 `config` 优先），manifest 的 `tools` / `rails` / `subagents` 非空时
+   "event_buffer_capacity"})`）；对其余 provider 只把 manifest 的模型映射进 provider 配置（显式
+   `config` 优先，逐键 `setdefault`），manifest 的 `tools` / `rails` / `subagents` 非空时
    `ValueError`。`build_harness_context` 对三方 provider 渲染 prompt sections 与 MCP，对 `native`
-   只放 `extra_system_prompt`。注册/安装的第三方 provider 同样拒绝这三段；模型端点交给 provider 可选的
-   `manifest_config(endpoint)`（`endpoint = {model, provider, api_base, api_key}`，返回值逐键
-   `setdefault`），无此钩子时只传 `model`。
+   只放 `extra_system_prompt`。模型映射一律经 `provider_model_config` 调 provider 的
+   `ModelConfigProvider.model_config(ModelChoice)`（F_08）：manifest 模型有 `api_base` 即端点模型，
+   card 未声明 `ENDPOINT_MODELS` 时 `ValueError`；provider 没有 `model_config` 时 manifest 不能带模型。
+   claudecode / codex / dsh 都实现 `model_config` 并声明 `ENDPOINT_MODELS`；团队成员的模型走同一入口。
 10. **模型控制由骨架承担**（F_113）：`SerializedTurnHarness` 实现 `HarnessModelControl`——`list_models`
     / `set_model` 先按 card 门控；`set_model` 在 `_command_lock` 内判空闲则立即经
     `_apply_model_selection` 应用，否则按字段合并进暂存选择，由 supervisor 在 STARTED 之后、
@@ -111,7 +112,9 @@ def register_harness_provider(name: str, factory: Callable[[], HarnessProvider])
 def unregister_harness_provider(name: str) -> None
 PROVIDER_NAMES == ("native", "native_v2", "claudecode", "codex", "dsh")
 HARNESS_PROVIDER_ENTRY_POINT_GROUP == "openjiuwen.harness_providers"
-# 第三方 provider 可选钩子：manifest_config(endpoint: Mapping[str, str | None]) -> dict
+def provider_model_config(provider: str, choice: ModelChoice, *, fallback: ModelChoice | None = None) -> dict
+# provider 可选 SPI（harness_protocol.ModelConfigProvider）：
+#   model_config(choice: ModelChoice, *, fallback: ModelChoice | None = None) -> JsonObject
 def install_skills(sources, *, provider, cwd, conflict="skip", scan_dir=None) -> tuple[Path, ...]
 
 class HarnessIOAdapter:

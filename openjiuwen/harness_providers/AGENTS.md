@@ -53,10 +53,10 @@ provider packages `openjiuwen/harness/docs/features/F_07_third-party-harness-pro
    from the receipt down to its own transport.
 2. **Capabilities are truthful.** A card declares only what the SDK can do
    end to end; unsupported commands raise `UnsupportedHarnessCapabilityError`.
-   DSH keeps an empty capability set; Claude Code / Codex declare STEER,
-   GRACEFUL_ABORT, PERSISTENT_SESSION, CHECKPOINT, MCP_TOOLS,
-   MODEL_SELECTION, MODEL_DISCOVERY; the DeepAgent harness declares STEER and
-   FORCE_ABORT.
+   DSH declares MCP_TOOLS and ENDPOINT_MODELS; Claude Code / Codex declare
+   STEER, GRACEFUL_ABORT, PERSISTENT_SESSION, CHECKPOINT, MCP_TOOLS,
+   MODEL_SELECTION, MODEL_DISCOVERY, ENDPOINT_MODELS; the DeepAgent harness
+   declares STEER and FORCE_ABORT.
 3. **Vendor SDKs stay optional.** Config / provider / package imports never
    import a vendor SDK; `_open_session` loads it lazily and a missing SDK
    surfaces as `HarnessError`. Startup failures raise `ProviderStartupError`
@@ -171,9 +171,14 @@ provider packages `openjiuwen/harness/docs/features/F_07_third-party-harness-pro
    `skill_conflict` defaults to skip; replace stages a complete bundle before
    renaming the existing directory. Never remove copied skills at stop.
    Manifests carrying `tools` / `rails` / `subagents` are still rejected.
-   Third-party providers map the manifest endpoint through an optional
-   `manifest_config(endpoint)` hook (else they get `model` only) and pass their
-   own skill directory to `install_skills(..., scan_dir=...)`.
+   Every provider that runs a model implements
+   `ModelConfigProvider.model_config(ModelChoice, *, fallback=None)`; the
+   manifest factory and the team spawn path both call it through
+   `factory.provider_model_config`, which refuses a provider without the hook
+   and an endpoint choice on a card without `ENDPOINT_MODELS`. Claude Code /
+   Codex / DSH implement it; no host code branches on a provider name to set a
+   model. Third-party providers pass their own skill directory to
+   `install_skills(..., scan_dir=...)`.
 10. **Model control is base-class owned.** `SerializedTurnHarness` implements
     `HarnessModelControl`: `list_models` / `set_model` gate on the card,
     `set_model` applies under `_command_lock` while idle and otherwise merges

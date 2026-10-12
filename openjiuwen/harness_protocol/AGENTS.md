@@ -109,6 +109,11 @@ boundary. Do not introduce Round aliases for these concepts.
     (MODEL_SELECTION) applies at once while idle, otherwise before the next
     turn, never mid-turn, and survives reconnects within the cycle. Effort
     values are provider vocabulary; the protocol does not enumerate them.
+18. The model a harness is created on is a `ModelChoice` (a built-in model
+    when `endpoint is None`, else a host `ModelEndpoint`), mapped onto the
+    provider's configuration by the optional `ModelConfigProvider.model_config`
+    provider hook. A provider takes endpoint models only when its card declares
+    `ENDPOINT_MODELS`. Hosts never branch on a provider name to set a model.
 
 ## Compatibility
 

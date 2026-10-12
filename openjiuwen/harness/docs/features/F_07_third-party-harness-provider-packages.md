@@ -28,7 +28,9 @@ agent 接成 harness provider，产物必须是独立 pip 包，openjiuwen 装�
    变成一句难懂的 unknown provider。加载、实例化、SPI 不符都抛带原因的 `ValueError`。
 4. **manifest 端点映射交给 provider**：可选钩子 `manifest_config(endpoint)`，`endpoint` 是不含框架类型的
    普通字典（`model / provider / api_base / api_key`），外部包不必 import manifest 模型；无钩子时只传
-   `model`。显式 `config` 永远优先（`setdefault`）。
+   `model`。显式 `config` 永远优先（`setdefault`）。**已被 [[F_08_provider-owned-model-config]] 取代**：
+   改为协议级 `ModelConfigProvider.model_config(ModelChoice)`，manifest 与团队成员共用，`manifest_config`
+   不再保留。
 5. **技能目录由 provider 声明**：`install_skills(..., scan_dir=...)`，不往内置 `_SCAN_DIRS` 表里注册；
    越界路径沿用既有的"逃逸项目目录"校验。
 6. **对外扩展面收窄并写明**：`harness_protocol`，以及 `harness_providers` 的 `base` / `jsonsafe` /
