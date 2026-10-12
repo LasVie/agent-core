@@ -100,8 +100,9 @@ linux-arm64 / linux-musl-*`，产物累积在 `<project>/dist/`。不带 `--bina
 }
 ```
 
-- `required_modules` / `executables` 对应 jiuwenswarm 安装后的完整性校验（它对 claude / codex 检查
-  `claude_agent_sdk/_bundled/claude`、`codex_cli_bin/bin/codex`）。
+- `required_modules` / `executables` / `entry_point` 是 jiuwenswarm 解压后、替换正式目录前的完整性
+  校验：模块目录在、本平台可执行文件在、`*.dist-info/entry_points.txt` 在 `openjiuwen.harness_providers`
+  组里声明了该名字；缺任何一项都不安装。claude / codex 的条目用同一套字段。
 - 一个平台的产物列表必须是**完整闭包**：解压式安装不解析依赖。openjiuwen 及其依赖由宿主提供，不列。
   CLI 模式通常只有 provider wheel 一项。
 - 包版本变了，旧平台条目作废（脚本按版本重建条目），别混用不同版本的平台产物。
@@ -111,14 +112,25 @@ wheel；解压目录追加到 `sys.path` 后，在 PATH 上**没有** opencode �
 provider="opencode")` 由兜底的包内 opencode 1.17.18 跑通了真实的文本与工具 Turn；PATH 上有 opencode 时
 用的是 PATH 上的那个；同一 wheel 也能被 `pip install` 正常安装。
 
-jiuwenswarm 侧要接入第三方 provider，需要把目前写死的 `_SUPPORTED_AGENTS = ("claude", "codex")`、
-`_REQUIRED_MODULES` 与可执行文件检查改为读本清单的 `providers` 段，安装目录按 provider 分开。
+### 发布到 jiuwenswarm 桌面版
+
+第三方 provider 随桌面版发版进入精选集合，不在运行时由终端用户导入清单：
+
+1. 把各平台 wheel 上传到下载源，`url`（可选 `mirror_url`）填成公开地址；
+2. 把 `providers.<name>` 整段并入 jiuwenswarm `jiuwenswarm/resources/external_cli_runtime.json` 的
+   `providers` 段（名字在 `agents` 与 `providers` 间唯一，须匹配 `[a-z0-9][a-z0-9_-]*`）；
+3. 桌面版里调用 `external_cli.install`（参数 `cli_agent: "<name>"`）下载安装，
+   `external_cli.install_status` 查进度与 `runtime.runtime_state`
+   （`not_installed / update_required / invalid / current`）。安装目录是
+   `runtime/external-cli/<name>/site-packages`，启动时与 claude / codex 一样追加到 `sys.path`。
 
 ## 依赖与版本
 
 - `openjiuwen>=<下限>`：脚手架写入生成时的已安装版本；下限必须是提供 entry point 发现的版本或更新。
   冻结宿主解压安装时忽略该声明（宿主自带 openjiuwen），pip 安装时生效。
 - 包版本独立演进；**更换 bundled CLI 版本也要升包版本**，否则清单与已安装元数据无法区分新旧。
+- 自带的 CLI 会随厂商服务端过期：opencode 1.17.18 的 wheel 安装与启动都正常，但服务端已要求 1.18.0+
+  才能用免费额度，Turn 直接失败。发版前用当前 CLI 重建 wheel 并重跑真实 e2e。
   `ADAPTER_VERSION`（卡片 `implementation_version`）随适配行为变化递增。
 - 带 CLI 的 wheel 很大（opencode 约 55MB 压缩）：放对象存储或私有索引，填 `--base-url` /
   `--mirror-base-url`；公共 PyPI 有单文件大小上限。

@@ -8,7 +8,7 @@
 | 范围 | `openjiuwen/harness_providers/factory.py`、`skills.py`、`__init__.py`；skill `.claude/skills/harness-provider-integration/`（脚手架、平台 wheel 构建、运行时清单） |
 | 关联 spec | S_19（不变量 9、11，接口契约，Portable skills） |
 | 测试基线 | `tests/unit_tests/harness_providers` + `tests/unit_tests/agent_teams/external` 393 通过；新增 `test_provider_discovery.py` 9 项 |
-| 验证基线 | 干净虚拟环境非 editable 安装 openjiuwen 0.1.19（本次改动），仓库外生成三种模式的包：单测与注册测试全过；opencode 1.17.18 ACP 包 23 项全过（含 6 项真实 e2e，经 entry point 走 manifest 工厂）；自带 opencode 的 macOS arm64 平台 wheel 经 jiuwenswarm 原生 `_verify_wheel_artifact` / `_safe_extract_wheel` 安装、追加 `sys.path` 后，在 PATH 无 opencode 的进程里跑通真实文本与工具 Turn；同一 wheel 可被 pip 安装 |
+| 验证基线 | 干净虚拟环境非 editable 安装 openjiuwen 0.1.19（本次改动），仓库外生成三种模式的包：单测与注册测试全过；opencode 1.17.18 ACP 包 23 项全过（含 6 项真实 e2e，经 entry point 走 manifest 工厂）；自带 opencode 的 macOS arm64 平台 wheel 经 jiuwenswarm 原生 `_verify_wheel_artifact` / `_safe_extract_wheel` 安装、追加 `sys.path` 后，在 PATH 无 opencode 的进程里跑通真实文本与工具 Turn；同一 wheel 可被 pip 安装。2026-10-12：自带 opencode 1.18.31 的 wheel 并入 jiuwenswarm 内置清单后，经 `install_external_cli_runtime` 从 HTTP 源下载、校验、安装为 `current`，`resolve_provider` 加载解压出的模块，在 PATH 无 opencode 的进程里跑通真实文本 Turn |
 | Refs | #2006 |
 
 ## 背景
@@ -48,6 +48,9 @@ agent 接成 harness provider，产物必须是独立 pip 包，openjiuwen 装�
 9. **清单与 jiuwenswarm 同构**：`runtime-manifest.json` 沿用 `external_cli_runtime.json` 的
    `schema_version`、平台键与产物字段，顶层 `providers` 段另带 `entry_point / required_modules /
    executables`，对应其安装后的完整性校验；每个平台的产物是完整闭包（解压式安装不解析依赖）。
+   jiuwenswarm 的托管运行时按同一条目结构读 `agents`（内置 provider 的厂商 SDK）与 `providers`（第三方
+   provider 包）两段，claude / codex 的模块与可执行文件检查也写在清单里；第三方条目随发版并入内置清单，
+   不支持终端用户运行时导入（任意 URL 加 sha256 等于执行任意代码）。
 10. **构建脚本校验二进制格式**：读 Mach-O / ELF / PE 头与 CPU 类型，与目标平台不符就拒绝；平台标签
     `py3-none-<tag>`、`Root-Is-Purelib: false`、bundled 可执行强制 0755、重算 `RECORD`。
 
@@ -77,10 +80,9 @@ agent 接成 harness provider，产物必须是独立 pip 包，openjiuwen 装�
 
 ## 已知遗留
 
-- jiuwenswarm 的托管运行时仍写死 `_SUPPORTED_AGENTS = ("claude", "codex")`、`_REQUIRED_MODULES` 与
-  可执行文件检查，需要改为读清单 `providers` 段，第三方 provider 才能在冻结版里一键安装。
 - 只在 macOS arm64 上实测了自带 CLI 的平台 wheel；其它平台只有格式检查，需在对应平台跑一次冒烟。
-
+- jiuwenswarm 桌面版只提供 `external_cli.install` / `external_cli.install_status` 接口，设置页还不展示
+  第三方 provider；等它能作为团队成员后再接 UI。
 - 第三方 provider 还不能作为 agent team 外部 CLI 成员：团队分派仍按 `claude` / `codex` 名字硬编码。
 - 生成包的 openjiuwen 依赖下限取生成时的已安装版本；本改动发布后需把下限改为首个包含 entry point
   发现的正式版本。
