@@ -80,5 +80,6 @@ Pass `COMMITS=N` to check recent commits instead.
 - Error codes (StatusCode / BaseError): `.claude/rules/error-codes.md`
 - Logging: `.claude/rules/logging.md`
 - Git workflow: `.claude/rules/git-workflow.md`
+- Reviewer/merger ownership files (`CODEREVIEWER`, `COMMITTER`, `USER.json`): `.claude/rules/ownership-files.md`
 - Deep operational guides: `.claude/skills/`
 - Permissions and env vars: `.claude/settings.json`
