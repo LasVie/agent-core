@@ -387,6 +387,52 @@ _BROWSER_PHASE_DEFINITIONS = {
 }
 
 
+# External (non-Playwright) tools declare how they take part in the browser
+# runtime through ``ToolCard.properties[EXTERNAL_TOOL_PROPERTY]``:
+#   {"role": "discovery" | "action", "windowed": bool, "inline_limit_chars": int}
+# ``discovery`` tools are metadata lookups (no budget, no progress, no page
+# effect). ``action`` tools run outside the Playwright page: they have their own
+# budget, never mark the Playwright page as changed, contribute evidence only
+# through ``extracted`` / ``observed_count``, and may end the task for the user
+# with ``user_action_required``.
+EXTERNAL_TOOL_PROPERTY = "browser_runtime"
+_EXTERNAL_TOOL_ROLES = frozenset({"discovery", "action"})
+_EXTERNAL_ACTION_STATE_KEY = "external_actions"
+_EXTERNAL_ACTION_BUDGET = 16
+_EXTERNAL_ACTION_REPEAT_LIMIT = 2
+_EXTERNAL_SIGNATURE_MEMORY = 50
+
+
+def external_tool_role(card: Any) -> Optional[str]:
+    """Return the declared browser-runtime role of a tool card, if any."""
+    properties = getattr(card, "properties", None)
+    declared = properties.get(EXTERNAL_TOOL_PROPERTY) if isinstance(properties, dict) else None
+    role = declared.get("role") if isinstance(declared, dict) else None
+    return role if role in _EXTERNAL_TOOL_ROLES else None
+
+
+def browser_remaining_time(callback_context: Any) -> Optional[float]:
+    """Seconds left for the current browser task invocation, or None if unknown.
+
+    External tools that opt in with ``accepts_tool_callback_context`` receive the
+    callback context and can bound their own waits with this value.
+    """
+    extra = getattr(callback_context, "extra", None)
+    if not isinstance(extra, dict):
+        return None
+    deadlines = []
+    for key in (_BROWSER_TASK_DEADLINE_KEY, _BROWSER_INVOCATION_DEADLINE_KEY):
+        try:
+            value = float(extra.get(key) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            deadlines.append(value)
+    if not deadlines:
+        return None
+    return max(0.0, min(deadlines) - time.monotonic())
+
+
 def canonicalize_playwright_tool_name(tool_name: str) -> str:
     """Normalize the common Playwright MCP server/tool separator spelling."""
     value = str(tool_name or "")
@@ -3533,8 +3579,9 @@ class BrowserRuntimeRail(AgentRail):
         self._validate_model_tool_args(ctx, tool_name, normalized_args)
         session = getattr(ctx, "session", None)
         self._sync_semantic_progress(session)
+        external_role = self._external_tool_role(ctx, tool_name)
         enrich = getattr(self._runtime, "enrich_action_capabilities", None)
-        if callable(enrich):
+        if callable(enrich) and not external_role:
             deadline = float(execution_journal.task_state(session).get("deadline_at") or 0)
             remaining = deadline - time.time() if deadline else 5.0
             try:
@@ -3547,7 +3594,8 @@ class BrowserRuntimeRail(AgentRail):
         try:
             action_class = self._consume_phase_budget(
                 session, tool_name, normalized_args,
-                current_page_state=self._runtime.export_page_state(),
+                current_page_state=None if external_role else self._runtime.export_page_state(),
+                external_role=external_role,
             )
         except (ValueError, BaseError):
             execution_journal.record_result(session, inputs, {"denied": True}, {"executed": False})
@@ -3687,6 +3735,181 @@ class BrowserRuntimeRail(AgentRail):
             policy.record_execution(inputs, session, {"success": False, **receipt,
                 "observation_invalidated": invalidated, "observation_error": result.get("observation_error")})
 
+    @staticmethod
+    def _external_tool_role(ctx: AgentCallbackContext, tool_name: str) -> Optional[str]:
+        """Role declared by a non-browser tool through its card properties."""
+        name = str(tool_name or "").strip()
+        if not name or name.lower().startswith("browser_") or ".browser_" in name.lower():
+            return None
+        manager = getattr(getattr(ctx, "agent", None), "ability_manager", None)
+        get_card = getattr(manager, "get", None)
+        if not callable(get_card):
+            return None
+        try:
+            card = get_card(name)
+        except Exception:  # noqa: BLE001 - an unknown tool simply has no role
+            return None
+        return external_tool_role(card) if card is not None else None
+
+    @classmethod
+    def _consume_external_action_budget(
+        cls,
+        session: Any,
+        state: Dict[str, Any],
+        tool_name: str,
+        tool_args: Any,
+    ) -> None:
+        ledger = state.get(_EXTERNAL_ACTION_STATE_KEY)
+        if not isinstance(ledger, dict):
+            ledger = {"attempts": 0, "budget": _EXTERNAL_ACTION_BUDGET, "signatures": {}}
+            state[_EXTERNAL_ACTION_STATE_KEY] = ledger
+        attempts = int(ledger.get("attempts") or 0)
+        budget = max(1, int(ledger.get("budget") or _EXTERNAL_ACTION_BUDGET))
+        if attempts >= budget:
+            session.update_state({_BROWSER_PHASE_STATE_KEY: state})
+            raise ValueError(
+                f"External action budget exhausted ({attempts}/{budget}). "
+                "Finish with available evidence or return partial/blocked."
+            )
+        signatures = ledger.get("signatures")
+        signatures = dict(signatures) if isinstance(signatures, dict) else {}
+        # External tools have arbitrary schemas. Playwright's compact semantic
+        # signature drops command identity and nested arguments for these tools.
+        serialized_call = json.dumps(
+            {"tool": str(tool_name or "").strip(), "args": cls._coerce_tool_args(tool_args)},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        signature = hashlib.sha256(serialized_call.encode("utf-8")).hexdigest()
+        seen = int(signatures.get(signature) or 0)
+        if seen >= _EXTERNAL_ACTION_REPEAT_LIMIT:
+            raise ValueError(
+                f"This exact external command already ran {seen} times in this task. "
+                "Change the arguments, use another step, or finish."
+            )
+        signatures.pop(signature, None)
+        signatures[signature] = seen + 1
+        while len(signatures) > _EXTERNAL_SIGNATURE_MEMORY:
+            signatures.pop(next(iter(signatures)))
+        ledger["signatures"] = signatures
+        ledger["attempts"] = attempts + 1
+        session.update_state({_BROWSER_PHASE_STATE_KEY: state})
+
+    def _after_external_tool_call(
+        self,
+        ctx: AgentCallbackContext,
+        inputs: Any,
+        tool_name: str,
+        tool_result: Any,
+        outcome: Dict[str, Any],
+        role: str,
+    ) -> None:
+        """Account an external tool without touching Playwright page state."""
+        self._set_tool_message_outcome(
+            inputs,
+            success=bool(outcome["success"]),
+            executed=True,
+            state_changed=False,
+            denied=False,
+        )
+        session = getattr(ctx, "session", None)
+        state = session.get_state(_BROWSER_PHASE_STATE_KEY) if session is not None else None
+        if (
+            role != "action"
+            or not isinstance(state, dict)
+            or not isinstance(tool_result, dict)
+            or str(state.get("status") or "").strip().lower() in _BROWSER_TERMINAL_STATUSES
+        ):
+            self._mark_action_group_call_completed(ctx, {"executed": True, "state_changed": False})
+            return
+        tool_args = self._coerce_tool_args(getattr(inputs, "tool_args", None))
+        delta = self._record_external_evidence(state, tool_result, tool_name=tool_name, tool_args=tool_args)
+        session.update_state({_BROWSER_PHASE_STATE_KEY: state})
+        self._mark_action_group_call_completed(ctx, {"executed": True, "state_changed": False, **delta})
+        request = tool_result.get("user_action_required")
+        if isinstance(request, dict):
+            self._finish_for_external_user_action(ctx, session, state, request)
+
+    @classmethod
+    def _record_external_evidence(
+        cls,
+        state: Dict[str, Any],
+        result: Dict[str, Any],
+        *,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        stored = state.setdefault("structured_evidence", [])
+        known = {cls._evidence_signature(item) for item in stored if isinstance(item, dict)}
+        previous_coverage = set(state.get("field_coverage") or [])
+        succeeded = result.get("ok") is not False
+        evidence = cls._structured_evidence(result) if succeeded else {}
+        count = result.get("observed_count")
+        observed_count = count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None
+        observation: Dict[str, Any] = {}
+        if succeeded:
+            source = result.get("source") if isinstance(result.get("source"), dict) else {}
+            content = json.dumps(result.get("data"), ensure_ascii=False, sort_keys=True, default=str)
+            observation = {
+                "kind": "external_observation",
+                "tool": str(tool_name)[:120],
+                "source": str(source.get("command") or tool_name)[:200],
+                "observed_count": observed_count or 0,
+                "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest()[:20],
+                # Same source-text fields as page records, so source_observations()
+                # projects external results into the terminal observations.
+                "raw_text": content[:SOURCE_TEXT_LIMIT],
+                "raw_text_length": len(content),
+                "raw_text_truncated": len(content) > SOURCE_TEXT_LIMIT,
+                "provenance": {"tool": str(tool_name)[:120]},
+                "query_id": str(state.get("query_id") or state.get("task_id") or ""),
+                "observed_at_ms": int(time.time() * 1000),
+            }
+        added = False
+        for item in (evidence, observation):
+            if item and cls._evidence_signature(item) not in known:
+                stored.append(item)
+                known.add(cls._evidence_signature(item))
+                added = True
+        del stored[:-20]
+        if evidence:
+            cls._record_evidence_slots(state, evidence, result=result, tool_name=tool_name, tool_args=tool_args)
+        if observed_count:
+            state["observed_result_count"] = max(int(state.get("observed_result_count") or 0), observed_count)
+        BrowserWorkingContextStore.refresh_field_coverage(state)
+        return {
+            "phase": "external",
+            "success": succeeded,
+            "evidence_added": added,
+            "new_evidence_fields": sorted(set(state.get("field_coverage") or []) - previous_coverage),
+            "recovered": False,
+        }
+
+    def _finish_for_external_user_action(
+        self,
+        ctx: AgentCallbackContext,
+        session: Any,
+        state: Dict[str, Any],
+        request: Dict[str, Any],
+    ) -> None:
+        """End the task as blocked so the user can act; it is not auto-retried."""
+        reason = str(request.get("reason") or "").strip().lower()
+        if reason not in _BROWSER_NON_RETRYABLE_BLOCKER_TOKENS:
+            reason = "user_intervention_required"
+        instructions = str(request.get("instructions") or "").strip()
+        blockers = [reason]
+        if instructions:
+            blockers.append(f"user_action: {instructions}"[:300])
+            state["last_worker_final"] = instructions[:8_000]
+        state["status"] = "blocked"
+        state["blockers"] = blockers
+        state["terminal_reason"] = "external_user_action_required"
+        state["next_action_class"] = "finish"
+        session.update_state({_BROWSER_PHASE_STATE_KEY: state})
+        ctx.request_force_finish(self._structured_terminal_result(state))
+
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         self._emit_status("after_tool_call", ctx)
         inputs = getattr(ctx, "inputs", None)
@@ -3742,6 +3965,10 @@ class BrowserRuntimeRail(AgentRail):
                 denied=True,
             )
             self._consume_tool_call_timing(ctx, inputs)
+            return
+        external_role = self._external_tool_role(ctx, tool_name)
+        if external_role is not None:
+            self._after_external_tool_call(ctx, inputs, tool_name, tool_result, outcome, external_role)
             return
 
         session = getattr(ctx, "session", None)
@@ -5598,6 +5825,7 @@ class BrowserRuntimeRail(AgentRail):
         tool_args: Any,
         *,
         current_page_state: Optional[Dict[str, Any]] = None,
+        external_role: Optional[str] = None,
     ) -> str:
         """Record approximate phase costs; only execution safety/deadlines may veto dispatch."""
         if session is None:
@@ -5606,6 +5834,11 @@ class BrowserRuntimeRail(AgentRail):
         if not isinstance(state, dict):
             return "other"
         cls._reject_terminal_state(state)
+        if external_role == "discovery":
+            return "external_discovery"
+        if external_role == "action":
+            cls._consume_external_action_budget(session, state, tool_name, tool_args)
+            return "external_action"
         if tool_name == "browser_phase" or cls._is_replan_exempt_tool(tool_name):
             if tool_name == "browser_phase":
                 return "management"
