@@ -6,14 +6,14 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/external/member_runtime.py`、`openjiuwen/agent_teams/external/cli_agent/spawn.py`、`openjiuwen/agent_teams/spawn/external_cli_spawn.py` |
-| 最近一次修订日期 | 2026-10-08 |
-| 关联 feature | F_95_dsh-external-harness-adapter.md、F_96_protocol-harness-providers-and-member-migration.md、F_113_external-harness-builtin-model-selection.md、F_114_swarmflow-thirdparty-agent.md、F_115_external-session-fork.md、F_116_swarmflow-thirdparty-model-source.md |
+| 最近一次修订日期 | 2026-10-13 |
+| 关联 feature | F_95_dsh-external-harness-adapter.md、F_96_protocol-harness-providers-and-member-migration.md、F_113_external-harness-builtin-model-selection.md、F_114_swarmflow-thirdparty-agent.md、F_115_external-session-fork.md、F_116_swarmflow-thirdparty-model-source.md、F_117_third-party-harness-provider-members.md、harness F_08_provider-owned-model-config.md、harness F_09_auth-fallback-as-a-protocol-capability.md |
 
 ## 范围 / 边界
 
 本规约定义由宿主拥有生命周期的三方 Harness（`openjiuwen.harness_protocol.HarnessProtocol` 实现）
 如何成为团队成员：`ExternalHarnessMemberRuntime` 的契约、它对 `harness_providers.HarnessIOAdapter`
-的依赖、`build_cli_runtime` 对 claude / codex 的分派，以及 `external_cli_spawn` 的绑定顺序。
+的依赖、`build_cli_runtime` 对 claude / codex 与三方 provider 的分派，以及 `external_cli_spawn` 的绑定顺序。
 
 不在范围内：协议本身（`openjiuwen/harness_protocol`）、provider 实现（`openjiuwen/harness_providers`，
 见 harness `S_19`）、adapter 型子进程 CLI（`CliRuntimeBase`，见 F_22 / F_25）、
@@ -71,7 +71,11 @@
     `COMPLETED`，返回 `False` 或抛异常 → `DECLINED`（provider 随即回退原生端点）；未绑定 promotion
     时直接 `COMPLETED`；其它 request type 一律 `DECLINED`。`ProviderEvent("auth_fallback_activated")`
     只作日志观测，不再触发持久化。认证 fallback 只挂给**原生端点**成员（`ExternalCliModelConfig`
-    的 `api_base` 与 `provider` 都为空：未配模型，或选了内置模型）；已在端点上的成员不挂。
+    的 `api_base` 与 `provider` 都为空：未配模型，或选了内置模型）；已在端点上的成员不挂。能否挂由
+    `backends.takes_auth_fallback(cli_agent)` 判定：按 backend 的 `provider`（claude → claudecode、codex →
+    codex、三方即自身）解析 provider，要求它实现 `ModelConfigProvider` 且 card 同时声明 `AUTH_FALLBACK` 与
+    `ENDPOINT_MODELS`（回退是池里的端点模型），adapter 恒假（harness
+    [[F_09_auth-fallback-as-a-protocol-capability]]）；不按 CLI 名字写死。三方成员同样绑定 `bind_fallback_promotion`。
 11. **内置模型先落库、再推活成员**（[[F_113_external-harness-builtin-model-selection]]）。
     `TeamMember.options.builtin_model` 是单一事实来源：`build_context_from_db` 把它放进
     `TeamRuntimeContext.builtin_model`，`external_cli_spawn` 按 **内置模型 > pool 分配 > 静态
@@ -87,6 +91,24 @@
     Codex gateway 固化父团队 session id，每次 `invoke` 用 `set_session_id` /
     `reset_session_id` 临时绑定；首次启动和 checkpoint 恢复都由 spawn 路径重新构造 gateway，
     因而动态表与消息 topic 始终使用当前父团队 session。
+13. **三方 provider 成员只拿通用配置与 stdio 团队工具**（[[F_117_third-party-harness-provider-members]]）。
+    `backend_for` 的查找顺序是 SDK backend → 子进程适配器 → 三方 provider（`available_providers()`
+    中不属于内置 `PROVIDER_NAMES` 的名字），同名时前者永远优先。三方成员的 harness 由
+    `resolve_provider(name).create(config)` 建出，`config` 只含 `cwd` / `env` / `inherit_process_env` /
+    `skills` / `skill_conflict`，以及团队配置了的 `cli_path` / `system_prompt_mode`。card 声明
+    `MCP_TOOLS` 时绑定 `mcp_server_command` 的 `McpServerConfig(STDIO)`（env 仅 `MCP_SERVER_ENV_VARS`），
+    否则成员没有团队工具。认证 fallback 只交给声明 `AUTH_FALLBACK` 的三方 provider（spawn 的
+    `_negotiate_provider_fallback` 丢弃其余并记日志）；`command_override` / `codex_bin` /
+    `ssh_transport` / claude、codex 专属参数直接拒绝。
+14. **成员模型一律经 provider 的 `model_config` 映射**（harness [[F_08_provider-owned-model-config]]）。
+    团队把内置模型（`builtin_model`）、池分配与静态 `model_config` 都转成 `ModelChoice`
+    （`cli_agent.spawn.model_choice`：无 `api_base` / `provider` 即内置），连同仅在内置模型上挂的认证
+    fallback 交给 `harness_providers.factory.provider_model_config`，并入 provider 配置；claude / codex /
+    三方没有分支，不能跑的选择即 `AGENT_TEAM_CONFIG_INVALID`。端点模型只交给声明 `ENDPOINT_MODELS`
+    的三方 provider（`backends.provider_takes_endpoint_models`）：未声明时 spawn 丢弃并记日志，
+    `_provider_filter_for_cli` 也不向 leader 列出池里的模型。运行中切换仍走 `set_model_selection`。
+    `spawn_external_cli.fallback_model_name` 可选：省略 / `null` / 空白都是"不回退"；只有能回退的 CLI 才在
+    存在兼容模型时被要求填写、才出现在 `compatible_fallback_models` 目录里，其余 CLI 给出模型名即报错并提示省略。
 
 ## 接口契约
 
@@ -114,8 +136,9 @@ class ExternalHarnessMemberRuntime:
 ```
 
 `build_cli_runtime(ctx, ...)` 对 `ctx.cli_agent == "claude" | "codex"` 返回
-`ExternalHarnessMemberRuntime`（provider 分别为 `ClaudeCodeHarness` / `CodexHarness`），其余 backend
-返回 `CliRuntimeBase` 子类；返回类型别名 `MemberRuntimeLike`。claude 分支保留
+`ExternalHarnessMemberRuntime`（provider 分别为 `ClaudeCodeHarness` / `CodexHarness`），对三方 provider
+名字同样返回 `ExternalHarnessMemberRuntime`（harness 由 `resolve_provider` 建出，`agent_kind` 为 provider
+名字），适配器 backend 返回 `CliRuntimeBase` 子类；返回类型别名 `MemberRuntimeLike`。claude 分支保留
 `ExternalCliAgentSpec` 的 `cli_path` / `add_dirs` / `ssh_transport` / 模型与 fallback 语义，codex
 分支保留 `codex_bin` / `bypass_approvals_and_sandbox` / `turn_idle_*` / `mcp_default_tools_approval_mode`
 并在成员 `configure` 后把本地团队工具作为 `ExternalTeamToolGateway` 注入。

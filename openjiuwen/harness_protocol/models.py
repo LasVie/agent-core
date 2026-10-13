@@ -92,6 +92,12 @@ class HarnessCapability(str, Enum):
     MODEL_SELECTION = "model_selection"
     # ``HarnessModelControl.list_models`` probes the provider's model catalog.
     MODEL_DISCOVERY = "model_discovery"
+    # ``ModelConfigProvider.model_config`` accepts a ``ModelChoice`` with an
+    # ``endpoint`` (host-supplied API base / key), not only built-in models.
+    ENDPOINT_MODELS = "endpoint_models"
+    # A built-in model failing authentication switches the session once to the
+    # ``fallback`` given to ``model_config``, after the host ratifies it.
+    AUTH_FALLBACK = "auth_fallback"
 
 
 class HostCapability(str, Enum):
@@ -238,6 +244,61 @@ class ModelSelection:
                 raise ValueError(f"model selection {name} must be a non-empty string when provided")
 
 
+# Provider interaction a harness sends before switching to its fallback model;
+# a host that completes it has persisted the switch.
+AUTH_FALLBACK_REQUEST_TYPE = "auth_fallback"
+# Provider event announcing that the fallback model now serves the session.
+AUTH_FALLBACK_EVENT_TYPE = "auth_fallback_activated"
+
+
+@dataclass(frozen=True, slots=True)
+class ModelEndpoint:
+    """A host-supplied model endpoint, as opposed to the CLI's own login.
+
+    ``provider`` is the wire-protocol label of the endpoint (for example
+    ``"openai"`` / ``"anthropic"``); providers map it, the protocol does not
+    enumerate it. ``api_key`` is a credential and is never logged.
+    """
+
+    api_base: str | None = None
+    api_key: str | None = field(default=None, repr=False)
+    provider: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.api_base is None and self.provider is None:
+            raise ValueError("model endpoint must set an api_base, a provider, or both")
+        for name in ("api_base", "api_key", "provider"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"model endpoint {name} must be a non-empty string when provided")
+
+
+@dataclass(frozen=True, slots=True)
+class ModelChoice:
+    """The model a host wants a harness created on, and where it comes from.
+
+    ``endpoint`` is ``None`` for a model the vendor runtime offers on its own
+    login (a built-in model, the source ``list_models`` reports); otherwise the
+    model is served by that host-supplied endpoint. ``model`` / ``effort`` of
+    ``None`` keep the runtime's default.
+    """
+
+    model: str | None = None
+    effort: str | None = None
+    endpoint: ModelEndpoint | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("model", "effort"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"model choice {name} must be a non-empty string when provided")
+
+    @property
+    def is_builtin(self) -> bool:
+        """Return whether the model runs on the vendor runtime's own login."""
+        return self.endpoint is None
+
+
 @dataclass(frozen=True, slots=True)
 class ModelOption:
     """One model a provider offers, as reported by its own catalog.
@@ -324,6 +385,10 @@ __all__ = [
     "HostCapability",
     "JsonObject",
     "JsonValue",
+    "AUTH_FALLBACK_EVENT_TYPE",
+    "AUTH_FALLBACK_REQUEST_TYPE",
+    "ModelChoice",
+    "ModelEndpoint",
     "ModelOption",
     "ModelSelection",
     "ResumePolicy",

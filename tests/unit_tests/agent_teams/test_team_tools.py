@@ -49,6 +49,8 @@ from openjiuwen.agent_teams.tools.team_tools import (
 from openjiuwen.agent_teams.tools.tool_member import ListCheckpointsTool
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.tools.base_tool import ToolOutput
+from openjiuwen.harness_protocol import HarnessCapability, HarnessCard, ModelChoice
+from openjiuwen.harness_providers import register_harness_provider, unregister_harness_provider
 
 
 @pytest.fixture
@@ -614,10 +616,10 @@ class TestSpawnTools:
         assert await team.is_external_cli_agent("claude-1")
 
 
-def test_external_cli_schema_requires_fallback_and_restricts_model_override(agent_team, t):
-    """The tool requires fallback and forbids inferred model overrides."""
+def test_external_cli_schema_keeps_fallback_optional_and_restricts_model_override(agent_team, t):
+    """Omitting the fallback means none, and inferred model overrides are forbidden."""
     tool = SpawnExternalCliTool(agent_team, t)
-    assert "fallback_model_name" in tool.card.input_params["required"]
+    assert "fallback_model_name" not in tool.card.input_params["required"]
     fallback_schema = tool.card.input_params["properties"]["fallback_model_name"]
     assert fallback_schema["anyOf"] == [{"type": "string", "minLength": 1}, {"type": "null"}]
     assert "model_name" not in tool.card.input_params["required"]
@@ -626,11 +628,11 @@ def test_external_cli_schema_requires_fallback_and_restricts_model_override(agen
     assert "你不得自行选择、推断或补全" in model_description
     assert "必须省略" in model_description
     fallback_description = tool.card.input_params["properties"]["fallback_model_name"]["description"]
-    assert "必须从团队模型池中选择" in fallback_description
-    assert "支持的模型调用协议选择兼容模型" in fallback_description
+    assert "从团队模型池中按该第三方 Agent 支持的模型调用协议选择兼容模型" in fallback_description
+    assert "该 cli_agent 存在兼容模型时必须填写" in fallback_description
     assert "该第三方 Agent" in fallback_description
     assert "运行时明确报告的认证失败" in fallback_description
-    assert "没有兼容模型时允许为 null" in fallback_description
+    assert "没有认证回退，必须省略本字段" in fallback_description
     assert "当前模型在模型池中且协议兼容时，优先选择" in fallback_description
     assert "当前模型不在模型池中或协议不兼容时，再选择其他兼容模型" in fallback_description
     assert "当前模型在模型池中且协议兼容时优先选择当前模型" in tool.card.description
@@ -825,6 +827,67 @@ async def test_external_cli_native_mode_allows_null_without_compatible_fallback(
     assert get_member_fallback_model_ref(member) is None
 
 
+class _NoFallbackProvider:
+    """A third-party provider running pool models but with no auth fallback."""
+
+    @property
+    def card(self) -> HarnessCard:
+        return HarnessCard(
+            name="nofallback",
+            implementation_version="0.1.0",
+            capabilities=frozenset({HarnessCapability.ENDPOINT_MODELS}),
+        )
+
+    @staticmethod
+    def create(config: dict) -> object:
+        return config
+
+    @staticmethod
+    def model_config(choice: ModelChoice, *, fallback: ModelChoice | None = None) -> dict:
+        _ = fallback
+        return {"model": choice.model}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback", [None, "", "null", "pool-model"])
+async def test_external_cli_without_auth_fallback_only_accepts_an_omitted_fallback(db, message_bus, t, fallback):
+    """A CLI with no auth fallback is spawned without one; naming one is refused with a hint."""
+    team_name = f"ext_cli_no_fallback_{len(fallback or '')}"
+    await db.team.create_team(team_name=team_name, display_name="No Fallback", leader_member_name="leader1")
+    entry = ModelPoolEntry(
+        model_name="pool-model",
+        api_key="secret",
+        api_base_url="https://pool.example/v1",
+        api_provider="OpenAI",
+    )
+    register_harness_provider("nofallback", _NoFallbackProvider)
+    try:
+        team = TeamBackend(
+            team_name=team_name,
+            member_name="leader1",
+            is_leader=True,
+            db=db,
+            messager=message_bus,
+            model_pool_provider=lambda: [entry],
+            external_cli_agents=[ExternalCliAgentSpec(cli_agent="nofallback")],
+        )
+        tool = SpawnExternalCliTool(team, t, model_config_allocator=lambda model_name, **kwargs: None)
+        assert "nofallback" not in tool.card.input_params["properties"]["fallback_model_name"]["description"]
+        inputs = {"member_name": "worker-1", "display_name": "Worker", "prompt": "work", "cli_agent": "nofallback"}
+        if fallback is not None:
+            inputs["fallback_model_name"] = fallback
+
+        result = await tool.invoke(inputs)
+    finally:
+        unregister_harness_provider("nofallback")
+
+    if fallback in (None, ""):
+        assert result.success is True, result.error
+    else:
+        assert result.success is False
+        assert "omit 'fallback_model_name'" in (result.error or "")
+
+
 @pytest.mark.asyncio
 async def test_external_cli_rejects_null_when_compatible_fallback_exists(db, message_bus, t):
     """Null cannot bypass an available protocol-compatible fallback."""
@@ -894,7 +957,7 @@ async def test_external_cli_rejects_unavailable_fallback_name(db, message_bus, t
     )
 
     assert result.success is False
-    assert "use null" in (result.error or "")
+    assert "omit 'fallback_model_name' only when" in (result.error or "")
 
 
 class TestSpawnToolCapabilityGate:

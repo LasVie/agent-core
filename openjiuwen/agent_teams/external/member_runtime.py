@@ -37,6 +37,8 @@ from openjiuwen.core.common.logging import team_logger
 from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.harness_protocol import (
+    AUTH_FALLBACK_EVENT_TYPE,
+    AUTH_FALLBACK_REQUEST_TYPE,
     CheckpointReason,
     CheckpointSaveReceipt,
     DiagnosticEvent,
@@ -82,8 +84,6 @@ _EVENT_NAMESPACE = "external_harness_runtime"
 _EXTERNAL_RUNTIME_STATE_KEY = "external_runtime"
 _EXTERNAL_BACKEND_KEY = "backend"
 _EXTERNAL_CHECKPOINT_KEY = "checkpoint"
-_AUTH_FALLBACK_EVENT = "auth_fallback_activated"
-_AUTH_FALLBACK_REQUEST = "auth_fallback"
 # Provider events carrying the model a member actually runs on, fed into the
 # reliability context so failure reports name the endpoint instead of
 # ``<unknown>``: Codex harnesses announce the thread's model
@@ -634,7 +634,7 @@ class ExternalHarnessMemberRuntime:
             await self._on_diagnostic(payload)
         elif isinstance(payload, ItemLifecycleEvent):
             self._on_tool_item(envelope, payload)
-        elif isinstance(payload, ProviderEvent) and payload.event_type == _AUTH_FALLBACK_EVENT:
+        elif isinstance(payload, ProviderEvent) and payload.event_type == AUTH_FALLBACK_EVENT_TYPE:
             team_logger.info(
                 "[external-cli] member {} switched to the authentication fallback {}",
                 self._member_name,
@@ -779,7 +779,7 @@ class ExternalHarnessMemberRuntime:
 
     async def _on_provider_interaction(self, request: ProviderInteractionRequest) -> ProviderInteractionResponse:
         """Answer provider extension requests; only ``auth_fallback`` is understood."""
-        if request.request_type != _AUTH_FALLBACK_REQUEST:
+        if request.request_type != AUTH_FALLBACK_REQUEST_TYPE:
             return ProviderInteractionResponse(request_id=request.request_id, status=InteractionResponseStatus.DECLINED)
         persisted = await self._persist_fallback()
         status = InteractionResponseStatus.COMPLETED if persisted else InteractionResponseStatus.DECLINED

@@ -38,11 +38,61 @@ if TYPE_CHECKING:
     from openjiuwen.agent_teams.agent.team_agent import TeamAgent
     from openjiuwen.agent_teams.schema.team import (
         ExternalCliAgentSpec,
+        ExternalCliModelConfig,
         TeamAgentSpec,
         TeamRuntimeContext,
     )
     from openjiuwen.agent_teams.team_context import TeamContextTracker
     from openjiuwen.agent_teams.tools.team import TeamBackend
+
+
+def _negotiate_provider_endpoint(
+    ctx: "TeamRuntimeContext",
+    config: ExternalCliModelConfig | None,
+) -> ExternalCliModelConfig | None:
+    """Drop an endpoint model a third-party provider cannot run on.
+
+    A built-in model passes through (the provider's ``model_config`` decides
+    whether it can run it); an endpoint model reaches the provider only when
+    its card declares ``ENDPOINT_MODELS``, otherwise the member keeps the
+    endpoints its CLI is configured with.
+    """
+    if config is None or (config.api_base is None and config.provider is None):
+        return config
+    from openjiuwen.agent_teams.external.cli_agent.backends import provider_takes_endpoint_models
+
+    if provider_takes_endpoint_models(ctx.cli_agent or ""):
+        return config
+    team_logger.info(
+        "[external-cli] provider {} takes no endpoint models; member {} keeps its CLI's own model",
+        ctx.cli_agent,
+        ctx.member_name,
+    )
+    return None
+
+
+def _negotiate_provider_fallback(
+    ctx: "TeamRuntimeContext",
+    config: ExternalCliModelConfig | None,
+) -> ExternalCliModelConfig | None:
+    """Drop a fallback model a third-party provider cannot switch to.
+
+    The fallback reaches the provider only when ``takes_auth_fallback`` holds:
+    its card declares ``AUTH_FALLBACK`` and, since the fallback is a pool
+    entry, ``ENDPOINT_MODELS``.
+    """
+    if config is None:
+        return None
+    from openjiuwen.agent_teams.external.cli_agent.backends import takes_auth_fallback
+
+    if takes_auth_fallback(ctx.cli_agent or ""):
+        return config
+    team_logger.info(
+        "[external-cli] provider {} has no authentication fallback; member {} runs without one",
+        ctx.cli_agent,
+        ctx.member_name,
+    )
+    return None
 
 
 def _external_cli_config_for_member(
@@ -440,6 +490,9 @@ async def external_cli_spawn(
             ctx.fallback_member_model,
             cli_agent=ctx.cli_agent,
         )
+    if backend is not None and backend.kind == "provider":
+        external_model_config = _negotiate_provider_endpoint(ctx, external_model_config)
+        fallback_external_model_config = _negotiate_provider_fallback(ctx, fallback_external_model_config)
 
     async def promote_fallback_model() -> bool:
         """Persist the fallback model as this member's active model."""
