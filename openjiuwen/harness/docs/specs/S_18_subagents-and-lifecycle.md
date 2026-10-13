@@ -6,8 +6,8 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/subagents/`（8 文件）、`openjiuwen/harness/subagent_lifecycle.py`、`openjiuwen/harness/manifest/harness_elements.py`（subagent 构建器） |
-| 最近一次修订日期 | 2026-09-03 |
-| 关联 feature | N/A |
+| 最近一次修订日期 | 2026-10-13 |
+| 关联 feature | `F_06_browser-external-tools.md` |
 
 ## 范围 / 边界
 
@@ -69,6 +69,11 @@
     当前结果限制在 12 KB 内，再统一交给 `ToolResultWindowProcessor`；模型只保留最近一个有界结果，
     并发只读结果的合并结构由 PageState 提供。WorkingContext 默认只投影 runtime 权威状态，
     不再要求模型维护第二份记忆。
+11. **browser 外部工具证据参与权威终态**：通过 S_05 不变量 12 声明的外部 action 结果
+    可贡献结构化证据、结果数量与来源；不更新 Playwright 页面的引用或 generation。
+    `user_action_required` 使任务强制以 blocked 结束，并要求人工介入；工具对应工作页的
+    保留与用户恢复由产品宿主负责。构造工具列表保留传入实例，不能因其不属于 Playwright
+    工具而丢弃。
 
 ## 接口契约
 

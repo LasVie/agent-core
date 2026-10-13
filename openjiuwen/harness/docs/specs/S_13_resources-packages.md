@@ -6,7 +6,7 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/resources/`、`openjiuwen/harness/extension_binder.py`、`openjiuwen/harness/schema/extension_spec.py`、`openjiuwen/harness/schema/deep_agent_spec.py`（Spec 部分） |
-| 最近一次修订日期 | 2026-08-23 |
+| 最近一次修订日期 | 2026-10-13 |
 | 关联 feature | N/A |
 
 ## 范围 / 边界
@@ -99,7 +99,7 @@ class LoadRecord(BaseModel):
     refs: list[ResourceRef]
 
 async def apply_extension_hot(agent: DeepAgent, parts: ExtensionParts) -> list[ResourceRef]
-async def unapply_extension_hot(agent: DeepAgent, record: LoadRecord) -> list[str]
+async def unapply_extension_hot(agent: DeepAgent, refs: list[ResourceRef]) -> list[str]
 ```
 
 错误 / 返回语义：
@@ -108,6 +108,8 @@ async def unapply_extension_hot(agent: DeepAgent, record: LoadRecord) -> list[st
 - 解析失败（factory_ref 不可解析 / skill 目录缺失）→ 抛 `ValueError` 族。
 - `apply_extension_hot` 绑定中途失败 → 已绑 ref 全部撤销后 re-raise（本调用原子性）。
 - `unapply_extension_hot` 返回解除绑定的标签列表（供宿主日志 / UI）。
+- 公共 `DeepAgent.unload_extension(record)` 先用 `record.load_id` 查找本 Agent 的账本，
+  再将账本中的 `refs` 传给 `unapply_extension_hot`；不信任调用者传入的 `record.refs`。
 - `DeepAgent.load_agent_template_spec` 重复调用（`_prepared`）→ 无操作。
 
 ## 数据结构

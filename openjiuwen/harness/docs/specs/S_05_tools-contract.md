@@ -6,8 +6,8 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/tools/`（130 文件）、`openjiuwen/harness/schema/task.py`、`openjiuwen/core/foundation/tool/base.py`（`Tool.render_for_llm`） |
-| 最近一次修订日期 | 2026-09-16 |
-| 关联 feature | `F_04_tool-result-llm-rendering.md` |
+| 最近一次修订日期 | 2026-10-13 |
+| 关联 feature | `F_04_tool-result-llm-rendering.md`、`F_06_browser-external-tools.md` |
 
 ## 范围 / 边界
 
@@ -120,6 +120,12 @@ i18n、工具生命周期。`tools/` 是 harness 最大的子模块（130 文件
       不进 `model_dump` / `str()`，只由 `ToolCallTool.render_for_llm` 读取。
     - 外部协议出口（team MCP server / Claude SDK MCP / skill CLI / 被动成员执行器）同样调用
       `render_for_llm`，保证与进程内模型看到的文本一致。
+12. **Browser 外部工具按卡片声明参与运行时**：`ToolCard.properties["browser_runtime"]`
+    的 `role` 为 `discovery` 或 `action`；未声明的工具维持原行为。discovery 不消耗阶段与
+    外部操作预算；action 使用独立的任务预算（16 次），同一工具与完整参数最多执行 2 次。
+    重复判定使用完整参数的规范 JSON 哈希，忽略映射键顺序，保留任意嵌套字段与长参数；
+    不复用 Playwright 的语义字段筛选或截断签名，也不把原始参数写入签名账本。Core 不认识
+    具体命令来源或 `site/command` 字段。`windowed`、`inline_limit_chars` 声明结果窗口策略。
 
 ## 接口契约
 

@@ -6,7 +6,7 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/__init__.py`、`openjiuwen/harness/factory.py`、`openjiuwen/harness/schema/config.py`、`openjiuwen/harness/extension_binder.py` |
-| 最近一次修订日期 | 2026-08-23 |
+| 最近一次修订日期 | 2026-10-13 |
 | 关联 feature | N/A |
 
 ## 范围 / 边界
@@ -52,8 +52,9 @@
 5. `DeepAgentConfig`（`schema/config.py`）是 `@dataclass`，持有**plain-data / 已构造依赖**两
    类字段：`model` / `card` / `tools` / `mcps` / `rails` / `workspace` / `sys_operation` 是
    运行时对象；`model_selection` / `permissions` 等是数据描述。
-6. `DeepAgent.configure(config)` 是**单向**的：消费 config、装配 agent；不修改传入的
-   `DeepAgentConfig` 实例字段值。`configure` 返回 `"DeepAgent"`（链式）。
+6. `DeepAgent.configure(config)` 消费 config 并装配 agent；当前实现会在
+   `_filter_disabled_tools` 中过滤并回写传入对象的 `tools`，不能承诺输入实例完全不变。
+   调用方若需保留旧配置快照，应另行构造配置实例。`configure` 返回 `"DeepAgent"`（链式）。
 7. `configure()` 区分首配 / 热重配：首配走 `_initial_configure`，后续走 `_hot_reconfigure`
    （`_hot_reload_rails` / `_hot_reload_model` / `_hot_reload_tools` / `_hot_reload_system_prompt`）。
    `_initial_configure` 只执行一次，由 `_ensure_initialized` 守卫。
