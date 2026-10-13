@@ -46,6 +46,8 @@ def _load_state() -> dict[str, Any]:
 STATE = _load_state()
 STATE["argv"] = sys.argv[1:]
 STATE["path_head"] = os.environ.get("PATH", "").split(os.pathsep)[0]
+# The host endpoint this process was launched on; ``None`` is the CLI login.
+STATE["endpoint"] = os.environ.get("FAKE_ACP_ENDPOINT")
 
 
 def _save() -> None:
@@ -162,7 +164,8 @@ class Agent:
         last_line = text.strip().splitlines()[-1] if text.strip() else ""
         if "CRASH" in text:
             os._exit(3)
-        if "FAILAUTH" in text:
+        # The CLI login is rejected; a host endpoint authenticates.
+        if "FAILAUTH" in text and not os.environ.get("FAKE_ACP_ENDPOINT"):
             raise RpcFailure({"code": -32000, "message": "Authentication required"})
         if "SLOW" in text:
             return await self.slow(session_id)

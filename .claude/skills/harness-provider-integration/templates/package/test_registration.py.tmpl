@@ -12,7 +12,7 @@ from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.schema.deep_agent_spec import ModelSpec
 from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
 from openjiuwen.harness_protocol import HarnessCapability, HarnessState, ModelChoice, ModelEndpoint
-from openjiuwen.harness_providers import available_providers, create_harness, resolve_provider
+from openjiuwen.harness_providers import available_providers, create_harness, provider_model_config, resolve_provider
 from __PKG__ import __CLASS__Harness, __CLASS__HarnessProvider
 
 
@@ -46,12 +46,22 @@ def test_manifest_factory_builds_an_unstarted_harness_with_the_manifest_model() 
 
 def test_model_config_maps_what_the_card_declares() -> None:
     provider = __CLASS__HarnessProvider()
+    card = provider.card
     assert provider.model_config(ModelChoice(model="vendor-model"))["model"] == "vendor-model"
-    endpoint = ModelChoice(model="vendor-model", endpoint=ModelEndpoint(api_base="https://llm", api_key="k"))
-    if provider.card.supports(HarnessCapability.ENDPOINT_MODELS):
-        assert provider.model_config(endpoint)["api_base"] == "https://llm"
+    endpoint = ModelEndpoint(api_base="https://llm", api_key="k")
+    on_endpoint = ModelChoice(model="vendor-model", endpoint=endpoint)
+    if card.supports(HarnessCapability.ENDPOINT_MODELS):
+        mapped = provider_model_config("__PROVIDER__", on_endpoint)
+        assert "https://llm" in str(mapped)
+        resolve_provider("__PROVIDER__").create(mapped)
     else:
-        with pytest.raises(ValueError, match="cannot set api_base"):
-            provider.model_config(endpoint)
-    with pytest.raises(ValueError, match="fallback"):
-        provider.model_config(ModelChoice(model="a"), fallback=ModelChoice(model="b"))
+        with pytest.raises(ValueError, match="does not take endpoint models"):
+            provider_model_config("__PROVIDER__", on_endpoint)
+    fallback = ModelChoice(model="pool-model", endpoint=endpoint)
+    if card.supports(HarnessCapability.AUTH_FALLBACK):
+        mapped = provider_model_config("__PROVIDER__", ModelChoice(model=None), fallback=fallback)
+        assert mapped["fallback_model"]["model"] == "pool-model"
+        resolve_provider("__PROVIDER__").create(mapped)
+    else:
+        with pytest.raises(ValueError, match="no authentication fallback"):
+            provider_model_config("__PROVIDER__", ModelChoice(model="a"), fallback=fallback)

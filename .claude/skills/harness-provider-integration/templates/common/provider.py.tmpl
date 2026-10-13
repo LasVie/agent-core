@@ -35,33 +35,47 @@ class __CLASS__HarnessProvider:
 
         openjiuwen calls this for a manifest model and for a team member's
         model (a built-in one the leader picked, or one from the team's model
-        pool when the card declares ``ENDPOINT_MODELS``); configuration the
-        host passes explicitly still wins. A field the config does not declare
-        is an error, never silently dropped.
+        pool when the card declares ``ENDPOINT_MODELS``) with, when the card
+        declares ``AUTH_FALLBACK``, the pool model to fall back to; explicit
+        host configuration still wins. An endpoint model goes to the config's
+        ``endpoint_model`` when it has one, else to flat ``api_base`` /
+        ``api_key`` fields. A field the config does not declare is an error,
+        never silently dropped.
 
         Raises:
             ValueError: When the choice needs a field this config lacks (an
-                endpoint, an effort) or a fallback, which this provider has not.
+                endpoint, an effort, a fallback model).
         """
-        if fallback is not None:
-            raise ValueError("__DISPLAY__ has no fallback model")
-        endpoint = choice.endpoint
-        values = {
-            "model": choice.model,
-            "effort": choice.effort,
-            "provider": endpoint.provider if endpoint is not None else None,
-            "api_base": endpoint.api_base if endpoint is not None else None,
-            "api_key": endpoint.api_key if endpoint is not None else None,
-        }
         accepted = {item.name for item in fields(__CLASS__HarnessConfig)}
-        # The endpoint's protocol label only matters to configs that take it.
+        endpoint = choice.endpoint
+        values: dict[str, Any] = {"model": choice.model, "effort": choice.effort}
+        if endpoint is not None and "endpoint_model" in accepted:
+            values = {"endpoint_model": _endpoint_model(choice), "effort": choice.effort}
+        elif endpoint is not None:
+            values.update(api_base=endpoint.api_base, api_key=endpoint.api_key)
+            # The endpoint's protocol label only matters to configs that take it.
+            if "provider" in accepted:
+                values["provider"] = endpoint.provider
+        if fallback is not None:
+            if fallback.endpoint is None:
+                raise ValueError("__DISPLAY__ falls back to host endpoint models only")
+            values["fallback_model"] = _endpoint_model(fallback)
         values = {key: value for key, value in values.items() if value is not None}
-        if "provider" not in accepted:
-            values.pop("provider", None)
         unsupported = sorted(set(values) - accepted)
         if unsupported:
             raise ValueError(f"__DISPLAY__ cannot set {', '.join(unsupported)}")
         return values
+
+
+def _endpoint_model(choice: ModelChoice) -> dict[str, Any]:
+    endpoint = choice.endpoint
+    values = {
+        "model": choice.model,
+        "api_base": endpoint.api_base if endpoint is not None else None,
+        "api_key": endpoint.api_key if endpoint is not None else None,
+        "provider": endpoint.provider if endpoint is not None else None,
+    }
+    return {key: value for key, value in values.items() if value is not None}
 
 
 __all__ = ["__CLASS__HarnessProvider"]

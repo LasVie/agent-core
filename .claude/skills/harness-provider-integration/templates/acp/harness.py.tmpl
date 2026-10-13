@@ -17,7 +17,7 @@ import asyncio
 import contextlib
 import os
 import uuid
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from openjiuwen.harness_protocol import (
     PROTOCOL_VERSION,
@@ -28,6 +28,7 @@ from openjiuwen.harness_protocol import (
     HarnessContext,
     HarnessProtocolError,
     HostCapability,
+    JsonObject,
     McpTransport,
     ModelOption,
     ModelSelection,
@@ -50,7 +51,7 @@ from openjiuwen.harness_providers.jsonsafe import to_json_object, to_json_safe
 from openjiuwen.harness_providers.mcp_naming import TOOL_PLACEHOLDER, mcp_tool_naming_preamble
 from openjiuwen.harness_providers.skills import install_skills
 from __PKG__.bundled import select_executable
-from __PKG__.config import __CLASS__HarnessConfig
+from __PKG__.config import __CLASS__HarnessConfig, __CLASS__ModelConfig
 from __PKG__.failure_classifier import classify_exception, turn_error
 from __PKG__.mapping import PROVIDER_NAME, MappedEvent, __CLASS__TurnAccumulator
 from __PKG__.process import CliLaunch, CliProcess
@@ -78,6 +79,14 @@ MODEL_CONFIG_ID: str | None = None
 # the ``title`` of a real ``tool_call`` for a tool of a mounted server; keep
 # ``None`` only if the CLI shows the bare tool name.
 MCP_TOOL_NAME_PATTERN: str | None = None
+# SCAFFOLD(endpoint): how this CLI runs a model on a host endpoint instead of
+# its own login: a function returning the child environment that makes the
+# endpoint model the session default (e.g. a config-content variable, or
+# vendor ``*_BASE_URL`` / ``*_API_KEY`` / ``*_MODEL`` variables). It enables
+# ENDPOINT_MODELS and, with ``loadSession``, AUTH_FALLBACK: the fallback
+# restarts the agent with the fallback endpoint and loads the same session.
+# Keep ``None`` when the CLI cannot be pointed at an endpoint.
+ENDPOINT_ENV: Callable[[__CLASS__ModelConfig], dict[str, str]] | None = None
 # ACP has no system prompt field; the host prompt rides on the first prompt
 # of a fresh session, fenced so it reads as instructions, not as the request.
 _SYSTEM_PROMPT_FENCE = "<system-instructions>\n{prompt}\n</system-instructions>\n\n"
@@ -92,6 +101,20 @@ _MODEL_CAPABILITIES = (
     if MODEL_CONFIG_ID is not None
     else frozenset()
 )
+_ENDPOINT_CAPABILITIES = frozenset({HarnessCapability.ENDPOINT_MODELS}) if ENDPOINT_ENV is not None else frozenset()
+_AUTH_FALLBACK_NEEDS = frozenset({HarnessCapability.ENDPOINT_MODELS, HarnessCapability.PERSISTENT_SESSION})
+
+
+def _with_auth_fallback(capabilities: frozenset[HarnessCapability]) -> frozenset[HarnessCapability]:
+    """Add AUTH_FALLBACK when the agent takes endpoints and loads sessions.
+
+    The fallback restarts the agent on the fallback endpoint and loads the live
+    session into it, so it needs ENDPOINT_MODELS and PERSISTENT_SESSION
+    (``loadSession``); without either it could never activate.
+    """
+    if _AUTH_FALLBACK_NEEDS <= capabilities:
+        return capabilities | {HarnessCapability.AUTH_FALLBACK}
+    return capabilities
 
 
 class __CLASS__Harness(SerializedTurnHarness):
@@ -106,15 +129,18 @@ class __CLASS__Harness(SerializedTurnHarness):
         # MCP_TOOLS is ``session/new``'s ``mcpServers``; both are mandatory ACP.
         # PERSISTENT_SESSION and CHECKPOINT need ``agentCapabilities.loadSession``.
         # Keep exactly what the e2e suite proved against the real CLI.
-        capabilities=frozenset(
-            {
-                HarnessCapability.GRACEFUL_ABORT,
-                HarnessCapability.MCP_TOOLS,
-                HarnessCapability.PERSISTENT_SESSION,
-                HarnessCapability.CHECKPOINT,
-            }
-        )
-        | _MODEL_CAPABILITIES,
+        capabilities=_with_auth_fallback(
+            frozenset(
+                {
+                    HarnessCapability.GRACEFUL_ABORT,
+                    HarnessCapability.MCP_TOOLS,
+                    HarnessCapability.PERSISTENT_SESSION,
+                    HarnessCapability.CHECKPOINT,
+                }
+            )
+            | _MODEL_CAPABILITIES
+            | _ENDPOINT_CAPABILITIES
+        ),
         optional_host_capabilities=frozenset(
             {
                 HostCapability.TOOL_APPROVAL,
@@ -139,6 +165,15 @@ class __CLASS__Harness(SerializedTurnHarness):
         # The live session's ``configOptions`` as last reported by the agent.
         self._config_options: Any = None
         self._accumulator: __CLASS__TurnAccumulator | None = None
+        # The endpoint model the agent process was launched on; ``None`` runs
+        # on the CLI's own login. The auth fallback moves it to the fallback.
+        self._active_endpoint: __CLASS__ModelConfig | None = self._config.endpoint_model
+        # The CLI-login model the session runs on, runtime selections included;
+        # a restart on the primary restores it rather than the configured one.
+        self._primary_model: str | None = self._config.model
+        # A restart left no agent behind; the next turn reloads the session.
+        self._restore_pending = False
+        self._cwd: str | None = None
         self._prelude = ""
 
     # ------------------------------------------------------------------
@@ -158,6 +193,9 @@ class __CLASS__Harness(SerializedTurnHarness):
             raise UnsupportedHarnessCapabilityError("system_prompt_delivery='none' cannot carry a system prompt")
         if self._config.skills and SKILLS_SCAN_DIR is None:
             raise UnsupportedHarnessCapabilityError("__DISPLAY__ has no skill discovery directory for portable skills")
+        uses_endpoint = self._config.endpoint_model is not None or self._config.fallback_model is not None
+        if uses_endpoint and ENDPOINT_ENV is None:
+            raise UnsupportedHarnessCapabilityError("__DISPLAY__ cannot run a model on a host endpoint")
         if self._config.model is not None and not MODEL_ARGS and MODEL_CONFIG_ID is None:
             raise UnsupportedHarnessCapabilityError("__DISPLAY__ cannot select a model")
 
@@ -172,15 +210,12 @@ class __CLASS__Harness(SerializedTurnHarness):
                 conflict=self._config.skill_conflict,
                 scan_dir=SKILLS_SCAN_DIR,
             )
-        process = CliProcess(max_line_bytes=self._config.max_line_bytes)
-        self._process = process
+        self._cwd = cwd
+        self._active_endpoint = self._config.endpoint_model
+        self._primary_model = self._config.model
+        self._restore_pending = False
         try:
-            argv, env = self._launch(context)
-            await process.start(CliLaunch(argv=argv, env=env, cwd=cwd))
-            rpc = JsonRpcConnection(process, on_notification=self._on_notification, on_request=self._on_request)
-            self._rpc = rpc
-            rpc.start()
-            await self._initialize(rpc)
+            rpc = await self._start_agent(context, cwd)
             session_id, resumed, config_options = await self._open_acp_session(rpc, context, cwd)
             config_options = await self._select_model(rpc, session_id, config_options)
         except (asyncio.CancelledError, ProviderStartupError, HarnessProtocolError, UnsupportedHarnessCapabilityError):
@@ -197,6 +232,18 @@ class __CLASS__Harness(SerializedTurnHarness):
                 reason=CheckpointReason.SESSION_ACTIVATED,
             )
         return session_id
+
+    async def _start_agent(self, context: HarnessContext, cwd: str) -> JsonRpcConnection:
+        """Launch the agent process on the active model and complete ``initialize``."""
+        process = CliProcess(max_line_bytes=self._config.max_line_bytes)
+        self._process = process
+        argv, env = self._launch(context)
+        await process.start(CliLaunch(argv=argv, env=env, cwd=cwd))
+        rpc = JsonRpcConnection(process, on_notification=self._on_notification, on_request=self._on_request)
+        self._rpc = rpc
+        rpc.start()
+        await self._initialize(rpc)
+        return rpc
 
     async def _close_session(self) -> None:
         process, rpc = self._process, self._rpc
@@ -218,6 +265,11 @@ class __CLASS__Harness(SerializedTurnHarness):
         accumulator = __CLASS__TurnAccumulator(turn_id=turn.turn_id)
         if turn.abort_requested:
             return TurnEventKind.ABORTED, accumulator.build_interrupted_result(turn, timing=timing)
+        if self._restore_pending:
+            try:
+                await self._restore_session()
+            except Exception as exc:
+                return TurnEventKind.FAILED, accumulator.build_failed_result(classify_exception(exc), timing=timing)
         rpc = self._rpc
         if rpc is None or rpc.closed:
             exit_code = self._process.returncode if self._process is not None else None
@@ -280,6 +332,8 @@ class __CLASS__Harness(SerializedTurnHarness):
             self._config_options = await self._switch_model(rpc, session_id, self._config_options, selection.model)
         except ProviderStartupError as exc:
             raise HarnessProtocolError(exc.error.message) from exc
+        if self._active_endpoint is None:
+            self._primary_model = selection.model
 
     async def _probe_config_options(self) -> Any:
         """Read the session ``configOptions`` from a throwaway agent; prompts nothing."""
@@ -392,8 +446,8 @@ class __CLASS__Harness(SerializedTurnHarness):
             ProviderStartupError: When the session does not offer the model or
                 the agent did not apply it.
         """
-        model = self._config.model
-        if model is None or MODEL_CONFIG_ID is None:
+        model = self._primary_model
+        if model is None or MODEL_CONFIG_ID is None or self._active_endpoint is not None:
             return config_options
         return await self._switch_model(rpc, session_id, config_options, model)
 
@@ -464,6 +518,60 @@ class __CLASS__Harness(SerializedTurnHarness):
     # ------------------------------------------------------------------
     # Agent -> client traffic
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Authentication fallback
+    # ------------------------------------------------------------------
+
+    def _auth_fallback_payload(self) -> JsonObject | None:
+        fallback = self._config.fallback_model
+        if fallback is None or ENDPOINT_ENV is None:
+            return None
+        return {"model": fallback.model, "api_base": fallback.api_base}
+
+    async def _reconnect_for_auth(self, *, fallback: bool) -> None:
+        """Restart the agent on the fallback (or primary) model and load the same session."""
+        context, session_id, cwd = self._context, self._acp_session_id, self._cwd
+        if context is None or session_id is None or cwd is None:
+            raise HarnessProtocolError("__DISPLAY__ has no live session to move to another model")
+        if self._agent_capabilities.get("loadSession") is not True:
+            raise HarnessProtocolError("__DISPLAY__ cannot resume its session on another model")
+        await self._close_session()
+        # Keep the session id across a failed restart: the next attempt (the
+        # primary model after a declined switch, or the next turn) loads it.
+        self._acp_session_id = session_id
+        self._active_endpoint = self._config.fallback_model if fallback else self._config.endpoint_model
+        try:
+            await self._restore_session()
+        except BaseException:
+            # The host never ratified a fallback whose restart failed: the
+            # next turn restores the primary model, not the fallback.
+            self._active_endpoint = self._config.endpoint_model
+            raise
+
+    async def _restore_session(self) -> None:
+        """Start the agent on the active model and load the live session into it.
+
+        A failure leaves no half-started agent behind and marks the session
+        for the next turn, which tries again once the cause is gone.
+        """
+        context, session_id, cwd = self._context, self._acp_session_id, self._cwd
+        if context is None or session_id is None or cwd is None:
+            raise HarnessProtocolError("__DISPLAY__ has no session to restore")
+        self._restore_pending = True
+        try:
+            rpc = await self._start_agent(context, cwd)
+            loaded = await rpc.request(
+                "session/load",
+                {"sessionId": session_id, "cwd": cwd, "mcpServers": self._acp_mcp_servers(context)},
+                timeout_s=self._config.initialize_timeout_s,
+            )
+            self._config_options = await self._select_model(rpc, session_id, loaded.get("configOptions"))
+        except BaseException:
+            await self._close_session()
+            self._acp_session_id = session_id
+            raise
+        self._restore_pending = False
 
     async def _on_notification(self, method: str, params: dict[str, Any]) -> None:
         if method != "session/update" or params.get("sessionId") != self._acp_session_id:
@@ -569,7 +677,10 @@ class __CLASS__Harness(SerializedTurnHarness):
         """
         env = self._child_env(context)
         executable = select_executable(self._config.cli_path, self._config.command[0], env)
-        model = self._config.model
+        endpoint = self._active_endpoint
+        if endpoint is not None and ENDPOINT_ENV is not None:
+            env.update(ENDPOINT_ENV(endpoint))
+        model = self._primary_model if endpoint is None else None
         model_args = tuple(arg.format(model=model) for arg in MODEL_ARGS) if model is not None else ()
         command = (executable, *self._config.command[1:])
         return (*command, *model_args, *self._config.extra_args), env

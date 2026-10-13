@@ -18,13 +18,16 @@
 | `MODEL_SELECTION` | `set_model` 在 idle 时立即生效、运行中延后到下一轮生效，跨重连保持 | `_apply_model_selection` | 单测 + e2e |
 | `MODEL_DISCOVERY` | `list_models` 返回真实目录 | `_list_models` | 单测 + e2e |
 | `ENDPOINT_MODELS` | `model_config` 能把宿主端点（`ModelEndpoint` 的 `api_base` / `api_key`）映射进配置 | provider 的 `model_config` | 单测（模板注册测试按此分支） |
+| `AUTH_FALLBACK` | 回合以 `auth_required` 失败时，在 `model_config(..., fallback=)` 给的回退模型上恢复同一会话并重放；流程在骨架里，宿主先确认 | `_auth_fallback_payload` + `_reconnect_for_auth` (+ `_on_auth_endpoint_changed`) | 单测 + 真实 CLI（无效密钥主端点 → 回退端点） |
 | `PAUSE_RESUME` | 暂停后原地续跑 | 基类默认不支持 | — |
 | `HOOKS` | 宿主 hook 改写/拒绝工具调用 | — | — |
 
 模板默认值：
 
 - **ACP**：`GRACEFUL_ABORT`、`MCP_TOOLS`（ACP 规范强制）、`PERSISTENT_SESSION` + `CHECKPOINT`
-  （要求 `agentCapabilities.loadSession`，否则删掉这两项）。
+  （要求 `agentCapabilities.loadSession`，否则删掉这两项）。填了 `ENDPOINT_ENV` 时自动加 `ENDPOINT_MODELS`，
+  且仅在同时保留 `PERSISTENT_SESSION` 时加 `AUTH_FALLBACK`（`_with_auth_fallback`：回退要把会话 load 进重启的
+  agent）。
 - **一次性 CLI**：`FORCE_ABORT`（adapter 自己持有进程，构造上成立）。会话能靠 `SESSION_ARGS`
   延续时再加 `PERSISTENT_SESSION` + `CHECKPOINT`。
 - **SDK**：空集。钩子已接好，逐项证明后再加。

@@ -120,7 +120,8 @@ backend，成员拿到 `cwd` / `env` / `skills` / `skill_conflict`（配置了�
 并把 `HarnessContext.mcp_servers` 的 stdio 服务器交给 CLI，否则成员没有团队工具。成员模型经 provider 的
 `model_config(ModelChoice)` 映射进配置（leader 挑的内置模型，或 card 声明 `ENDPOINT_MODELS` 时团队模型池
 的端点模型）；声明 `MODEL_SELECTION` 才能运行中切换，声明 `MODEL_DISCOVERY` 时 jiuwenswarm 自动生成内置
-模型目录。
+模型目录；声明 `AUTH_FALLBACK` 时 leader 必须给成员配团队模型池里的回退模型，认证失败后自动切过去（先落库），
+不声明的 CLI 不能配回退。
 
 jiuwenswarm 设置页“三方 Agent → 添加三方 Agent”可直接上传 wheel（可附 CLI 可执行文件），无需进内置清单。
 

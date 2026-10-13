@@ -26,6 +26,7 @@ from openjiuwen.harness_protocol import (
     HarnessProtocol,
     HarnessState,
     HostCapability,
+    InteractionResponseStatus,
     ItemEventKind,
     ItemLifecycleEvent,
     McpServerConfig,
@@ -35,6 +36,7 @@ from openjiuwen.harness_protocol import (
     OutputEvent,
     OutputOperation,
     ProviderEvent,
+    ProviderInteractionResponse,
     ResumePolicy,
     ToolApprovalDecision,
     ToolApprovalResponse,
@@ -51,6 +53,7 @@ from __PKG__ import (
     __CLASS__HarnessProvider,
 )
 from __PKG__ import bundled
+from __PKG__ import harness as harness_module
 from __PKG__.harness import MODEL_ARGS, MODEL_CONFIG_ID
 
 logger = logging.getLogger(__name__)
@@ -286,6 +289,175 @@ async def test_auth_error_fails_the_turn_as_auth_required(tmp_path: Path) -> Non
         assert terminal.kind is TurnEventKind.FAILED
         assert terminal.result.error.category == "auth_required"
         assert terminal.result.error.code == "-32000"
+    finally:
+        await harness.stop()
+
+
+def _endpoint_env(model: Any) -> dict[str, str]:
+    return {"FAKE_ACP_ENDPOINT": model.api_base}
+
+
+class _Ratifier:
+    """Host answering the auth fallback request with a fixed status."""
+
+    def __init__(self, status: InteractionResponseStatus) -> None:
+        self.status = status
+        self.requests: list[Any] = []
+
+    async def handle(self, request: Any) -> Any:
+        self.requests.append(request)
+        return ProviderInteractionResponse(request_id=request.request_id, status=self.status)
+
+    async def cancel(self, request_id: str, *, reason: Any = None) -> None:
+        _ = request_id, reason
+
+
+async def _fallback_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: InteractionResponseStatus,
+) -> tuple[__CLASS__Harness, _Ratifier, list[HarnessEvent]]:
+    monkeypatch.setattr(harness_module, "ENDPOINT_ENV", _endpoint_env)
+    fallback = {"model": "pool-model", "api_base": "https://pool", "api_key": "k"}
+    harness = __CLASS__Harness(_config(tmp_path / "state.json", fallback_model=fallback))
+    ratifier = _Ratifier(status)
+    host = frozenset({HostCapability.PROVIDER_INTERACTION})
+    await harness.start(_context(tmp_path, interactions=ratifier, host_capabilities=host))
+    receipt = await harness.send(HarnessInput(content="REMEMBER code 42"))
+    await _turn(harness, receipt.turn_id)
+    receipt = await harness.send(HarnessInput(content="FAILAUTH then RECALL"))
+    return harness, ratifier, await _turn(harness, receipt.turn_id)
+
+
+@pytest.mark.asyncio
+async def test_auth_failure_moves_the_session_to_the_fallback_endpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness, ratifier, events = await _fallback_turn(tmp_path, monkeypatch, InteractionResponseStatus.COMPLETED)
+    try:
+        terminal = _terminal(events)
+        assert terminal.kind is TurnEventKind.FINISHED
+        # The same session was loaded on the fallback, so it still remembers.
+        assert terminal.result.final_output == "recall: 42"
+        assert harness.fallback_activated
+        assert [request.request_type for request in ratifier.requests] == ["auth_fallback"]
+        assert ratifier.requests[0].payload == {"model": "pool-model", "api_base": "https://pool"}
+        state = _state(tmp_path / "state.json")
+        assert state["endpoint"] == "https://pool"
+        assert state["session_load"] == [harness.provider_session_id]
+        assert any(
+            isinstance(event.event, ProviderEvent) and event.event.event_type == "auth_fallback_activated"
+            for event in events
+        )
+    finally:
+        await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_declined_fallback_goes_back_to_the_cli_login(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness, ratifier, events = await _fallback_turn(tmp_path, monkeypatch, InteractionResponseStatus.DECLINED)
+    try:
+        terminal = _terminal(events)
+        assert terminal.kind is TurnEventKind.FAILED
+        assert terminal.result.error.category == "auth_required"
+        assert not harness.fallback_activated
+        assert len(ratifier.requests) == 1
+        state = _state(tmp_path / "state.json")
+        assert state["endpoint"] is None
+        assert state["session_load"] == [harness.provider_session_id] * 2
+        # The session is still alive on the login.
+        receipt = await harness.send(HarnessInput(content="RECALL"))
+        assert _terminal(await _turn(harness, receipt.turn_id)).result.final_output == "recall: 42"
+    finally:
+        await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_restart_after_a_declined_fallback_recovers_on_the_next_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    starts = 0
+    original = __CLASS__Harness._start_agent
+
+    async def flaky_start(self: Any, context: Any, cwd: str) -> Any:
+        nonlocal starts
+        starts += 1
+        if starts == 3:  # login, fallback, then the primary restart fails once
+            raise ConnectionError("agent did not start")
+        return await original(self, context, cwd)
+
+    monkeypatch.setattr(__CLASS__Harness, "_start_agent", flaky_start)
+    harness, _, events = await _fallback_turn(tmp_path, monkeypatch, InteractionResponseStatus.DECLINED)
+    try:
+        assert _terminal(events).result.error.category == "auth_required"
+        receipt = await harness.send(HarnessInput(content="RECALL"))
+        terminal = _terminal(await _turn(harness, receipt.turn_id))
+        assert terminal.result.final_output == "recall: 42", "the next turn reloads the same session"
+        state = _state(tmp_path / "state.json")
+        assert state["endpoint"] is None
+        assert state["session_load"][-1] == harness.provider_session_id
+    finally:
+        await harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_fallback_restart_resumes_on_the_login_next_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    starts = 0
+    original = __CLASS__Harness._start_agent
+
+    async def flaky_start(self: Any, context: Any, cwd: str) -> Any:
+        nonlocal starts
+        starts += 1
+        if starts == 2:  # login, then the fallback restart fails
+            raise ConnectionError("agent did not start")
+        return await original(self, context, cwd)
+
+    monkeypatch.setattr(__CLASS__Harness, "_start_agent", flaky_start)
+    harness, ratifier, events = await _fallback_turn(tmp_path, monkeypatch, InteractionResponseStatus.COMPLETED)
+    try:
+        assert _terminal(events).result.error.category == "auth_required"
+        assert ratifier.requests == []
+        assert not harness.fallback_activated
+        receipt = await harness.send(HarnessInput(content="RECALL"))
+        assert _terminal(await _turn(harness, receipt.turn_id)).result.final_output == "recall: 42"
+        assert _state(tmp_path / "state.json")["endpoint"] is None, "an unratified fallback is never restored"
+    finally:
+        await harness.stop()
+
+
+def test_auth_fallback_needs_endpoints_and_loaded_sessions() -> None:
+    endpoints = frozenset({HarnessCapability.ENDPOINT_MODELS})
+    assert HarnessCapability.AUTH_FALLBACK not in harness_module._with_auth_fallback(endpoints)
+    loaded = endpoints | {HarnessCapability.PERSISTENT_SESSION}
+    assert HarnessCapability.AUTH_FALLBACK in harness_module._with_auth_fallback(loaded)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(MODEL_CONFIG_ID is None, reason="the CLI selects no model per session")
+async def test_declined_fallback_keeps_the_model_selected_at_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(harness_module, "ENDPOINT_ENV", _endpoint_env)
+    fallback = {"model": "pool-model", "api_base": "https://pool", "api_key": "k"}
+    harness = __CLASS__Harness(_config(tmp_path / "state.json", model="vendor/default", fallback_model=fallback))
+    ratifier = _Ratifier(InteractionResponseStatus.DECLINED)
+    host = frozenset({HostCapability.PROVIDER_INTERACTION})
+    await harness.start(_context(tmp_path, interactions=ratifier, host_capabilities=host))
+    try:
+        await harness.set_model(ModelSelection(model="vendor/model-x"))
+        receipt = await harness.send(HarnessInput(content="FAILAUTH"))
+        assert _terminal(await _turn(harness, receipt.turn_id)).kind is TurnEventKind.FAILED
+        switched = [item["value"] for item in _state(tmp_path / "state.json")["set_config_option"]]
+        assert switched[-1] == "vendor/model-x", "the restart restores the runtime selection"
     finally:
         await harness.stop()
 

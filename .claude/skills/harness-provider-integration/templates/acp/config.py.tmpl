@@ -20,6 +20,45 @@ _DEFAULT_MAX_LINE_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
+class __CLASS__ModelConfig:
+    """A model served by a host endpoint instead of the CLI's own login.
+
+    Attributes:
+        model: Model id the endpoint serves.
+        api_base: Endpoint base URL.
+        api_key: Endpoint credential; never logged.
+        provider: Wire protocol label of the endpoint (e.g. ``openai`` /
+            ``anthropic``), when the host knows it.
+    """
+
+    model: str
+    api_base: str
+    api_key: str | None = field(default=None, repr=False)
+    provider: str | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("model", "api_base", "api_key", "provider"):
+            value = getattr(self, name)
+            optional = name in ("api_key", "provider")
+            if value is None and optional:
+                continue
+            if not isinstance(value, str) or not value:
+                raise TypeError(f"__DISPLAY__ endpoint model {name} must be a non-empty string")
+
+    @classmethod
+    def from_mapping(cls, config: Any) -> "__CLASS__ModelConfig | None":
+        """Build from a JSON mapping; ``None`` passes through."""
+        if config is None or isinstance(config, cls):
+            return config
+        if not isinstance(config, Mapping):
+            raise TypeError("__DISPLAY__ endpoint model must be an object")
+        unknown = sorted(set(config) - {item.name for item in fields(cls)})
+        if unknown:
+            raise ValueError(f"unknown __DISPLAY__ endpoint model fields: {', '.join(unknown)}")
+        return cls(**dict(config))
+
+
+@dataclass(frozen=True, slots=True)
 class __CLASS__HarnessConfig:
     """Configuration for one __DISPLAY__ ACP agent process.
 
@@ -34,8 +73,12 @@ class __CLASS__HarnessConfig:
         cwd: Default working directory; ``HarnessContext.cwd`` wins.
         env: Extra child environment, layered over the inherited one.
         inherit_process_env: Start the child from the host environment.
-        model: Model passed through the CLI's own launch flag; ``None`` keeps
+        model: Built-in model the CLI selects on its own login; ``None`` keeps
             the CLI default.
+        endpoint_model: Model the session runs on through a host endpoint
+            instead of the CLI's own login; exclusive with ``model``.
+        fallback_model: Host endpoint model the session switches to once when
+            the primary model fails authentication.
         auto_approve: Answer ``session/request_permission`` with an allow
             option when the host does not route tool approvals.
         system_prompt_delivery: ``first_prompt`` prepends the host system
@@ -57,6 +100,8 @@ class __CLASS__HarnessConfig:
     env: Mapping[str, str] = field(default_factory=dict, repr=False)
     inherit_process_env: bool = True
     model: str | None = None
+    endpoint_model: __CLASS__ModelConfig | None = None
+    fallback_model: __CLASS__ModelConfig | None = None
     auto_approve: bool = True
     system_prompt_delivery: Literal["first_prompt", "none"] = "first_prompt"
     skills: tuple[SkillSource, ...] = ()
@@ -80,6 +125,10 @@ class __CLASS__HarnessConfig:
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value):
                 raise TypeError(f"__DISPLAY__ {name} must be a non-empty string when provided")
+        for name in ("endpoint_model", "fallback_model"):
+            object.__setattr__(self, name, __CLASS__ModelConfig.from_mapping(getattr(self, name)))
+        if self.model is not None and self.endpoint_model is not None:
+            raise ValueError("__DISPLAY__ model and endpoint_model are exclusive")
         if self.system_prompt_delivery not in ("first_prompt", "none"):
             raise ValueError("__DISPLAY__ system_prompt_delivery must be 'first_prompt' or 'none'")
         if not isinstance(self.env, Mapping):
@@ -123,4 +172,4 @@ def _check_positive_number(name: str, value: Any, *, optional: bool) -> None:
         raise ValueError(f"__DISPLAY__ {name} must be a positive number")
 
 
-__all__ = ["__CLASS__HarnessConfig"]
+__all__ = ["__CLASS__HarnessConfig", "__CLASS__ModelConfig"]
