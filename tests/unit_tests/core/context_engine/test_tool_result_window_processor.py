@@ -322,3 +322,38 @@ class TestToolResultWindowProcessorConfig:
             ToolResultWindowProcessorConfig(tool_names=["grep"], keep_last_k=0)
         with pytest.raises(ValidationError):
             ToolResultWindowProcessorConfig(tool_names=["grep"], trim_size=0)
+
+
+class TestInlineLimitByTool:
+    @pytest.mark.asyncio
+    async def test_oversized_newest_result_is_offloaded_immediately(self, tmp_path):
+        config = ToolResultWindowProcessorConfig(
+            tool_names=["grep", "site_run"], keep_last_k=3, trim_size=10, inline_limit_by_tool={"site_run": 500}
+        )
+        context, _ = await build_context(str(tmp_path), config)
+
+        msgs: List = [UserMessage(content="run")]
+        msgs += tool_round("s0", "site_run", "small-" + "x" * 100)
+        msgs += tool_round("s1", "site_run", "large-" + "x" * 5000)
+        msgs += tool_round("g0", "grep", "grep-" + "x" * 5000)
+        await context.add_messages(msgs)
+
+        by_id = {m.tool_call_id: m for m in context.get_messages() if isinstance(m, ToolMessage)}
+        assert not isinstance(by_id["s0"], OffloadToolMessage), "a small newest result stays inline"
+        assert isinstance(by_id["s1"], OffloadToolMessage), "an oversized newest result is offloaded"
+        assert by_id["s1"].content.startswith(PERSISTED_OUTPUT_TAG)
+        assert not isinstance(by_id["g0"], OffloadToolMessage), "tools without a limit keep the window rule"
+
+    @pytest.mark.asyncio
+    async def test_inline_limit_matches_prefixed_tool_names(self, tmp_path):
+        config = ToolResultWindowProcessorConfig(
+            tool_names=["site_run"], keep_last_k=3, trim_size=10, inline_limit_by_tool={"site_run": 100}
+        )
+        context, _ = await build_context(str(tmp_path), config)
+
+        msgs: List = [UserMessage(content="run")]
+        msgs += tool_round("p0", "agent_x.site_run", "large-" + "x" * 500)
+        await context.add_messages(msgs)
+
+        result = [m for m in context.get_messages() if isinstance(m, ToolMessage)]
+        assert isinstance(result[0], OffloadToolMessage)
