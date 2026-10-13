@@ -6,6 +6,7 @@
 import asyncio
 import sys
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -619,24 +620,32 @@ def test_third_party_provider_is_a_known_backend_and_accepts_cli_path(acme_provi
 class _ModelAwareProvider(_ThirdPartyProvider):
     """A third-party provider mapping models through ``model_config``."""
 
-    def __init__(self, *, endpoints: bool) -> None:
+    def __init__(self, *, endpoints: bool, auth_fallback: bool = False) -> None:
         super().__init__(mcp_tools=False)
-        capabilities = frozenset({HarnessCapability.ENDPOINT_MODELS}) if endpoints else frozenset()
-        self._card = HarnessCard(name="acme", implementation_version="0.1.0", capabilities=capabilities)
+        capabilities = {HarnessCapability.ENDPOINT_MODELS} if endpoints else set()
+        if auth_fallback:
+            capabilities.add(HarnessCapability.AUTH_FALLBACK)
+        self._card = HarnessCard(name="acme", implementation_version="0.1.0", capabilities=frozenset(capabilities))
 
     @staticmethod
     def model_config(choice: ModelChoice, *, fallback: ModelChoice | None = None) -> dict:
-        if fallback is not None:
-            raise ValueError("acme has no fallback model")
         if choice.effort is not None:
             raise ValueError("acme has no effort selector")
         fragment = {"model": choice.model}
         if choice.endpoint is not None:
             fragment.update(base_url=choice.endpoint.api_base, token=choice.endpoint.api_key)
+        if fallback is not None:
+            fragment["fallback"] = {"model": fallback.model, "base_url": fallback.endpoint.api_base}
         return fragment
 
 
-async def _provider_runtime(provider: _ThirdPartyProvider, model: ExternalCliModelConfig) -> object:
+async def _provider_runtime(
+    provider: _ThirdPartyProvider,
+    model: ExternalCliModelConfig | None,
+    *,
+    fallback: ExternalCliModelConfig | None = None,
+    promote: Any = None,
+) -> object:
     register_harness_provider("acme", lambda: provider)
     token = set_session_id("sess-1")
     try:
@@ -644,6 +653,8 @@ async def _provider_runtime(provider: _ThirdPartyProvider, model: ExternalCliMod
             _ctx(member="dev-1", cli_agent="acme"),
             inject_mcp=False,
             external_model_config=model,
+            fallback_external_model_config=fallback,
+            promote_fallback_model=promote,
             member_agent_id="ext_team_dev-1",
         )
     finally:
@@ -712,3 +723,58 @@ def test_spawn_hands_endpoint_models_only_to_providers_that_take_them(endpoints:
             assert provider_filter("openai") is False
     finally:
         unregister_harness_provider("acme")
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_provider_member_with_auth_fallback_gets_the_pool_fallback():
+    fallback = ExternalCliModelConfig(provider="openai", model="pool-model", api_base="https://pool", api_key="k")
+
+    async def promote() -> bool:
+        return True
+
+    runtime = await _provider_runtime(
+        _ModelAwareProvider(endpoints=True, auth_fallback=True),
+        None,
+        fallback=fallback,
+        promote=promote,
+    )
+
+    assert runtime.harness.config["fallback"] == {"model": "pool-model", "base_url": "https://pool"}
+    assert "model" not in runtime.harness.config, "only the fallback was chosen; the CLI keeps its default model"
+    assert runtime._promote_fallback_model is promote
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_provider_member_without_auth_fallback_rejects_a_fallback():
+    fallback = ExternalCliModelConfig(provider="openai", model="pool-model", api_base="https://pool")
+
+    with pytest.raises(BaseError, match="no authentication fallback"):
+        await _provider_runtime(_ModelAwareProvider(endpoints=True), None, fallback=fallback)
+
+
+@pytest.mark.level0
+@pytest.mark.parametrize(
+    ("endpoints", "auth_fallback", "kept"),
+    [(True, True, True), (True, False, False), (False, True, False)],
+)
+def test_spawn_hands_the_fallback_only_to_providers_with_auth_fallback(
+    endpoints: bool,
+    auth_fallback: bool,
+    kept: bool,
+):
+    from openjiuwen.agent_teams.external.cli_agent.backends import takes_auth_fallback
+    from openjiuwen.agent_teams.spawn.external_cli_spawn import _negotiate_provider_fallback
+
+    fallback = ExternalCliModelConfig(provider="openai", model="pool-model", api_base="https://pool")
+    # The fallback is a pool entry: AUTH_FALLBACK without ENDPOINT_MODELS cannot take it.
+    register_harness_provider("acme", lambda: _ModelAwareProvider(endpoints=endpoints, auth_fallback=auth_fallback))
+    try:
+        assert takes_auth_fallback("acme") is kept
+        assert (_negotiate_provider_fallback(_ctx(member="dev-1", cli_agent="acme"), fallback) is fallback) is kept
+    finally:
+        unregister_harness_provider("acme")
+    assert takes_auth_fallback("claude")
+    assert takes_auth_fallback("codex")
+    assert not takes_auth_fallback("gemini")
