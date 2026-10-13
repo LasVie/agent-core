@@ -29,6 +29,9 @@ __all__ = [
     "BrowserWorkingContextProcessor",
     "BrowserWorkingContextProcessorConfig",
     "BrowserWorkingContextRail",
+    "EXTERNAL_TOOL_PROPERTY",
+    "browser_remaining_time",
+    "external_tool_role",
     "build_browser_runtime_mcp_config",
     "browser_tools",
     "controller",
@@ -54,6 +57,9 @@ def __getattr__(name: str) -> Any:
         module = import_module(
             "openjiuwen.harness.tools.browser_move.playwright_runtime.browser_working_context_processor"
         )
+        return getattr(module, name)
+    if name in {"EXTERNAL_TOOL_PROPERTY", "browser_remaining_time", "external_tool_role"}:
+        module = import_module("openjiuwen.harness.tools.browser_move.playwright_runtime.runtime")
         return getattr(module, name)
     if name == "BrowserWorkingContextRail":
         module = import_module("openjiuwen.harness.tools.browser_move.playwright_runtime.browser_working_context_rail")

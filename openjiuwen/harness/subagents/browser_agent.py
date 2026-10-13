@@ -39,6 +39,7 @@ from openjiuwen.harness.tools.browser_move.playwright_runtime.browser_capabiliti
     resolve_browser_capabilities,
 )
 from openjiuwen.harness.tools.browser_move.playwright_runtime.runtime import (
+    EXTERNAL_TOOL_PROPERTY,
     BrowserAgentRuntime,
     BrowserRuntimeRail,
 )
@@ -217,6 +218,24 @@ def _browser_model_with_temperature(model: Model, temperature: float) -> Model:
     return browser_model
 
 
+def _external_windowed_tools(tools: Optional[List[Tool | ToolCard]]) -> tuple[list[str], dict[str, int]]:
+    """Names and inline limits of external tools that opt into result windowing."""
+    names: list[str] = []
+    limits: dict[str, int] = {}
+    for tool in tools or []:
+        card = getattr(tool, "card", tool)
+        properties = getattr(card, "properties", None)
+        declared = properties.get(EXTERNAL_TOOL_PROPERTY) if isinstance(properties, dict) else None
+        name = str(getattr(card, "name", "") or "")
+        if not name or not isinstance(declared, dict) or not declared.get("windowed"):
+            continue
+        names.append(name)
+        limit = declared.get("inline_limit_chars")
+        if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+            limits[name] = limit
+    return names, limits
+
+
 def build_browser_agent_config(
     model: Model,
     *,
@@ -378,14 +397,16 @@ def create_browser_agent(
         "browser_find",
         "browser_evaluate",
     ]
+    external_windowed_tools, inline_limit_by_tool = _external_windowed_tools(tools)
     browser_tool_result_window_processor = (
         "ToolResultWindowProcessor",
         ToolResultWindowProcessorConfig(
-            tool_names=browser_windowed_tool_names,
+            tool_names=[*browser_windowed_tool_names, *external_windowed_tools],
             keep_last_k=2,
             trim_size=1000,
             min_offload_chars=1000,
             small_result_trim_size=1000,
+            inline_limit_by_tool=inline_limit_by_tool,
         ),
     )
     caller_context_rails = [rail for rail in (rails or []) if isinstance(rail, ContextProcessorRail)]

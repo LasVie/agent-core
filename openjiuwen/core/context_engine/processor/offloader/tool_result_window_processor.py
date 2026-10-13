@@ -72,6 +72,15 @@ class ToolResultWindowProcessorConfig(BaseModel):
     )
     """In-context preview length used when persistence would cost more than it saves."""
 
+    inline_limit_by_tool: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Per-tool size limit in characters. A matching result longer than its tool's limit is "
+            "offloaded as soon as it is added, even while it is among the newest keep_last_k results."
+        ),
+    )
+    """Keeps a single large result (for example a long command output) out of the model context."""
+
     offload_file_prefix: str = Field(
         default="ToolResultWindowProcessor",
         description="Processor-specific filename prefix used under the workspace offload directory.",
@@ -105,6 +114,8 @@ class ToolResultWindowProcessor(ToolResultBudgetProcessor):
     ) -> bool:
         all_messages = context.get_messages() + messages_to_add
         matched = self._matched_indices(all_messages)
+        if any(self._exceeds_inline_limit(all_messages[idx], all_messages) for idx in matched):
+            return True
         if len(matched) <= self.config.keep_last_k:
             return False
         outside_window = matched[: -self.config.keep_last_k]
@@ -123,17 +134,21 @@ class ToolResultWindowProcessor(ToolResultBudgetProcessor):
         updated_messages = list(context_messages)
 
         matched = self._matched_indices(updated_messages)
-        if len(matched) <= self.config.keep_last_k:
+        oversized = {idx for idx in matched if self._exceeds_inline_limit(updated_messages[idx], updated_messages)}
+        outside_window = set(matched[: -self.config.keep_last_k]) if len(matched) > self.config.keep_last_k else set()
+        targets = sorted(outside_window | oversized)
+        if not targets:
             return None, messages_to_add
 
         modified_indices: List[int] = []
-        for idx in matched[: -self.config.keep_last_k]:
+        for idx in targets:
             message = updated_messages[idx]
             if self._is_already_offloaded(message):
                 continue
             content = getattr(message, "content", "")
             if (
-                self.config.min_offload_chars > 0
+                idx not in oversized
+                and self.config.min_offload_chars > 0
                 and isinstance(content, str)
                 and len(content) < self.config.min_offload_chars
             ):
@@ -151,6 +166,21 @@ class ToolResultWindowProcessor(ToolResultBudgetProcessor):
             messages_to_modify=sorted(modified_indices),
         )
         return event, updated_messages[context_size:]
+
+    def _exceeds_inline_limit(self, message: BaseMessage, messages: List[BaseMessage]) -> bool:
+        """Whether a result is larger than its tool's inline limit and still in context."""
+        limits = self.config.inline_limit_by_tool
+        if not limits or self._is_already_offloaded(message):
+            return False
+        content = getattr(message, "content", "")
+        if not isinstance(content, str):
+            return False
+        tool_name = self._resolve_target_tool_name(message, messages)
+        if not tool_name:
+            return False
+        # Match like the window allowlist: registered names may carry a prefix.
+        limit = next((value for name, value in limits.items() if tool_name.endswith(name)), None)
+        return bool(limit) and len(content) > int(limit)
 
     def _matched_indices(self, messages: List[BaseMessage]) -> List[int]:
         allowlist = set(self.config.tool_names)
