@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from openjiuwen.agent_teams.agent.team_agent import TeamAgent
     from openjiuwen.agent_teams.schema.team import (
         ExternalCliAgentSpec,
+        ExternalCliModelConfig,
         TeamAgentSpec,
         TeamRuntimeContext,
     )
