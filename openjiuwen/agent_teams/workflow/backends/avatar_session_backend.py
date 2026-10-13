@@ -133,6 +133,9 @@ class _SessionState:
     """This avatar's token rail, mounted for the session's whole life (unlike a
     worker's, which lives for one call). Its tally is cumulative across turns, so
     a turn's own cost is the delta across the round."""
+    # The picked expert's own prompt, prepended to the session role prompt so the
+    # avatar answers in that expert's voice. None = no agent_template on this session.
+    persona: str | None = None
     harness: Any = None  # TeamHarness, built lazily by open_session
     turns_executed: int = 0
     # The child session id this avatar runs on — a stable derived id (not a
@@ -185,6 +188,9 @@ class AvatarSessionManager:
         team_backend: The host team backend handle — source of the team model
             pool for third-party session planning. ``None`` (tests / a backend
             without a team) leaves the pool empty.
+        gate_agent_template: Validates a call's ``agent_template`` option and
+            returns the picked expert entry (``None`` when the option is
+            absent). Same gate the single-shot worker path uses.
     """
 
     def __init__(
@@ -210,6 +216,7 @@ class AvatarSessionManager:
         skill_visibility_fn: Callable[[Any, str], Any] | None = None,
         external_cli_agents: Sequence[Any] = (),
         gate_agent_type: Callable[[str], Any] | None = None,
+        gate_agent_template: Callable[[dict], Any] | None = None,
         external_cwd: Callable[[str, Any], str | None] | None = None,
         team_backend: Any = None,
         progress_sink: Any = None,
@@ -252,6 +259,7 @@ class AvatarSessionManager:
         self._reply_topic_subscribed = False
         self._external_cli_agents: tuple[Any, ...] = tuple(external_cli_agents)
         self._gate_agent_type = gate_agent_type
+        self._gate_agent_template = gate_agent_template
         self._external_cwd = external_cwd
         self._team_backend = team_backend
         # The host backend's run progress sink, forwarded from
@@ -306,7 +314,20 @@ class AvatarSessionManager:
         drift the counter across a resume). When ``None`` (human sessions, or a
         backend invoked directly) a fresh name is minted.
         """
-        base = self._human_base_spec if kind == "human" else self._worker_base_spec
+        if kind == "human" and opts.get("agent_template"):
+            raise BackendError(
+                "agent_template is not valid for human sessions (a person answers, not an expert avatar)"
+            )
+        gate = self._gate_agent_template
+        if kind != "human" and opts.get("agent_template") and gate is None:
+            raise BackendError("this backend has no expert gate; agent_template is unavailable")
+        expert = gate(opts) if (kind != "human" and gate is not None) else None
+        if kind == "human":
+            base = self._human_base_spec
+        elif expert is not None:
+            base = expert.spec
+        else:
+            base = self._worker_base_spec
         agent_type = opts.get("agent_type")
         if agent_type and kind == "human":
             raise BackendError("agent_type is not valid for human sessions (a person answers, not a CLI)")
@@ -341,6 +362,7 @@ class AvatarSessionManager:
             spec_base=base,
             instructions=instructions,
             member_name=member_name,
+            persona=expert.persona if expert is not None else None,
             budget_rail=SwarmflowBudgetRail(self._budget, workflow_budget=self._workflow_budget),
             session_id=self._derive_avatar_session_id(member_name),
             agent_type=agent_type,
@@ -1485,8 +1507,10 @@ class AvatarSessionManager:
 
     @staticmethod
     def _session_system_prompt(state: _SessionState) -> str:
-        """Compose the avatar's system prompt: role prompt + caller instructions."""
+        """Compose the avatar's system prompt: [persona +] role prompt [+ caller instructions]."""
         base = _SESSION_SYS_PROMPT_HUMAN if state.kind == "human" else _SESSION_SYS_PROMPT_AGENT
+        if state.persona:
+            base = f"{state.persona}\n\n{base}"
         if state.instructions:
             return f"{base}\n\n{state.instructions}"
         return base
