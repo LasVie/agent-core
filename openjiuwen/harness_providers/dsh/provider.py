@@ -31,7 +31,7 @@ class DshHarnessProvider:
         if choice.effort is not None:
             raise ValueError("DSH has no reasoning effort setting")
         if fallback is not None:
-            raise ValueError("DSH has no fallback model")
+            raise ValueError("DSH has no authentication fallback")
         endpoint = choice.endpoint
         values = {
             "model": choice.model,

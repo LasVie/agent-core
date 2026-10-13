@@ -293,11 +293,14 @@ def provider_model_config(
 
     Raises:
         ValueError: When the provider configures no models, takes no endpoint
-            models while ``choice`` names an endpoint, or rejects the choice.
+            models while ``choice`` names an endpoint, has no authentication
+            fallback while ``fallback`` is given, or rejects the choice.
     """
     resolved = resolve_provider(provider)
     if not isinstance(resolved, ModelConfigProvider):
         raise ValueError(f"harness provider {provider!r} does not configure models")
+    if fallback is not None and not resolved.card.supports(HarnessCapability.AUTH_FALLBACK):
+        raise ValueError(f"harness provider {provider!r} has no authentication fallback")
     uses_endpoint = choice.endpoint is not None or (fallback is not None and fallback.endpoint is not None)
     if uses_endpoint and not resolved.card.supports(HarnessCapability.ENDPOINT_MODELS):
         raise ValueError(f"harness provider {provider!r} does not take endpoint models")

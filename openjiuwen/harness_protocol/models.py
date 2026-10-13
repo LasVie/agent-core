@@ -95,6 +95,9 @@ class HarnessCapability(str, Enum):
     # ``ModelConfigProvider.model_config`` accepts a ``ModelChoice`` with an
     # ``endpoint`` (host-supplied API base / key), not only built-in models.
     ENDPOINT_MODELS = "endpoint_models"
+    # A built-in model failing authentication switches the session once to the
+    # ``fallback`` given to ``model_config``, after the host ratifies it.
+    AUTH_FALLBACK = "auth_fallback"
 
 
 class HostCapability(str, Enum):
@@ -241,6 +244,13 @@ class ModelSelection:
                 raise ValueError(f"model selection {name} must be a non-empty string when provided")
 
 
+# Provider interaction a harness sends before switching to its fallback model;
+# a host that completes it has persisted the switch.
+AUTH_FALLBACK_REQUEST_TYPE = "auth_fallback"
+# Provider event announcing that the fallback model now serves the session.
+AUTH_FALLBACK_EVENT_TYPE = "auth_fallback_activated"
+
+
 @dataclass(frozen=True, slots=True)
 class ModelEndpoint:
     """A host-supplied model endpoint, as opposed to the CLI's own login.
@@ -375,6 +385,8 @@ __all__ = [
     "HostCapability",
     "JsonObject",
     "JsonValue",
+    "AUTH_FALLBACK_EVENT_TYPE",
+    "AUTH_FALLBACK_REQUEST_TYPE",
     "ModelChoice",
     "ModelEndpoint",
     "ModelOption",
