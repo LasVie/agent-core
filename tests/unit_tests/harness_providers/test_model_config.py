@@ -61,5 +61,10 @@ def test_dsh_rejects_what_it_has_no_setting_for() -> None:
     }
     with pytest.raises(ValueError, match="effort"):
         provider_model_config("dsh", ModelChoice(model="m", effort="high"))
-    with pytest.raises(ValueError, match="fallback"):
+    with pytest.raises(ValueError, match="no authentication fallback"):
         provider_model_config("dsh", ModelChoice(model="m"), fallback=ModelChoice(model="n"))
+
+
+@pytest.mark.parametrize(("provider", "expected"), [("claudecode", True), ("codex", True), ("dsh", False)])
+def test_auth_fallback_is_a_declared_capability(provider: str, expected: bool) -> None:
+    assert resolve_provider(provider).card.supports(HarnessCapability.AUTH_FALLBACK) is expected
