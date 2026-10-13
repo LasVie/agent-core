@@ -44,8 +44,10 @@ jiuwenswarm 的设置页要让用户上传 provider 包（可附 CLI 可执行�
      名的模型分支；provider 不能跑的选择（如 ACP 带 effort）是 `AGENT_TEAM_CONFIG_INVALID`。
    - 端点模型只交给声明 `ENDPOINT_MODELS` 的三方 provider；未声明时 spawn 丢弃并记日志，
      `_provider_filter_for_cli` 也不向 leader 列出池里的模型。
-   - 认证 fallback 是 Claude / Codex 的行为，三方成员一律不带。运行中切换不变，仍是
-     `set_model_selection`（card 声明 `MODEL_SELECTION` 才可用）。
+   - 认证 fallback 按能力协商（harness [[F_09_auth-fallback-as-a-protocol-capability]]，修订于
+     2026-10-13：此前写死为 Claude / Codex 专属，导致 kimi 成员因必填的 `fallback_model_name` 无法创建）：
+     card 声明 `AUTH_FALLBACK` 的三方成员拿到池里的回退模型并绑定持久化，其余不带；`fallback_model_name`
+     改为可选。运行中切换不变，仍是 `set_model_selection`（card 声明 `MODEL_SELECTION` 才可用）。
    `ExternalCliAgentSpec` 的 `model_config` / `builtin_models` 改为只拒绝适配器型 CLI。
 5. **只拒绝真正不适用的选项**：`command_override` / `codex_bin` / `ssh_transport` / claude 与 codex
    专属超时、缓冲参数配在三方成员上时直接 `AGENT_TEAM_CONFIG_INVALID`，而不是静默忽略。
