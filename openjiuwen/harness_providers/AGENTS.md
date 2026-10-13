@@ -149,14 +149,22 @@ provider packages `openjiuwen/harness/docs/features/F_07_third-party-harness-pro
    and adds `rendered_result` (the text the model read) as a separate field when
    the provider supplies it; DeepAgent's `_ObservationRail` carries it through
    `ItemLifecycleEvent.data` and the tool-result `ContentBlock.data`.
-8. **Provider extensions are ratified before they commit.** A switch that
-   changes the provider's persistent identity (today: the Claude Code / Codex
-   authentication fallback) goes through
-   `SerializedTurnHarness._confirm_provider_extension`, which sends a
-   `ProviderInteractionRequest(request_type="auth_fallback")`. A host without
+8. **The authentication fallback runs in the skeleton and is ratified before
+   it commits.** Providers declaring `AUTH_FALLBACK` implement only
+   `_auth_fallback_payload`, `_reconnect_for_auth(fallback=)` and
+   `_on_auth_endpoint_changed(fallback=)`; `SerializedTurnHarness` reacts to an
+   `auth_required` turn failure (once per turn, one activation per cycle) by
+   reconnecting the same session on the fallback, then sending a
+   `ProviderInteractionRequest(request_type=AUTH_FALLBACK_REQUEST_TYPE)` through
+   `_confirm_provider_extension`, and replays the turn. A host without
    `PROVIDER_INTERACTION` implicitly agrees; a host that declines makes the
-   harness reconnect the native endpoint (same session / thread) and fail the
-   turn with the original `auth_required` error. If reconnecting the original
+   harness reconnect the primary model (same session / thread) and fail the
+   turn with the original `auth_required` error. A ratification that raises
+   or answers out of protocol counts as a decline, and nothing in the fallback
+   flow may escape the supervisor: the turn always ends. A provider whose
+   restart can fail keeps the session id and restores it on the next turn,
+   on the model selected at runtime. Never loop on the fallback inside a
+   provider's own turn code. If reconnecting the original
    endpoint fails, the next accepted input attempts one reconnect before
    dispatch. Keep the same session/thread; never replay the failed input or
    silently use the declined fallback. `HarnessIOAdapter` only

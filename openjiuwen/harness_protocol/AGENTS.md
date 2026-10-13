@@ -114,6 +114,11 @@ boundary. Do not introduce Round aliases for these concepts.
     provider's configuration by the optional `ModelConfigProvider.model_config`
     provider hook. A provider takes endpoint models only when its card declares
     `ENDPOINT_MODELS`. Hosts never branch on a provider name to set a model.
+19. The authentication fallback is the `AUTH_FALLBACK` capability: a provider
+    declaring it accepts `model_config(..., fallback=)`, asks the host with an
+    `AUTH_FALLBACK_REQUEST_TYPE` provider interaction before switching and
+    announces the switch with an `AUTH_FALLBACK_EVENT_TYPE` provider event.
+    Both names are the contract between providers and hosts.
 
 ## Compatibility
 

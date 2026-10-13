@@ -6,8 +6,8 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness_providers/`（`base.py` / `stream.py` / `io_adapter.py` / `factory.py` / `inputs.py` / `jsonsafe.py` / `native/` / `claudecode/` / `codex/` / `dsh/`） |
-| 最近一次修订日期 | 2026-10-12 |
-| 关联 feature | F_03_harness-providers-and-manifest-factory.md、F_07_third-party-harness-provider-packages.md、F_08_provider-owned-model-config.md、agent_teams F_113_external-harness-builtin-model-selection.md |
+| 最近一次修订日期 | 2026-10-13 |
+| 关联 feature | F_03_harness-providers-and-manifest-factory.md、F_07_third-party-harness-provider-packages.md、F_08_provider-owned-model-config.md、F_09_auth-fallback-as-a-protocol-capability.md、agent_teams F_113_external-harness-builtin-model-selection.md |
 
 ## 范围 / 边界
 
@@ -64,12 +64,18 @@
    DELTA 直出，FINAL/SNAPSHOT 只补前缀增量；`send(InteractiveInput)` 先应答 pending interaction，
    未匹配时以 `metadata.kind="interactive_input"` 转发；`delivery_mode(immediate)` 按状态与 STEER
    能力选 AUTO / STEER / FOLLOW_UP。
-8. **provider 扩展先 ratify 再提交**：会改变 provider 持久身份的一次性切换（当前只有 Claude Code /
-   Codex 的认证 fallback）在生效前经 `SerializedTurnHarness._confirm_provider_extension(request_type,
-   payload)` 发 `ProviderInteractionRequest`（`request_type="auth_fallback"`，payload
-   `{model, api_base[, provider]}`）。宿主未声明 `PROVIDER_INTERACTION` 或未装 interactions 时视为
-   同意；声明了但应答非 `COMPLETED` 时 harness 必须断开 fallback client、用原 session / thread 重连
-   原生端点并让当前 Turn 按原 `auth_required` 失败，不发布 `auth_fallback_activated`。
+8. **认证回退由骨架执行、先 ratify 再提交**（F_09）：card 声明 `AUTH_FALLBACK` 的 provider 只实现
+   `_auth_fallback_payload` / `_reconnect_for_auth(fallback=)` / `_on_auth_endpoint_changed(fallback=)`
+   三个钩子；`SerializedTurnHarness` 在回合 `FAILED` 且类别为 `auth_required` 时执行
+   `_activate_auth_fallback`：supervisor 每回合至多调用一次、每 cycle 至多激活一次，先在回退模型上恢复同一会话重连，再经
+   `_confirm_provider_extension` 发 `ProviderInteractionRequest`（`AUTH_FALLBACK_REQUEST_TYPE`，payload
+   `{model, api_base[, provider]}`）；宿主未声明 `PROVIDER_INTERACTION` 或未装 interactions 时视为同意。
+   确认后置 `fallback_activated`、发 `AUTH_FALLBACK_EVENT_TYPE` 并重放本回合；应答非 `COMPLETED` 时重连回主模型、
+   当前 Turn 按原 `auth_required` 失败，不发布激活事件。确认处理器抛异常或应答不合协议等同拒绝；回退流程的任何
+   异常都不得逃出 supervisor，回合保留原失败照常终结；宿主确认之后 `_on_auth_endpoint_changed` 失败只记日志，
+   照常发激活事件并重放（切换已落库、会话已在回退上）。回退重启失败时 provider 把活动端点复位为主模型，
+   下一回合恢复的永远是宿主知道的模型。Claude Code / Codex / 三方 ACP / codex-app-server
+   走同一流程，provider 内部不再各自循环重试。
 9. **manifest 是 DeepAgent-first**：`create_harness` 对 `native` 传整份 template
    （`NativeHarnessProvider.create({"deep_agent", "agent_template", "session_id", "language",
    "event_buffer_capacity"})`）；对其余 provider 只把 manifest 的模型映射进 provider 配置（显式
@@ -79,6 +85,7 @@
    `ModelConfigProvider.model_config(ModelChoice)`（F_08）：manifest 模型有 `api_base` 即端点模型，
    card 未声明 `ENDPOINT_MODELS` 时 `ValueError`；provider 没有 `model_config` 时 manifest 不能带模型。
    claudecode / codex / dsh 都实现 `model_config` 并声明 `ENDPOINT_MODELS`；团队成员的模型走同一入口。
+   `fallback=` 只交给声明 `AUTH_FALLBACK` 的 provider（claudecode / codex），否则 `ValueError`。
 10. **模型控制由骨架承担**（F_113）：`SerializedTurnHarness` 实现 `HarnessModelControl`——`list_models`
     / `set_model` 先按 card 门控；`set_model` 在 `_command_lock` 内判空闲则立即经
     `_apply_model_selection` 应用，否则按字段合并进暂存选择，由 supervisor 在 STARTED 之后、

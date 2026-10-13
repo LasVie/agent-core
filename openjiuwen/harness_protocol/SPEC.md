@@ -94,7 +94,11 @@ capability 的实现抛 `UnsupportedHarnessCapabilityError`。
   运行时自身登录 / 配置提供的模型），否则是宿主提供的 `ModelEndpoint(api_base, api_key, provider)`。
   provider 实现可选 SPI `ModelConfigProvider.model_config(choice, *, fallback=None) -> JsonObject`，
   返回并入 `create(config)` 的配置片段，不能跑的组合抛 `ValueError`；接收端点模型须在 card 声明
-  `ENDPOINT_MODELS`。`fallback` 是 provider 自行切换的备选模型，没有该机制的 provider 遇到即报错。
+  `ENDPOINT_MODELS`。`fallback` 是认证失败时切换的备选模型，只交给声明 `AUTH_FALLBACK` 的 provider：
+  回合以 `auth_required` 失败时，harness 在回退模型上恢复同一会话，先发 `ProviderInteractionRequest`
+  （`request_type = AUTH_FALLBACK_REQUEST_TYPE = "auth_fallback"`）请宿主确认（落库），确认后发
+  `ProviderEvent(event_type = AUTH_FALLBACK_EVENT_TYPE = "auth_fallback_activated")` 并重放本回合；
+  宿主拒绝则回到主模型、回合保持失败。
 - `ModelOption(model_id, display_name, description, efforts, default_effort, is_default, extensions)`：
   `efforts` 为空表示不可调；`default_effort` 必须属于 `efforts`；`extensions` 保留厂商目录字段。
 - effort 是 provider 词汇（字符串），协议层不枚举。延后应用失败时，实现应发 WARNING

@@ -31,7 +31,8 @@ CLI 配置上，配置坏了无从补救），而要支持它就得在团队层�
    声明；`harness_providers.factory.provider_model_config` 统一门控（无 `model_config` → "does not
    configure models"，端点选择而 card 未声明 → "does not take endpoint models"）。
 4. **认证 fallback 交给 provider**：`fallback=` 只有 Claude Code / Codex 接收；"只在内置模型上挂
-   fallback"是团队可靠性策略，仍在团队层判断。
+   fallback"是团队可靠性策略，仍在团队层判断。（后续由 [[F_09_auth-fallback-as-a-protocol-capability]]
+   改为 `AUTH_FALLBACK` 能力门控，三方 provider 也可接收。）
 5. **manifest 的模型有 `api_base` 才算端点**：`ModelClientConfig` 本身要求 `api_base`，所以 manifest
    模型实际总是端点模型；只接内置模型的 provider（ACP / oneshot 模板）在 `create_harness` 时明确报错，
    不再像 F_07 那样只转发一个它多半不认识的模型名、拖到 start 才失败。
