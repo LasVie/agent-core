@@ -182,6 +182,13 @@ i18n、工具生命周期。`tools/` 是 harness 最大的子模块（130 文件
     `browser_phase verify` 的 `inspect_cart:true` 仅执行固定 DOM 读取，返回 reader 线索；不认证
     完整性、不修改页面或关闭基线。cart_delta 的 requirement_id 允许重绑 reader，不允许改写原基线/增量。
 
+16. **Browser 外部工具按卡片声明参与运行时**：`ToolCard.properties["browser_runtime"]`
+    的 `role` 为 `discovery` 或 `action`；未声明的工具维持原行为。discovery 不消耗阶段与
+    外部操作预算；action 使用独立的任务预算（16 次），同一工具与完整参数最多执行 2 次。
+    重复判定使用完整参数的规范 JSON 哈希，忽略映射键顺序，保留任意嵌套字段与长参数；
+    不复用 Playwright 的语义字段筛选或截断签名，也不把原始参数写入签名账本。Core 不认识
+    具体命令来源或 `site/command` 字段。`windowed`、`inline_limit_chars` 声明结果窗口策略。
+
 ## Browser 运行时减法（F_17，当前契约）
 
 阶段计数、自然语言验收和可选条件只提供诊断，不阻断一般动作。删除阶段次数上限、

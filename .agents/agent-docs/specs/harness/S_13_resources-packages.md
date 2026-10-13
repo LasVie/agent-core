@@ -146,7 +146,7 @@ class LoadRecord(BaseModel):
     refs: list[ResourceRef]
 
 async def apply_extension_hot(agent: DeepAgent, parts: ExtensionParts) -> list[ResourceRef]
-async def unapply_extension_hot(agent: DeepAgent, record: LoadRecord) -> list[str]
+async def unapply_extension_hot(agent: DeepAgent, refs: list[ResourceRef]) -> list[str]
 ```
 
 错误 / 返回语义：
@@ -157,6 +157,8 @@ async def unapply_extension_hot(agent: DeepAgent, record: LoadRecord) -> list[st
 - 解析失败（factory_ref 不可解析 / skill 目录缺失）→ 抛 `ValueError` 族。
 - `apply_extension_hot` 绑定中途失败 → 已绑 ref 全部撤销后 re-raise（本调用原子性）。
 - `unapply_extension_hot` 返回解除绑定的标签列表（供宿主日志 / UI）。
+- 公共 `DeepAgent.unload_extension(record)` 先用 `record.load_id` 查找本 Agent 的账本，
+  再将账本中的 `refs` 传给 `unapply_extension_hot`；不信任调用者传入的 `record.refs`。
 - `DeepAgent.load_agent_template_spec` 重复调用（`_prepared`）→ 无操作。
 
 ## 数据结构
