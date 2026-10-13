@@ -582,7 +582,10 @@ class SerializedTurnHarness(ABC):
             logger.warning("[%s] host failed to ratify the authentication fallback: %s", self.card.name, exc)
             ratified = False
         if not ratified:
-            logger.warning("[%s] host declined the authentication fallback; restoring the primary model", self.card.name)
+            logger.warning(
+                "[%s] host declined the authentication fallback; restoring the primary model",
+                self.card.name,
+            )
             try:
                 await self._reconnect_for_auth(fallback=False)
             except Exception as exc:

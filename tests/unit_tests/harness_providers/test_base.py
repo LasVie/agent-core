@@ -507,11 +507,19 @@ class _Ratifier:
         self.requests.append(request)
         return ProviderInteractionResponse(request_id=request.request_id, status=self.status)
 
-    async def cancel(self, request_id: str, *, reason: InteractionCancelReason = InteractionCancelReason.PROVIDER_WITHDREW) -> None:
+    async def cancel(
+        self,
+        request_id: str,
+        *,
+        reason: InteractionCancelReason = InteractionCancelReason.PROVIDER_WITHDREW,
+    ) -> None:
         _ = request_id, reason
 
 
-async def _fallback_turn(harness: _FallbackHarness, status: InteractionResponseStatus) -> tuple[_Ratifier, list[HarnessEvent]]:
+async def _fallback_turn(
+    harness: _FallbackHarness,
+    status: InteractionResponseStatus,
+) -> tuple[_Ratifier, list[HarnessEvent]]:
     ratifier = _Ratifier(status)
     await harness.start(
         _context(interactions=ratifier, host_capabilities=frozenset({HostCapability.PROVIDER_INTERACTION}))
@@ -573,7 +581,12 @@ class _BrokenRatifier:
             return ProviderInteractionResponse(request_id="someone-else", status=InteractionResponseStatus.COMPLETED)
         raise RuntimeError("promotion store unavailable")
 
-    async def cancel(self, request_id: str, *, reason: InteractionCancelReason = InteractionCancelReason.PROVIDER_WITHDREW) -> None:
+    async def cancel(
+        self,
+        request_id: str,
+        *,
+        reason: InteractionCancelReason = InteractionCancelReason.PROVIDER_WITHDREW,
+    ) -> None:
         _ = request_id, reason
 
 
