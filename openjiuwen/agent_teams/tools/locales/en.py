@@ -256,13 +256,14 @@ STRINGS: dict[str, str] = {
         "a model so the agent uses its own default model"
     ),
     "spawn_external_cli.fallback_model_name": (
-        "Required, but may be null when no compatible model exists. When a compatible model is available, "
-        "select it from the team model pool according to the model API protocol supported by this third-party "
-        "agent. Prefer the current model when it is present in the pool and its protocol is compatible; when the "
+        "Authentication fallback model. Only valid for the cli_agent kinds listed under "
+        "compatible_fallback_models in the catalog below; any other cli_agent has no authentication fallback "
+        "and the field must be omitted. Required when that cli_agent has a compatible model: select it from the "
+        "team model pool according to the model API protocol supported by this third-party agent. Prefer the current model when it is present in the pool and its protocol is compatible; when the "
         "current model is absent from the pool or its protocol is incompatible, select another compatible model. "
         "Never invent an unavailable or incompatible model. It is used for automatic fallback "
         "when the agent uses its own default model but authentication is unavailable. It applies only to "
-        "authentication failures explicitly reported by the runtime. Use null only when the team model pool has "
+        "authentication failures explicitly reported by the runtime. Omit it when the team model pool has "
         "no compatible model; the agent can then use its own default model without automatic fallback"
     ),
     "spawn_external_cli.builtin_model": (

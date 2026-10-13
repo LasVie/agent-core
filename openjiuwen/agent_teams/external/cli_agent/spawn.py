@@ -406,7 +406,6 @@ async def build_cli_runtime(
             "command_override": command_override,
             "codex_bin": codex_bin,
             "ssh_transport": ssh_transport,
-            "fallback_external_model_config": fallback_external_model_config,
             "claude_turn_idle_timeout_s": claude_turn_idle_timeout_s,
             "claude_max_buffer_size": claude_max_buffer_size,
             "codex_turn_idle_timeout_s": codex_turn_idle_timeout_s,
@@ -427,6 +426,8 @@ async def build_cli_runtime(
             mcp_server_name=mcp_server_name,
             mcp_server_command=mcp_server_command,
             external_model_config=external_model_config,
+            fallback_external_model_config=fallback_external_model_config,
+            promote_fallback_model=promote_fallback_model,
             system_prompt=system_prompt,
             system_prompt_mode=system_prompt_mode,
             skills=skills,
@@ -901,6 +902,8 @@ def _build_provider_member_runtime(
     mcp_server_name: str,
     mcp_server_command: tuple[str, ...],
     external_model_config: ExternalCliModelConfig | None,
+    fallback_external_model_config: ExternalCliModelConfig | None,
+    promote_fallback_model: Callable[[], Awaitable[bool]] | None,
     system_prompt: str | None,
     system_prompt_mode: str | None,
     skills: tuple[SkillSource, ...],
@@ -915,7 +918,8 @@ def _build_provider_member_runtime(
     The member's model reaches the provider like Claude's and Codex's: as a
     ``ModelChoice`` mapped by the provider's ``model_config``. The spawn path
     only hands over an endpoint model when the card declares
-    ``ENDPOINT_MODELS``; the authentication fallback is Claude / Codex only.
+    ``ENDPOINT_MODELS``, and the authentication fallback only when it also
+    declares ``AUTH_FALLBACK``; the switch is persisted like Claude's and Codex's.
 
     The provider receives only the configuration keys every generated
     provider package shares (``cwd`` / ``env`` / ``inherit_process_env`` /
@@ -938,7 +942,7 @@ def _build_provider_member_runtime(
         config["cli_path"] = cli_path
     if system_prompt_mode is not None:
         config["system_prompt_mode"] = system_prompt_mode
-    config.update(_member_model_config(provider_name, external_model_config, None))
+    config.update(_member_model_config(provider_name, external_model_config, fallback_external_model_config))
     harness = resolve_provider(provider_name).create(config)
     team_logger.info(
         "[external-cli] preparing provider member {} provider={} cwd={} cli_path_configured={} inject_mcp={}",
@@ -958,6 +962,7 @@ def _build_provider_member_runtime(
         inject_mcp=inject_mcp,
         mcp_server_name=mcp_server_name,
     )
+    runtime.bind_fallback_promotion(promote_fallback_model)
     if inject_mcp and harness.card.supports(HarnessCapability.MCP_TOOLS):
         runtime.bind_mcp_servers(
             [

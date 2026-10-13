@@ -38,6 +38,8 @@ class ExternalCliBackend:
     injects_system_prompt_via_arg: bool
     sdk_requirement: SdkRequirement | None = None
     """SDK the backend needs at spawn time; ``None`` for subprocess adapters."""
+    provider: str | None = None
+    """Harness provider driving the member; ``None`` for subprocess adapters."""
 
 
 _SDK_BACKENDS: dict[str, ExternalCliBackend] = {
@@ -51,6 +53,7 @@ _SDK_BACKENDS: dict[str, ExternalCliBackend] = {
             distribution="claude-agent-sdk",
             extra="claude",
         ),
+        provider="claudecode",
     ),
     "codex": ExternalCliBackend(
         name="codex",
@@ -62,6 +65,7 @@ _SDK_BACKENDS: dict[str, ExternalCliBackend] = {
             distribution="openai-codex",
             extra="codex",
         ),
+        provider="codex",
     ),
 }
 
@@ -93,6 +97,7 @@ def backend_for(name: str) -> ExternalCliBackend | None:
             kind="provider",
             supports_command_override=False,
             injects_system_prompt_via_arg=True,
+            provider=name,
         )
     return None
 
@@ -115,6 +120,28 @@ def provider_takes_endpoint_models(name: str) -> bool:
 
     provider = resolve_provider(name)
     return isinstance(provider, ModelConfigProvider) and provider.card.supports(HarnessCapability.ENDPOINT_MODELS)
+
+
+def takes_auth_fallback(name: str) -> bool:
+    """Return whether CLI kind ``name`` switches to a team model when its login fails.
+
+    The fallback is a team pool entry on a host endpoint, so the member's
+    provider must map models (``ModelConfigProvider``) and its card must declare
+    both ``AUTH_FALLBACK`` and ``ENDPOINT_MODELS``; subprocess adapters never do.
+    """
+    backend = backend_for(name)
+    if backend is None or backend.provider is None:
+        return False
+    from openjiuwen.harness_protocol import HarnessCapability, ModelConfigProvider
+    from openjiuwen.harness_providers.factory import resolve_provider
+
+    provider = resolve_provider(backend.provider)
+    card = provider.card
+    return (
+        isinstance(provider, ModelConfigProvider)
+        and card.supports(HarnessCapability.AUTH_FALLBACK)
+        and card.supports(HarnessCapability.ENDPOINT_MODELS)
+    )
 
 
 def available_backends() -> tuple[str, ...]:
@@ -158,5 +185,6 @@ __all__ = [
     "is_known_backend",
     "missing_sdk_requirement",
     "provider_takes_endpoint_models",
+    "takes_auth_fallback",
     "third_party_providers",
 ]

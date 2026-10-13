@@ -40,6 +40,13 @@ def _provider_filter_for_cli(cli_agent: str) -> Callable[[str], bool] | None:
     return provider_filter_for_cli(cli_agent)
 
 
+def _takes_auth_fallback(cli_agent: str) -> bool:
+    """Return whether ``cli_agent`` switches to a team model when its own login fails."""
+    from openjiuwen.agent_teams.external.cli_agent import backends
+
+    return backends.takes_auth_fallback(cli_agent)
+
+
 def _model_api_protocol(provider: str) -> str:
     """Return the external CLI protocol label for a model provider."""
     from openjiuwen.agent_teams.external.cli_agent.model_compat import model_api_protocol
@@ -738,7 +745,7 @@ class SpawnExternalCliTool(_SpawnToolBase):
                     "description": fallback_description,
                 },
             },
-            "required": ["member_name", "display_name", "prompt", "cli_agent", "fallback_model_name"],
+            "required": ["member_name", "display_name", "prompt", "cli_agent"],
         }
         # Built-in model choice is an attribute-level capability: the two
         # properties exist only when some declared CLI kind offers a catalog.
@@ -802,6 +809,8 @@ class SpawnExternalCliTool(_SpawnToolBase):
             }
         compatible_by_cli: dict[str, list[dict[str, str]]] = {}
         for cli_agent in sorted(self.team.external_cli_kinds()):
+            if not _takes_auth_fallback(cli_agent):
+                continue
             provider_filter = _provider_filter_for_cli(cli_agent)
             if self.team.is_model_group_pool():
                 options = {
@@ -850,18 +859,14 @@ class SpawnExternalCliTool(_SpawnToolBase):
         member_name = inputs["member_name"]
         display_name = inputs.get("display_name")
         model_name = inputs.get("model_name")
-        if "fallback_model_name" not in inputs:
-            return self._fail("spawn_external_cli requires 'fallback_model_name' to be a model name or null")
-        raw_fallback_model_name = inputs["fallback_model_name"]
+        raw_fallback_model_name = inputs.get("fallback_model_name")
         if raw_fallback_model_name is not None and not isinstance(raw_fallback_model_name, str):
-            return self._fail("spawn_external_cli requires 'fallback_model_name' to be a model name or null")
-        fallback_model_name = (
-            raw_fallback_model_name.strip()
-            if isinstance(raw_fallback_model_name, str)
-            else None
-        )
-        if fallback_model_name == "":
-            return self._fail("spawn_external_cli requires 'fallback_model_name' to be a non-empty model name or null")
+            return self._fail("spawn_external_cli requires 'fallback_model_name' to be a model name when given")
+        # Omitted, null and blank all mean "no fallback model".
+        fallback_model_name = (raw_fallback_model_name or "").strip() or None
+        has_auth_fallback = _takes_auth_fallback(cli_agent)
+        if fallback_model_name is not None and not has_auth_fallback:
+            return self._fail(f"cli_agent '{cli_agent}' has no authentication fallback; omit 'fallback_model_name'")
         allocation = None
         fallback_allocation = None
         provider_filter = _provider_filter_for_cli(cli_agent)
@@ -904,9 +909,9 @@ class SpawnExternalCliTool(_SpawnToolBase):
                     )
                 )
         if fallback_model_name is None:
-            if compatible_model_names:
+            if compatible_model_names and has_auth_fallback:
                 return self._fail(
-                    "fallback_model_name cannot be null while compatible models are available for "
+                    "fallback_model_name is required while compatible models are available for "
                     f"cli_agent '{cli_agent}': {', '.join(compatible_model_names)}"
                 )
         elif preferred_current_model is not None and fallback_model_name != preferred_current_model:
@@ -939,8 +944,8 @@ class SpawnExternalCliTool(_SpawnToolBase):
                 compatible_hint = ", ".join(compatible_model_names) if compatible_model_names else "none"
                 return self._fail(
                     f"fallback_model_name '{fallback_model_name}' is unavailable or incompatible with "
-                    f"cli_agent '{cli_agent}' (compatible models: {compatible_hint}); use null only when no "
-                    "compatible model is available"
+                    f"cli_agent '{cli_agent}' (compatible models: {compatible_hint}); omit 'fallback_model_name' "
+                    "only when no compatible model is available"
                 )
         result = await self.team.spawn_external_cli_agent(
             member_name=member_name,

@@ -70,6 +70,30 @@ def _negotiate_provider_endpoint(
     return None
 
 
+def _negotiate_provider_fallback(
+    ctx: "TeamRuntimeContext",
+    config: ExternalCliModelConfig | None,
+) -> ExternalCliModelConfig | None:
+    """Drop a fallback model a third-party provider cannot switch to.
+
+    The fallback reaches the provider only when ``takes_auth_fallback`` holds:
+    its card declares ``AUTH_FALLBACK`` and, since the fallback is a pool
+    entry, ``ENDPOINT_MODELS``.
+    """
+    if config is None:
+        return None
+    from openjiuwen.agent_teams.external.cli_agent.backends import takes_auth_fallback
+
+    if takes_auth_fallback(ctx.cli_agent or ""):
+        return config
+    team_logger.info(
+        "[external-cli] provider {} has no authentication fallback; member {} runs without one",
+        ctx.cli_agent,
+        ctx.member_name,
+    )
+    return None
+
+
 def _external_cli_config_for_member(
     spec: "TeamAgentSpec",
     member_name: str | None,
@@ -466,10 +490,8 @@ async def external_cli_spawn(
             cli_agent=ctx.cli_agent,
         )
     if backend is not None and backend.kind == "provider":
-        # The authentication fallback is Claude / Codex behaviour; a
-        # third-party provider has none to switch to.
-        fallback_external_model_config = None
         external_model_config = _negotiate_provider_endpoint(ctx, external_model_config)
+        fallback_external_model_config = _negotiate_provider_fallback(ctx, fallback_external_model_config)
 
     async def promote_fallback_model() -> bool:
         """Persist the fallback model as this member's active model."""
