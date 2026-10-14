@@ -36,6 +36,10 @@ swarmflow worker 一直是 teammate 基 spec 的复印件：系统提示词写�
    换名指向 `fork()`；fork 子会话经 options 合并天然继承。
 7. **`_gate_agent_template` 先于 `_gate_agent_type` 运行**：两者同时非空时由模板闸优先报互斥错误（见决策 8）。非字符串值在引擎的 `_build_opts`（选项袋唯一校验点，紧随未知键校验）里先于 `AGENT_STARTED` 发射即被 `EngineError` 拒绝——`agent()`、`agent_session().send()` 与 fork 合并后的 options 因此共用同一道校验，脚本错误不会留下半身份的 agent 事件；backend 的 `isinstance` 判断保留为纵深防御（直连 backend 时仍走"不含 `/` 的裸成员名"报错分支，与含 `/` 的前缀名同源）。
 8. **与 `agent_type` 互斥**：模板决定运行时；同时出现是脚本错误。
+   Leader 永远不进专家表（它由 `AGENT.md` 另行装配、persona 是"分派与审阅"而非干活，且它正在驱动发起
+   workflow 的那段对话）；`agent_template="leader"` 由 `_gate_agent_template` 单独报"is the Team Leader, not a worker"，
+   而不是泛泛的"not a member"，免得作者去改包。否决把 Leader 单独派生成 worker——指挥官人设拼进 worker 提示词
+   会让它去找不存在的团队工具。
 9. **缺省零变化**：不传键时 spec / 提示词 / 签名 / 事件逐字节不变（`_execute_worker` 仅在命中时多传 `expert=`）。
 
 ## 已知遗留
