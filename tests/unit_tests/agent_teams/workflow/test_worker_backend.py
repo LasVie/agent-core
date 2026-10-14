@@ -1182,6 +1182,8 @@ def test_agent_template_absent_keeps_legacy_call_shape():
         ({"label": "x", "agent_template": "designer/clip"}, "bare member name"),
         ({"label": "x", "agent_template": 123}, "bare member name"),
         ({"label": "x", "agent_template": "scene"}, "available members: ['clip']"),
+        # the Leader is never in the expert table; say so instead of "not a member"
+        ({"label": "x", "agent_template": "leader"}, "Team Leader"),
         ({"label": "x", "agent_template": "clip", "agent_type": "codex"}, "mutually exclusive"),
     ],
 )
