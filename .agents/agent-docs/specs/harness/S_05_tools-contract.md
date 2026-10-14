@@ -189,6 +189,13 @@ i18n、工具生命周期。`tools/` 是 harness 最大的子模块（130 文件
     不复用 Playwright 的语义字段筛选或截断签名，也不把原始参数写入签名账本。Core 不认识
     具体命令来源或 `site/command` 字段。`windowed`、`inline_limit_chars` 声明结果窗口策略。
 
+17. **列表结果按行作证**：action 结果可选携带 `records`（行列表，每行为字段到标量值的映射）。
+    Browser runtime 按来源保留最新的行（`_record_evidence_rows`，每来源最多 20 行、最多 8 个
+    来源），卡片探针结果同样记为行。任一来源报告过行时，"前 N 条"只在同一来源有 N 行
+    带齐所需字段时才满足（`_evidence_backed_count`）；没有任何来源报告行时沿用
+    `observed_count`。终态 `browser_result` 附带最佳来源的 `records`、`records_source` 与
+    `backed_result_count`；summary 引用而证据中不存在的链接列入 `unbacked_items`，不改变状态。
+
 ## Browser 运行时减法（F_17，当前契约）
 
 阶段计数、自然语言验收和可选条件只提供诊断，不阻断一般动作。删除阶段次数上限、
