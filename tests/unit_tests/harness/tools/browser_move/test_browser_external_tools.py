@@ -272,3 +272,89 @@ def test_unknown_user_action_reason_falls_back_to_intervention(manager) -> None:
     _after(rail, ability_manager, session, "ext_run",
            {"ok": False, "user_action_required": {"reason": "please-retry"}}, success=False)
     assert session.state["blockers"] == ["user_intervention_required"]
+
+
+def _hot_rows(*ids: str, author: bool = True) -> list[dict]:
+    return [
+        {"title": f"video {item}", "url": f"https://www.bilibili.com/video/{item}",
+         **({"author": f"up {item}"} if author else {})}
+        for item in ids
+    ]
+
+
+def _explicit_requirements(session, count: int, fields: list[str]) -> None:
+    # Upstream no longer infers counts or fields from the task text; only explicit
+    # requirements (browser_phase set) are checked at completion.
+    session.state.update(requirements_source="explicit", requested_result_count=count, required_fields=fields)
+
+
+def test_uploader_is_an_author_alias() -> None:
+    assert BrowserRuntimeRail._canonical_field_name("UP主") == "author"
+    assert BrowserRuntimeRail._canonical_field_name("uploader") == "author"
+
+
+def test_top_n_needs_n_rows_with_every_requested_field(manager) -> None:
+    ability_manager, _ = manager
+    rail, _ = _rail()
+    session = _FakeSession("返回B站热门前 3 条视频的标题、UP主和链接")
+    _explicit_requirements(session, 3, ["title", "author", "url"])
+    rows = _hot_rows("BV1", "BV2", "BV3")
+    rows[1].pop("author")
+    rows[2].pop("author")
+    data = {
+        "ok": True, "reason": "ok", "observed_count": 3, "data": rows, "records": rows,
+        "extracted": rows[0], "source": {"provider": "opencli", "command": "bilibili/hot"},
+    }
+    _after(rail, ability_manager, session, "ext_run", data)
+
+    # Three rows were observed, but only one carries every requested field.
+    assert "result_count:1/3" in BrowserRuntimeRail._missing_completion_requirements(session.state)
+
+    complete = _hot_rows("BV1", "BV2", "BV3")
+    _after(rail, ability_manager, session, "ext_run", {**data, "data": complete, "records": complete})
+    assert not any(
+        item.startswith("result_count") for item in BrowserRuntimeRail._missing_completion_requirements(session.state)
+    )
+    payload = BrowserRuntimeRail._authoritative_terminal_payload(session.state)
+    assert [row["url"] for row in payload["records"]] == [row["url"] for row in complete]
+    assert payload["records_source"] == "external:bilibili/hot" and payload["backed_result_count"] == 3
+
+
+def test_count_from_one_source_does_not_back_rows_from_another(manager) -> None:
+    ability_manager, _ = manager
+    rail, _ = _rail()
+    session = _FakeSession("返回B站热门前 3 条视频的标题和链接")
+    _explicit_requirements(session, 3, ["title", "url"])
+    rows = _hot_rows("BV1")
+    data = {
+        "ok": True, "reason": "ok", "observed_count": 3, "data": rows, "records": rows,
+        "extracted": rows[0], "source": {"provider": "opencli", "command": "bilibili/hot"},
+    }
+    _after(rail, ability_manager, session, "ext_run", data)
+    # A bare count of 3 no longer satisfies "top 3" once rows are reported.
+    assert "result_count:1/3" in BrowserRuntimeRail._missing_completion_requirements(session.state)
+
+
+def test_summary_links_without_evidence_are_flagged_but_status_is_kept(manager) -> None:
+    ability_manager, _ = manager
+    rail, _ = _rail()
+    session = _FakeSession("返回B站热门前 2 条视频的标题和链接")
+    rows = _hot_rows("BV1", "BV2")
+    data = {
+        "ok": True, "reason": "ok", "observed_count": 2, "data": rows, "records": rows,
+        "extracted": rows[0], "source": {"provider": "opencli", "command": "bilibili/hot"},
+    }
+    _after(rail, ability_manager, session, "ext_run", data)
+    session.state["status"] = "completed"
+    summary = (
+        "1. video BV1 https://www.bilibili.com/video/BV1/\n"
+        "2. other https://www.bilibili.com/video/BVX."
+    )
+    _, payload = BrowserRuntimeRail._render_authoritative_terminal_output(session.state, summary)
+    assert payload["status"] == "completed"
+    assert payload["unbacked_items"] == ["https://www.bilibili.com/video/BVX"]
+
+    _, payload = BrowserRuntimeRail._render_authoritative_terminal_output(
+        session.state, "1. https://www.bilibili.com/video/BV1 2. https://www.bilibili.com/video/BV2"
+    )
+    assert "unbacked_items" not in payload
