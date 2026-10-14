@@ -420,3 +420,20 @@ async def test_deferred_catalog_recreates_full_snapshot_when_history_has_no_base
     recovered_again = await manager.sync_to_context(third_context, session.session_id)
     assert recovered_again is not None
     assert "目录版本：1" in recovered_again.content
+
+
+@pytest.mark.parametrize("language", ["cn", "en"])
+def test_rules_keep_subagent_capabilities_outside_the_tool_directory(language):
+    from openjiuwen.harness.prompts.sections.progressive_tool_rail import PROGRESSIVE_TOOL_RULES_BODY
+
+    rules = PROGRESSIVE_TOOL_RULES_BODY[language]
+    if language == "cn":
+        # The directory overrides subagent-described tool names only for removed tools.
+        assert "只在最新目录将其标记为删除时才覆盖" in rules
+        # Before giving up, the model must consider delegating, e.g. web tasks to the browser subagent.
+        assert "在说明没有合适工具之前，先检查 `task_tool` 中的子代理" in rules
+        assert "浏览器子代理" in rules
+    else:
+        assert "only when it marks those tools as removed" in rules
+        assert "Before saying no suitable tool is available, check whether a subagent in `task_tool`" in rules
+        assert "browser subagent" in rules
