@@ -674,6 +674,14 @@ class TeamWorkerBackend(AgentBackend):
             )
         entry = self._expert_specs.get(name)
         if entry is None:
+            if name == "leader":
+                # The Leader already drives the conversation that launched this
+                # workflow; its persona is about delegating, not doing a node's work.
+                raise BackendError(
+                    "agent_template 'leader' is the Team Leader, not a worker; "
+                    "pick a worker member of the bound AgentGroup",
+                    retryable=False,
+                )
             if self._expert_specs:
                 hint = f"available members: {sorted(self._expert_specs)}"
             else:
