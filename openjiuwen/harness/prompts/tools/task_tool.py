@@ -79,6 +79,9 @@ continue it with the same resume_task_id and describe only what is still missing
 Even a partial result can contain useful answers. Execution receipts describe dispatch/ACK; summary and completion \
 are worker judgments. Keep observations separate from inferred causes, respect source restrictions, and never treat \
 an empty blocker list as proof that the page has no obstacle. Do not repeat a lookup merely to fill field slots.
+- When browser_result has records, base list answers (items, order, links) on those rows rather than the summary. \
+unbacked_items lists links the summary cites that no recorded evidence contains; do not present them as \
+verified results.
 - retryable=true permits, but does not require, at most one focused continuation with the same resume_task_id. \
 Continue only for genuinely unanswered user requirements; recommended_recovery is a hint, not a completion checklist. \
 If a completed worker answer leaves a concrete user requirement unanswered, explicitly request correction with \
@@ -157,6 +160,8 @@ task_tool 启动专门的子代理来自主处理复杂任务。每种子代理�
 - 对 browser_agent，保留 browser_result.status 以及 summary、evidence 和带来源的 observations。\
 partial 中也可能已有可用答案。执行回执说明派发/ACK；summary 和完成判断由 worker 提供。\
 区分来源观察与原因推测，遵守原文限制，阻断列表为空不能证明页面没有障碍。不要为填字段槽而重复查询。
+- browser_result 含 records 时，列表类回答（条目、顺序、链接）以这些行为准，而不是 summary。\
+unbacked_items 列出 summary 中引用但没有任何已记录证据包含的链接，不要把它们当作已核实的结果。
 - retryable=true 只是允许续跑，不是要求续跑。只有用户要求确实尚未回答时，\
 才可使用同一 resume_task_id 至多续跑一次；recommended_recovery 是提示，不是完成清单。\
 若 worker 报告 completed 但仍有明确未满足的用户要求，可带同一 resume_task_id 和定向修复指令显式纠正，\
