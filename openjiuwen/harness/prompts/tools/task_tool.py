@@ -74,6 +74,9 @@ concise summary of the result.
 - For browser_agent, preserve browser_result.status together with its summary, evidence and source observations. \
 Even a partial result can contain useful answers. unverified_fields means fields were not mapped to typed slots, \
 not that the observed answer is false. Do not repeat a lookup merely to reformat or independently verify it.
+- When browser_result has records, base list answers (items, order, links) on those rows rather than the summary. \
+unbacked_items lists links the summary cites that no recorded evidence contains; do not present them as \
+verified results.
 - retryable=true permits, but does not require, at most one focused continuation with the same resume_task_id. \
 Continue only for genuinely unanswered user requirements, using missing_slots and recommended_recovery; \
 do not restart the full task or expand requested_slots. If retryable=false, report the available result.
@@ -146,6 +149,8 @@ task_tool 启动专门的子代理来自主处理复杂任务。每种子代理�
 - 对 browser_agent，保留 browser_result.status 以及 summary、evidence 和带来源的 observations。\
 partial 中也可能已有可用答案。unverified_fields 表示未映射到结构化字段，不代表已观察到的答案错误；\
 不要仅为改写字段名或交叉验证而重复查询。
+- browser_result 含 records 时，列表类回答（条目、顺序、链接）以这些行为准，而不是 summary。\
+unbacked_items 列出 summary 中引用但没有任何已记录证据包含的链接，不要把它们当作已核实的结果。
 - retryable=true 只是允许续跑，不是要求续跑。只有用户要求确实尚未回答时，\
 才可使用同一 resume_task_id，针对 missing_slots 和 recommended_recovery 至多续跑一次；\
 不要重做整个任务或扩大 requested_slots。retryable=false 时直接报告已有结果。

@@ -224,7 +224,7 @@ _BROWSER_FIELD_ALIASES: Dict[str, tuple[str, ...]] = {
     "rating": ("rating", "score", "评分", "星级"),
     "product_rating": ("product rating", "item rating", "商品评分", "宝贝评分"),
     "shop_rating": ("shop rating", "seller rating", "store rating", "店铺评分", "卖家评分"),
-    "author": ("author", "creator", "writer", "作者", "博主", "发布者", "回答者"),
+    "author": ("author", "creator", "writer", "uploader", "作者", "博主", "发布者", "回答者", "up主"),
     "likes": ("likes", "like count", "upvotes", "点赞", "点赞数", "赞同", "赞同数", "获赞", "获赞数"),
     "favorites": ("favorites", "favourites", "bookmarks", "收藏", "收藏数"),
     "comments": ("comments", "comment count", "replies", "评论", "评论数", "回复数"),
@@ -378,6 +378,11 @@ EXTERNAL_TOOL_PROPERTY = "browser_runtime"
 _EXTERNAL_TOOL_ROLES = frozenset({"discovery", "action"})
 _EXTERNAL_ACTION_STATE_KEY = "external_actions"
 _EXTERNAL_ACTION_BUDGET = 16
+# Row-level evidence: the latest rows per source back "top N" counts.
+_EVIDENCE_RECORD_ROW_LIMIT = 20
+_EVIDENCE_RECORD_FIELD_LIMIT = 20
+_EVIDENCE_RECORD_SOURCE_LIMIT = 8
+_SUMMARY_LINK_RE = re.compile(r"https?://[^\s<>\"'`()\[\]，。；、]+")
 _EXTERNAL_ACTION_REPEAT_LIMIT = 2
 _EXTERNAL_SIGNATURE_MEMORY = 50
 
@@ -2673,6 +2678,18 @@ class BrowserRuntimeRail(AgentRail):
         }
 
     @classmethod
+    def _terminal_records(cls, state: Dict[str, Any]) -> Dict[str, Any]:
+        source, rows, complete = cls._best_evidence_rows(state)
+        if not rows:
+            return {}
+        limit = max(int(state.get("requested_result_count") or 0), 5)
+        return {
+            "records": [dict(row) for row in rows[:limit]],
+            "records_source": source,
+            "backed_result_count": complete,
+        }
+
+    @classmethod
     def _authoritative_terminal_payload(cls, state: Dict[str, Any]) -> Dict[str, Any]:
         status = str(state.get("status") or "partial").strip().lower()
         missing = cls._missing_completion_requirements(state)
@@ -2705,6 +2722,7 @@ class BrowserRuntimeRail(AgentRail):
             "current_page": dict(state.get("last_page") or {}),
             "requested_result_count": int(state.get("requested_result_count") or 0),
             "observed_result_count": int(state.get("observed_result_count") or 0),
+            **cls._terminal_records(state),
             "terminal_reason": state.get("terminal_reason"),
             "retryable": retryable,
             "recommended_recovery": cls._recommended_recovery(state, missing),
@@ -2801,6 +2819,10 @@ class BrowserRuntimeRail(AgentRail):
                 model_summary = str(previous.get("summary") or state.get("last_worker_final") or "")
         if str(model_summary or "").strip():
             payload["summary"] = str(model_summary).strip()[:8_000]
+            unbacked = cls._unbacked_summary_links(state, payload["summary"])
+            if unbacked:
+                # Advisory: the status is unchanged, the parent agent sees which cited links lack evidence.
+                payload["unbacked_items"] = unbacked
         return (
             json.dumps({"browser_result": payload}, ensure_ascii=False, separators=(",", ":")),
             payload,
@@ -3134,6 +3156,12 @@ class BrowserRuntimeRail(AgentRail):
         del stored[:-20]
         if evidence:
             cls._record_evidence_slots(state, evidence, result=result, tool_name=tool_name, tool_args=tool_args)
+        if succeeded and isinstance(result.get("records"), list):
+            cls._record_evidence_rows(
+                state,
+                f"external:{observation.get('source') or tool_name}",
+                result["records"],
+            )
         if observed_count:
             state["observed_result_count"] = max(int(state.get("observed_result_count") or 0), observed_count)
         BrowserWorkingContextStore.refresh_field_coverage(state)
@@ -5369,10 +5397,108 @@ class BrowserRuntimeRail(AgentRail):
             if not (slot["variant"] == "default" and slot["field"] in missing_field_names)
         )
         requested_count = int(state.get("requested_result_count") or 0)
-        observed_count = int(state.get("observed_result_count") or 0)
+        backed_count = cls._evidence_backed_count(state)
+        observed_count = backed_count if backed_count is not None else int(state.get("observed_result_count") or 0)
         if requested_count and observed_count < requested_count:
             missing.append(f"result_count:{observed_count}/{requested_count}")
         return missing
+
+    @classmethod
+    def _record_evidence_rows(cls, state: Dict[str, Any], source: str, rows: Any) -> None:
+        """Keep the latest rows from one source; each row maps canonical fields to values."""
+        compact_rows: list[Dict[str, str]] = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            compact: Dict[str, str] = {}
+            for key, value in list(row.items())[:_EVIDENCE_RECORD_FIELD_LIMIT]:
+                if value in (None, "", [], {}) or isinstance(value, (dict, list, bool)):
+                    continue
+                compact.setdefault(cls._canonical_field_name(key) or str(key), str(value)[:300])
+            if compact:
+                compact_rows.append(compact)
+            if len(compact_rows) >= _EVIDENCE_RECORD_ROW_LIMIT:
+                break
+        records = state.setdefault("evidence_records", {})
+        records.pop(source, None)
+        if compact_rows:
+            records[source] = compact_rows
+        for stale in list(records)[:-_EVIDENCE_RECORD_SOURCE_LIMIT]:
+            records.pop(stale, None)
+
+    @classmethod
+    def _card_rows(cls, result: Dict[str, Any]) -> list[Dict[str, str]]:
+        rows: list[Dict[str, str]] = []
+        for card in result.get("cards") or []:
+            compact = cls._compact_evidence_card(card, result)
+            if compact is None:
+                continue
+            statuses = compact.get("field_status") or {}
+            rows.append({
+                key: value
+                for key, value in compact.items()
+                if key not in {"generation_id", "result_index", "kind", "provenance", "field_status"}
+                and statuses.get(key, "present") == "present"
+            })
+            if len(rows) >= _EVIDENCE_RECORD_ROW_LIMIT:
+                break
+        return rows
+
+    @classmethod
+    def _best_evidence_rows(cls, state: Dict[str, Any]) -> tuple[str, list[Dict[str, str]], int]:
+        """Source whose rows best back the request: the most rows carrying every covered required field."""
+        records = state.get("evidence_records")
+        if not isinstance(records, dict) or not records:
+            return "", [], -1
+        required = {str(item) for item in state.get("required_fields") or [] if str(item).strip()}
+        # Fields no source covered are reported as missing fields; do not count them twice per row.
+        required &= {str(item) for item in state.get("field_coverage") or []} | {
+            key for rows in records.values() for row in rows for key in row
+        }
+        best: tuple[str, list[Dict[str, str]], int] = ("", [], -1)
+        for source, rows in records.items():
+            complete = sum(1 for row in rows if required <= set(row))
+            if complete > best[2]:
+                best = (source, rows, complete)
+        return best
+
+    @classmethod
+    def _evidence_backed_count(cls, state: Dict[str, Any]) -> Optional[int]:
+        """Rows from one source with every required field, or None when no source reported rows."""
+        _, _, complete = cls._best_evidence_rows(state)
+        return complete if complete >= 0 else None
+
+    @classmethod
+    def _unbacked_summary_links(cls, state: Dict[str, Any], summary: str) -> list[str]:
+        """Links the summary cites that no recorded evidence contains."""
+        links = []
+        for match in _SUMMARY_LINK_RE.findall(str(summary or "")):
+            link = match.rstrip(".,;:!?*_'\"")
+            if link and link not in links:
+                links.append(link)
+        if not links:
+            return []
+        known: list[str] = []
+        for rows in (state.get("evidence_records") or {}).values():
+            known.extend(str(value) for row in rows for value in row.values())
+        for slot in state.get("evidence_slots") or []:
+            if isinstance(slot, dict) and slot.get("value") not in (None, ""):
+                known.append(str(slot["value"]))
+        for item in state.get("structured_evidence") or []:
+            if isinstance(item, dict):
+                known.extend(str(value) for value in (item.get("values") or {}).values())
+                for card in item.get("cards") or []:
+                    if isinstance(card, dict):
+                        known.extend(str(value) for value in card.values() if isinstance(value, str))
+        last_url = str((state.get("last_page") or {}).get("url") or "")
+        if last_url:
+            known.append(last_url)
+
+        def normalized(value: str) -> str:
+            return value.strip().rstrip("/").split("#", 1)[0].lower()
+
+        known_links = {normalized(value) for value in known if "://" in value}
+        return [link for link in links if normalized(link) not in known_links][:10]
 
     @classmethod
     def _missing_evidence_slots(cls, state: Dict[str, Any]) -> list[Dict[str, str]]:
@@ -5515,6 +5641,7 @@ class BrowserRuntimeRail(AgentRail):
                 int(state.get("observed_result_count") or 0),
                 int(evidence.get("observed_count") or 0),
             )
+            cls._record_evidence_rows(state, f"probe:{tool_name}", cls._card_rows(result))
         cls._record_evidence_slots(
             state,
             evidence,
