@@ -6,8 +6,8 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/tools/`（130 文件）、`openjiuwen/harness/schema/task.py`、`openjiuwen/core/foundation/tool/base.py`（`Tool.render_for_llm`） |
-| 最近一次修订日期 | 2026-10-13 |
-| 关联 feature | `F_04_tool-result-llm-rendering.md`、`F_06_browser-external-tools.md` |
+| 最近一次修订日期 | 2026-10-14 |
+| 关联 feature | `F_04_tool-result-llm-rendering.md`、`F_06_browser-external-tools.md`、`F_08_browser-row-evidence.md` |
 
 ## 范围 / 边界
 
@@ -126,6 +126,12 @@ i18n、工具生命周期。`tools/` 是 harness 最大的子模块（130 文件
     重复判定使用完整参数的规范 JSON 哈希，忽略映射键顺序，保留任意嵌套字段与长参数；
     不复用 Playwright 的语义字段筛选或截断签名，也不把原始参数写入签名账本。Core 不认识
     具体命令来源或 `site/command` 字段。`windowed`、`inline_limit_chars` 声明结果窗口策略。
+13. **列表结果按行作证**：action 结果可选携带 `records`（行列表，每行为字段到标量值的映射）。
+    Browser runtime 按来源保留最新的行（`_record_evidence_rows`，每来源最多 20 行、最多 8 个
+    来源），卡片探针结果同样记为行。任一来源报告过行时，"前 N 条"只在同一来源有 N 行
+    带齐所需字段时才满足（`_evidence_backed_count`）；没有任何来源报告行时沿用
+    `observed_count`。终态 `browser_result` 附带最佳来源的 `records`、`records_source` 与
+    `backed_result_count`；summary 引用而证据中不存在的链接列入 `unbacked_items`，不改变状态。
 
 ## 接口契约
 
