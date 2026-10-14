@@ -6,8 +6,8 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/prompts/`（67 文件） |
-| 最近一次修订日期 | 2026-08-23 |
-| 关联 feature | N/A |
+| 最近一次修订日期 | 2026-10-14 |
+| 关联 feature | `F_07_subagent-capability-routing-rules.md` |
 
 ## 范围 / 边界
 
@@ -52,6 +52,10 @@ report。`prompts/` 67 文件是 DeepAgent 的"输入面"，只定义契约，�
    截断用户内容。任何透传给 LLM 的用户内容必须先过这两道。
 7. **`prompts/__init__.py` 的 `__all__` 是契约**；`from openjiuwen.harness.prompts import sections`
    暴露子包供引用（`# noqa: F401` 刻意）。
+8. **渐进式工具目录不代表子代理能力**：`prompts/sections/progressive_tool_rail.py` 的
+   `PROGRESSIVE_TOOL_RULES_BODY` 中，最新 deferred 目录只在将工具标记为删除时覆盖
+   task_tool / 子代理描述中的工具名称；`tool_search` 未命中时，规则要求先考虑 `task_tool`
+   中的子代理（网页任务交给浏览器子代理），再说明没有合适工具。中英文两种语言的规则语义一致。
 
 ## 接口契约
 
