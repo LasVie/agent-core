@@ -56,6 +56,13 @@ def derive_swarmflow_expert_specs(
     and are therefore not experts: they are skipped, and a script naming one
     later gets the backend's "not a member" error.
     """
+    if callable(observability_rail_specs) and not isinstance(observability_rail_specs, (list, tuple)):
+        # The configurator imports the rail-spec *factory* under this very name;
+        # passing it unevaluated only blows up once a team has an expert.
+        raise TypeError(
+            "derive_swarmflow_expert_specs expects the evaluated rail list, "
+            "not the factory: pass observability_rail_specs()"
+        )
     experts: dict[str, SwarmflowExpertEntry] = {}
     for member in team_spec.predefined_members:
         if getattr(member, "role_type", None) in _NON_EXPERT_ROLES:

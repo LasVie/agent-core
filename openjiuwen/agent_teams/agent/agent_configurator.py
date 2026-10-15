@@ -885,7 +885,7 @@ class AgentConfigurator:
             # Experts are AgentGroup members already in the blueprint; a script
             # picks one by member name. Derived once here, next to the worker
             # base spec, so both ride the same rails and progressive_tool switch.
-            swarmflow_expert_specs = derive_swarmflow_expert_specs(spec, observability_rail_specs)
+            swarmflow_expert_specs = derive_swarmflow_expert_specs(spec, member_observability_rail_specs)
 
         inject_team_handles(
             member_build_context.extras,

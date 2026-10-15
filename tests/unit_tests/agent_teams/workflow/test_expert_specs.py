@@ -96,3 +96,17 @@ def test_progressive_tool_follows_team_switch():
     entry = derive_swarmflow_expert_specs(_team(progressive_tool=True), [])["clip"]
     assert entry.spec.progressive_tool == ProgressiveToolSpec(enabled=True)
     assert derive_swarmflow_expert_specs(_team(), [])["clip"].spec.progressive_tool is None
+
+
+def test_rails_argument_must_be_a_list_not_the_spec_factory():
+    """The configurator imports ``observability_rail_specs`` as a factory and, elsewhere,
+    passes its evaluated list. Handing the bare function here raised ``TypeError`` only
+    when a team actually had an expert — i.e. only in the AgentGroup scenario this feature
+    exists for — and broke team setup. Fail loudly on any non-list, with a pointer."""
+    import pytest
+
+    def observability_rail_specs():
+        return []
+
+    with pytest.raises(TypeError, match="observability_rail_specs\(\)"):
+        derive_swarmflow_expert_specs(_team(), observability_rail_specs)
