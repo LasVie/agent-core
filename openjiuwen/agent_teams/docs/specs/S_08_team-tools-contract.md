@@ -26,7 +26,7 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/tools/` |
 | 最近一次修订日期 | 2026-10-15 |
-| 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md |
+| 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md、F_123_team-tools-direct-under-progressive-exposure.md |
 
 ## 范围 / 边界
 
@@ -421,6 +421,12 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     则忽略并在结果里提示。认领成功后结果列出本任务**直接上游**（一跳依赖）的完成摘要
     （`message_template.upstream_lines`，与调度模式开工通知同格式）与 `view_task(action='note')` 提示；
     `view_task(get)` 同样附"Upstream deliveries"小节。两种模式下成员都不再用 `send_message` 汇报完成。
+29. **团队工具在渐进式工具暴露下始终 DIRECT**（F_123）。`TeamToolRail.init` 在 `add_ability`
+    之前对每张卡片（工厂产出 + 追加的 `workspace_meta`）调 `declare_team_tool_direct`：未在构造期
+    声明 `exposure`、也未被注册解析过的卡片一律声明 `ToolExposure.DIRECT`；显式声明优先，不改写。
+    协作工具是成员的主接口，成员基 spec 带 `ProgressiveToolSpec(enabled=True)` 时只有长尾工具进
+    `tool_search`。名单不进 harness 的 `_DEFAULT_DIRECT_TOOL_NAMES`（按 dispatch / role / capability
+    变化的集合不硬编码）。外部 CLI / MCP 成员不经 `AbilityManager`，不受此约束。
 
 ## 接口契约
 
