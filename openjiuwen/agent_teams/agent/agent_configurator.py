@@ -835,6 +835,7 @@ class AgentConfigurator:
         swarmflow_concurrency_governor = None
         swarmflow_budget = None
         swarmflow_external_cli_agents: tuple[Any, ...] = ()
+        swarmflow_expert_specs: dict[str, Any] = {}
         if ctx.role == TeamRole.LEADER and spec.enable_swarmflow:
             # Callable class (same call contract as the historical closure) so
             # the inject chain stays unchanged, plus pool_names for the
@@ -879,6 +880,13 @@ class AgentConfigurator:
             swarmflow_budget = BudgetLedger(total=spec.swarmflow_budget)
             swarmflow_external_cli_agents = _derive_swarmflow_external_cli_agents(spec)
 
+            from openjiuwen.agent_teams.workflow.backends.expert_specs import derive_swarmflow_expert_specs
+
+            # Experts are AgentGroup members already in the blueprint; a script
+            # picks one by member name. Derived once here, next to the worker
+            # base spec, so both ride the same rails and progressive_tool switch.
+            swarmflow_expert_specs = derive_swarmflow_expert_specs(spec, member_observability_rail_specs)
+
         inject_team_handles(
             member_build_context.extras,
             team_backend=self.team_backend,
@@ -891,6 +899,7 @@ class AgentConfigurator:
             swarmflow_concurrency_governor=swarmflow_concurrency_governor,
             swarmflow_budget=swarmflow_budget,
             swarmflow_external_cli_agents=swarmflow_external_cli_agents,
+            swarmflow_expert_specs=swarmflow_expert_specs,
             reliability_components=reliability_components,
             permissions_override=ctx.permissions_override,
             worktree_manager=self.worktree_manager,

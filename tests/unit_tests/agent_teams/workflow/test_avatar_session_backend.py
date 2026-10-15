@@ -1297,3 +1297,28 @@ def test_agent_session_avatar_starts_under_its_own_trajectory_subject(monkeypatc
     assert subject.kind == "team_member"
     assert subject.session_id == "product-sess"
     assert current_execution_subject() is None
+
+
+def test_agent_session_picks_expert_spec_and_prepends_persona(monkeypatch):
+    """An agent_template session derives from the expert spec; its system prompt is
+    persona + blank line + the session role prompt (+ instructions)."""
+    from openjiuwen.agent_teams.workflow.backends.avatar_session_backend import _SESSION_SYS_PROMPT_AGENT
+    from openjiuwen.agent_teams.workflow.backends.expert_specs import SwarmflowExpertEntry
+
+    harnesses: list = []
+    _patch_build(monkeypatch, harnesses)
+    expert_spec = DeepAgentSpec(tools=[], agent_template_spec={"agent_card": {"id": "clip", "name": "clip"}})
+    entry = SwarmflowExpertEntry("clip", "视频镜头师", "PERSONA", expert_spec, None)
+
+    def _gate(opts):
+        return entry if opts.get("agent_template") == "clip" else None
+
+    async def scenario():
+        mgr = _mgr(gate_agent_template=_gate)
+        await mgr.open_session(kind="agent", instructions="be brief", opts={"label": "shot", "agent_template": "clip"})
+        await mgr.open_session(kind="agent", instructions=None, opts={"label": "plain"})
+
+    asyncio.run(scenario())
+    assert harnesses[0].spec.agent_template_spec == {"agent_card": {"id": "clip", "name": "clip"}}
+    assert harnesses[0].spec.system_prompt == f"PERSONA\n\n{_SESSION_SYS_PROMPT_AGENT}\n\nbe brief"
+    assert harnesses[1].spec.system_prompt == _SESSION_SYS_PROMPT_AGENT
