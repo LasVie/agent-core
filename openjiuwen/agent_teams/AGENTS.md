@@ -164,7 +164,7 @@ allocator.py   # Allocation / ModelAllocator(Protocol)
 ```
 
 - `ModelPoolEntry` 是 `TeamSpec.model_pool` 的元素，描述一个 LLM 端点 + 凭证 + provider；通过 `to_team_model_config()` 物化为 `TeamModelConfig`。
-- 持久化身份用 `(model_name, group_index)`，运行时 client 身份用自动 uuid `model_id`；`inherit_pool_ids` 在池刷新时只对 bit-exact 旧条目继承 `model_id`，避免基础设施层缓存到旧凭证的 client。
+- 持久化身份用 `(model_name, group_index)`，运行时 client 身份用自动 uuid `model_id`；`inherit_pool_ids` 在池刷新时只对 bit-exact 旧条目继承 `model_id`，避免基础设施层缓存到旧凭证的 client。签名（`_entry_signature`）排除 client 身份——`model_id` 与 `metadata.client.client_id`——`runtime.manager.activate` 也用它判断 paused 运行时是否因换模型重建（B_05）。
 - 四条分配策略：`RoundRobinModelAllocator`（线性轮转，无视 `model_name`）/ `ByModelNameAllocator`（按 `model_name` 分组、组内轮转）/ `RouterAllocator`（单端点路由，model_name 唯一映射，无 hint 时返回首项）/ `IntelliRouterAllocator`（`RouterAllocator` 子类，客户端可靠路由）。新策略实现 `ModelAllocator` 协议即可；`build_model_allocator` 读 `team_spec.model_pool_strategy` 派发。
 - **可靠性只归一层**（S_11 不变量 14）：前三条策略把成员摊到多个端点上，可靠性归 allocator；`intelli_router` 把多端点整个下沉给客户端 router（请求级重试 / failover / 限流感知），可靠性归 client。两者**二选一**，叠加即两层都做负载均衡。
 - `ModelRouterConfig` 是用户面向的便利输入：一份 `(api_key, api_base_url, api_provider)` + `model_names: list[str]`。在 `TeamAgentSpec.build()` 时通过 `to_pool_entries()` 展开成 `model_pool` 并把 `model_pool_strategy` 设为 `"router"`，下游 `resolve_member_model` / `inherit_pool_ids` / `update_model_pool` 全部复用 pool 路径，没有特殊分支。
