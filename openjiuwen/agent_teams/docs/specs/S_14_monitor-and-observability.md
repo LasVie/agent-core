@@ -6,8 +6,8 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/monitor/`、`openjiuwen/agent_teams/observability/`（agent 层 span 在 `openjiuwen/harness/observability/`） |
-| 最近一次修订日期 | 2026-09-30 |
-| 关联 feature | F_09_team-stream-logging.md、F_37_observability-otel-trace.md、F_83_agent-tier-rail-split.md、F_110_genai-semconv-canonicalization.md、B_01_team-root-adopts-foreign-session-root.md |
+| 最近一次修订日期 | 2026-10-16 |
+| 关联 feature | F_09_team-stream-logging.md、F_37_observability-otel-trace.md、F_83_agent-tier-rail-split.md、F_110_genai-semconv-canonicalization.md、B_01_team-root-adopts-foreign-session-root.md、F_124_monitor-message-template-meta.md |
 
 ## 范围 / 边界
 
@@ -341,7 +341,7 @@ class MonitorEvent(BaseModel):
 | `TeamInfo` | `Team` SQLModel | `team_name`, `display_name`, `leader_member_name`, `desc`, `created` (ms) |
 | `MemberInfo` | `TeamMember` SQLModel | `member_name`, `team_name`, `display_name`, `desc`, `status`, `execution_status`, `mode` |
 | `TaskInfo` | `TeamTaskBase` SQLModel | `task_id`, `team_name`, `title`, `content`, `status`, `assignee`, `updated_at` (ms, 与当前 `status` 绑定) |
-| `MessageInfo` | `TeamMessageBase` SQLModel | `message_id`, `team_name`, `from_member_name`, `to_member_name`, `content`, `protocol` (`"plain"` 普通文本 / `"json"` 结构化 payload 如审批请求和结果), `timestamp` (ms), `broadcast`, `is_read` |
+| `MessageInfo` | `TeamMessageBase` SQLModel | `message_id`, `team_name`, `from_member_name`, `to_member_name`, `content`, `protocol` (`"plain"` 普通文本 / `"json"` 结构化 payload 如审批请求和结果), `timestamp` (ms), `broadcast`, `is_read`, `meta`（仅框架模板消息：`message_template.parse_meta` 解析出的 `{template, refs, params}`；此类行 `content` 恒空、正文投递时才渲染，观察者据 `meta` 自行组展示文案，见 F_124；普通 / 畸形行为 `None`） |
 
 适配层的存在意义：让监控 API 与内部 db schema 解耦。新增 db 字段不会自动暴露给 monitor 消费方；要暴露需要**显式**在对应 `Info` 上加字段并改 `from_internal`。
 
