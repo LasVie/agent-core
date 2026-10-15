@@ -29,7 +29,8 @@ from typing import (
 
 from openjiuwen.agent_teams.paths import async_tool_output_dir
 from openjiuwen.agent_teams.tools.team_tools import create_team_tools
-from openjiuwen.core.foundation.tool.base import Tool
+from openjiuwen.core.foundation.tool import ToolExposure
+from openjiuwen.core.foundation.tool.base import Tool, ToolCard
 from openjiuwen.harness.rails.base import DeepAgentRail
 
 if TYPE_CHECKING:
@@ -38,6 +39,23 @@ if TYPE_CHECKING:
     from openjiuwen.agent_teams.models.allocator import Allocation
     from openjiuwen.agent_teams.team_workspace.manager import TeamWorkspaceManager
     from openjiuwen.agent_teams.tools.team import TeamBackend
+
+
+def declare_team_tool_direct(card: ToolCard) -> None:
+    """Keep a team tool visible when progressive tool exposure is on.
+
+    ``AbilityManager`` defers every card that neither declared ``exposure``
+    nor is named in the harness default-direct set. The coordination surface
+    (``send_message`` / ``create_task`` / ``spawn_*`` / ``view_task`` ...) is a
+    member's primary interface: hiding it behind a ``tool_search`` round-trip
+    would break the team protocol for the one member kind that mounts
+    ``ProgressiveToolRail`` on the host's single-agent switch. A card that
+    already declared its own exposure keeps it — explicit always wins.
+    """
+    if "exposure" in card.model_fields_set or card.get_exposure_declared():
+        return
+    card.exposure = ToolExposure.DIRECT
+    card.set_exposure_declared(True)
 
 
 class TeamToolRail(DeepAgentRail):
@@ -53,6 +71,11 @@ class TeamToolRail(DeepAgentRail):
     suffixes each ``ToolCard.id`` with ``{team_name}.{member_name}`` so
     multiple in-process members do not collide on the shared
     ``Runner.resource_mgr``.
+
+    Every card it mounts is declared ``ToolExposure.DIRECT`` before
+    registration (see :func:`declare_team_tool_direct`), so a member built
+    with ``progressive_tool`` enabled still sees its whole coordination
+    surface in the advertised tools list.
     """
 
     priority = 90
@@ -174,6 +197,7 @@ class TeamToolRail(DeepAgentRail):
         ability_manager = getattr(agent, "ability_manager", None)
         if ability_manager is not None:
             for tool in tools:
+                declare_team_tool_direct(tool.card)
                 ability_manager.add_ability(tool.card, tool)
 
         self._wire_async_spill(agent)
