@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from openjiuwen.agent_teams.inbound_render import drop_superseded_snapshots
+from openjiuwen.agent_teams.inbound_render import drop_superseded_snapshots, render_clock
 from openjiuwen.agent_teams.prompts import (
     build_leader_bootstrap_section,
     build_team_extra_section,
@@ -53,6 +53,8 @@ from openjiuwen.agent_teams.prompts import (
 from openjiuwen.agent_teams.prompts.loader import TemplateLoader, load_template
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.team_context import TaskOutcomeTracker, TeamContextTracker
+from openjiuwen.agent_teams.timefmt import format_absolute_time
+from openjiuwen.agent_teams.tools.database.engine import get_current_time
 from openjiuwen.core.common.logging import team_logger
 from openjiuwen.core.foundation.llm import UserMessage
 from openjiuwen.core.single_agent.prompts.builder import PromptSection
@@ -210,13 +212,21 @@ class TeamPolicyRail(DeepAgentRail):
         self.attachment_manager = None
 
     async def on_user_message(self, ctx: AgentCallbackContext) -> None:
-        """Drop superseded inputs from the batch, then fold in team state.
+        """Drop superseded inputs, stamp the current time, then fold in team state.
 
-        Two jobs on the list of inputs about to become one message, in that
-        order: the batch is pruned first, and the team state then goes in front
-        of what survives.
+        Three jobs on the list of inputs about to become one message, in that
+        order: the batch is pruned first, a ``<team-clock>`` anchor goes in
+        front of what survives, and the team state then goes in front of that.
 
-        Both exist because this is the one moment these are still *inputs*. A
+        The clock anchor is what makes the absolute ``time`` on every
+        ``<team-inbound>`` readable as "how long ago". The inbound blocks carry
+        no relative diff because they stay in the history: rendered once, a
+        "just now" would still say "just now" when the member reads it again an
+        hour later. The anchor is written once per admitted input and never
+        refreshed, so each one stays true as a record of when that input
+        arrived, and the newest one is the member's current time.
+
+        All three happen here because this is the one moment these are still *inputs*. A
         step later they are one ordinary history message — it can no longer be
         located by position (compaction rewrites the history behind it) and it
         must no longer be edited (rewriting a message invalidates every KV-cache
@@ -239,6 +249,8 @@ class TeamPolicyRail(DeepAgentRail):
             return
 
         self._drop_superseded(parts)
+        if parts:
+            parts.insert(0, render_clock(now=format_absolute_time(get_current_time())))
 
         session = getattr(ctx, "session", None)
         if session is None:

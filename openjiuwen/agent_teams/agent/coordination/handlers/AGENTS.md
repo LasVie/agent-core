@@ -107,12 +107,17 @@ rail，团队状态平时搭下一条外发消息的车（`CliRuntimeBase.send`�
   SDK 侧回调。收件人按**可达**筛选 = status ∉ {`SHUTDOWN`}——`SHUTDOWN_REQUESTED` 必须留在
   可达集里，否则"你已被移出团队"这条通知恰好送不到该收它的人。
 - **群聊收件人启动**：`GroupMessageHandler.start_mentioned_members` 在群聊广播和 Leader 邮箱轮询时扫描未消费 mentions，通过既有 `auto_start_member` 启动 `UNSTARTED` / `ERROR` 成员。普通 `MessageHandler` 只消费本成员邮箱，不扫描其他成员；普通消息启动仍由发送工具和交互入口负责。
+- **未读按发送时间升序投递**（`_read_all_unread`，[[B_04]]）：单播与广播两次查询各自有序，
+  合并后必须再按 `timestamp` 升序排。投递顺序就是成员读到的顺序——第一条开启这一轮、其余
+  steer 进去，倒序会让被新消息唤醒的成员先读到最新那条、再以 `[STEERING]` 读到更早的。
 - **投递前先 `_expand`**（`message_template.expand_message`，F_63）：普通消息原样过；框架
   模板消息（`content` 空 + `meta`）在**投递这一刻**按当前任务行渲染正文，所以排队很久的交接
   不会投出过期简报。**四个消费点都必须展开**：`_format_message`、`_notify_human_agent_inbound`
   （HITT 人类成员可能是 assignee/reviewer）、`_bridge_deliverable_for`（relay 给无 DB 的远程
   执行者的必须是展开后的文本）、以及 external 侧的 `read_inbox`。
-- **渲染**（`_format_message` → `inbound_render.render_inbound`）：human-agent 加
+- **渲染**（`_format_message` → `inbound_render.render_inbound`）：`time` 只写绝对发送时间
+  （`format_absolute_time`，入站块会留在历史里被重读，相对差会过期；"现在"由
+  `TeamPolicyRail` 附的 `<team-clock>` 给出，见 S_09 不变量 28a）；human-agent 加
   `for="controller"` + `hitt-silence` note；普通消息带 `reply-hint` note，正文经
   `i18n.reply_hint_for(sender)` 按发件人分化（`user` 取无条件版，其余取条件版）——**选哪条
   文案的逻辑收在 i18n 一处**，`external/format.py` 复用同一函数。**模板消息不带 reply-hint**：

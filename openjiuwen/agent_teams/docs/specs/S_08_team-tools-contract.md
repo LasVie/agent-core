@@ -349,7 +349,9 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     （失败回滚到被认领时的原状态）；广播不批量恢复，避免一条泛化消息触发全队 restart storm，
     也**永远不唤醒休眠成员**。ERROR / DORMANT runtime 已经退出时，`shutdown_member` 则直接
     CAS 到 `SHUTDOWN` 并清理 stale handle，不发送一个永远不会被消费的 shutdown event
-    （DORMANT 仍发布 `MemberShutdownEvent` 供名册刷新）。
+    （DORMANT 仍发布 `MemberShutdownEvent` 供名册刷新，`target_status="shut_down"`）。
+    走 `SHUTDOWN_REQUESTED` 正常路径时，事件的 `target_status` 取 `retire_target(lifetime, force)`，
+    休眠退场为 `"dormant"`，观察者据此保留该成员。
     两点边界：**scheduled 的 `create_task` 不拉人**（交接归 `TeamScheduler`，工具再插一手
     就是双投递，所以差异由 `ScheduledTaskCreateTool` 这个独立类吸收，不是 `invoke` 里的
     模式分支）；**拉起失败不改变工具的成败**——任务/消息已落库，报失败只会诱使模型重建一遍，
