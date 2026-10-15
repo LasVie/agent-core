@@ -105,6 +105,9 @@ class TeamMonitor:
     def team_name(self) -> str: ...
     @property
     def session_id(self) -> str: ...
+    @property
+    def team_agent(self) -> TeamAgent:
+        """Leader instance the listener is registered on (read-only)."""
 
     async def start(self) -> None:
         """Idempotent. Registers self._on_event on the leader."""
@@ -112,6 +115,8 @@ class TeamMonitor:
     async def stop(self) -> None:
         """Idempotent. Unregisters listener and terminates events() iterator."""
 ```
+
+`team_agent` 暴露监听所挂的 leader 实例。runtime 被重建（如 `activate` 因模型选择变化 `stop_team` 后冷恢复）时 pool 里换成新的 leader，挂在旧实例上的 monitor 不会再收到事件、也不会收到结束 sentinel；宿主应在每次 runtime ready 时重新 `get_agent_team_monitor`，用 `is` 比较新旧 `team_agent`，不一致就 `stop()` 旧 monitor 并改挂新的。
 
 #### `TeamMonitor` 查询 API
 
