@@ -484,6 +484,7 @@ def build_attribution_agent(
 __all__ = [
     "AttributionAgentRuntime",
     "ContextBudgetRail",
+    "LlmStatusRail",
     "build_attribution_agent",
     "build_attribution_initial_prompt",
     "build_attribution_system_prompt",

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode
 from openjiuwen.agent_evolving.attribution.snapshot import (
     assign_node_ids,
     build_nodes_from_snapshot,
@@ -195,7 +196,35 @@ def test_slice_nodes_by_range_closed_interval_and_subject_drop() -> None:
     sliced = slice_nodes_by_range(assigned, [("main", 100, 200)])
     assert set(sliced) == {"main"}
     ids = [node.node_id for node in sliced["main"]]
-    assert ids == ["main:0", "main:1"]
+    # assistant 的起止为 (200, 210)，窗口 (100, 200) 未覆盖其结束 → 只留 user。
+    assert ids == ["main:0"]
+
+
+def test_slice_nodes_by_range_requires_full_coverage() -> None:
+    records = _records()
+    main = build_subject_nodes(records, subject_id="main", display_name="M", kind="main_agent")
+    assigned, _ = assign_node_ids({"main": main})
+    # assistant (200, 210)：end 到 209 不覆盖完整区间，到 210 才带上。
+    short = slice_nodes_by_range(assigned, [("main", 100, 209)])
+    assert [node.node_id for node in short["main"]] == ["main:0"]
+    covering = slice_nodes_by_range(assigned, [("main", 100, 210)])
+    assert [node.node_id for node in covering["main"]] == ["main:0", "main:1"]
+
+
+def test_slice_nodes_by_range_zero_end_judged_by_start() -> None:
+    node = TrajectoryNode(
+        node_id="main:0",
+        subagent_key="main",
+        display_name="M",
+        kind="main_agent",
+        role="assistant",
+        start_ts_ns=150,
+        end_ts_ns=0,
+    )
+    included = slice_nodes_by_range({"main": [node]}, [("main", 100, 200)])
+    assert [item.node_id for item in included["main"]] == ["main:0"]
+    excluded = slice_nodes_by_range({"main": [node]}, [("main", 160, 200)])
+    assert excluded["main"] == []
 
 
 def test_assign_node_ids_reuse_across_refresh() -> None:
@@ -216,6 +245,58 @@ def test_assign_node_ids_reuse_across_refresh() -> None:
     assert second_ids[:3] == first_ids
     assert second_ids[3] == "main:3"
     assert mapping2 != mapping
+
+
+def test_committed_assistant_message_prefers_llm_production_time() -> None:
+    records = [
+        _commit(
+            "c1", 100, [{"message_id": "m1", "role": "user", "content": "问题", "origin": "external_user"}], parent="l1"
+        ),
+        # 答案由 l1 在 200ns 产出，但承载它的 commit 直到 1000ns（下一次用户消息到来）才落盘。
+        _llm("l1", 200, [{"role": "assistant", "content": "回答一"}], window_span="c1"),
+        _commit(
+            "c2",
+            1000,
+            [{"message_id": "m2", "role": "assistant", "content": "回答一", "origin": "harness_internal"}],
+            seq=1,
+            parent="l2",
+        ),
+        _llm("l2", 1100, [{"role": "assistant", "content": "最终答案"}], window_span="c2"),
+    ]
+    nodes = build_subject_nodes(records, subject_id="main", display_name="M", kind="main_agent")
+    assistant = nodes[1]
+    assert assistant.role == "assistant"
+    assert assistant.content == "回答一"
+    assert assistant.source_kind == "msg"
+    assert assistant.message_id == "m2"
+    assert assistant.span_id == "c2"
+    assert assistant.start_ts_ns == 200
+    assert assistant.end_ts_ns == 210
+
+
+def test_committed_assistant_message_keeps_commit_time_without_llm_match() -> None:
+    records = [
+        _commit(
+            "c1", 100, [{"message_id": "m1", "role": "user", "content": "问题", "origin": "external_user"}], parent="l1"
+        ),
+        # 窗口 span 存在，但其产出与 commit 里的 assistant 内容不一致 → 无签名匹配，时间取 commit。
+        _llm("l1", 200, [{"role": "assistant", "content": "别的回复"}], window_span="c1"),
+        _commit(
+            "c2",
+            1000,
+            [{"message_id": "m2", "role": "assistant", "content": "回答一", "origin": "harness_internal"}],
+            seq=1,
+            parent="l2",
+        ),
+        _llm("l2", 1100, [{"role": "assistant", "content": "最终答案"}], window_span="c2"),
+    ]
+    nodes = build_subject_nodes(records, subject_id="main", display_name="M", kind="main_agent")
+    assistant = nodes[2]
+    assert assistant.role == "assistant"
+    assert assistant.content == "回答一"
+    assert assistant.source_kind == "msg"
+    assert assistant.start_ts_ns == 1000
+    assert assistant.end_ts_ns == 1010
 
 
 def test_node_native_key_forms() -> None:

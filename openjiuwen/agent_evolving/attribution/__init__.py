@@ -35,6 +35,7 @@ from openjiuwen.agent_evolving.attribution.model import (
     TaskParseResult,
     jev_tier,
     make_signal_id,
+    new_attr_id,
     new_signal_id,
     reward_tier,
 )
@@ -119,6 +120,7 @@ __all__ = [
     "jev_tier",
     "load_task_parse_prompt",
     "make_signal_id",
+    "new_attr_id",
     "new_signal_id",
     "node_native_key",
     "render_node_detail",

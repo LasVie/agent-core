@@ -13,6 +13,7 @@ import json
 from typing import Any
 
 from openjiuwen.agent_evolving.attribution.agent import AttributionAgentRuntime
+from openjiuwen.agent_evolving.attribution.model import AttributionEntry
 from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode, render_overview, render_summary
 from openjiuwen.core.foundation.tool import Tool, ToolCard
 from openjiuwen.harness.tools.base_tool import ToolOutput
@@ -318,11 +319,11 @@ class SubmitAttributionTool(_AttributionTool):
                         }
                     )
             entries.append(
-                {
-                    "text_md": str(entry.get("text_md") or ""),
-                    "start_node_id": start_node_id,
-                    "end_node_id": end_node_id,
-                }
+                AttributionEntry(
+                    text_md=str(entry.get("text_md") or ""),
+                    start_node_id=start_node_id,
+                    end_node_id=end_node_id,
+                ).to_dict()
             )
         status = self._runtime.record_attribution(signal_id, entries)
         self._runtime.on_progress()

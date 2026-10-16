@@ -13,7 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from openjiuwen.agent_evolving.attribution.agent import ContextBudgetRail
+from openjiuwen.agent_evolving.attribution.agent import ContextBudgetRail, LlmStatusRail
+from openjiuwen.agent_evolving.attribution.model import StatusSink
 from openjiuwen.agent_evolving.attribution.reward.reward_schema import (
     SCHEMA_VERSION,
     validate_reward_payload,
@@ -28,6 +29,8 @@ if TYPE_CHECKING:
     from openjiuwen.harness.deep_agent import DeepAgent
 
 _PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
+
+_AGENT_CARD_ID = "attribution-reward-agent"
 
 _prompt_cache: dict[str, str] = {}
 
@@ -164,14 +167,19 @@ def build_reward_agent(
     system_prompt: str,
     workspace: str,
     language: str = "zh",
-    context_budget_tokens: int = 400_000,
+    context_budget_tokens: int = 600_000,
     max_iterations: int = 32,
     reward_sink: RewardSink | None = None,
+    status_sink: StatusSink | None = None,
+    model_name: str = "",
+    status_counter: list[int] | None = None,
 ) -> tuple["DeepAgent", ContextBudgetRail, _SubmitGate]:
     """Build the Reward deep agent with default tools, workspace and submit tool.
 
     Returns ``(agent, rail, gate)``; the host reads ``gate.submitted`` after
-    ``invoke`` to know whether a valid submission was recorded.
+    ``invoke`` to know whether a valid submission was recorded.  When
+    ``status_sink`` is given, request-level LLM events (stage ``reward``) are
+    reported through a :class:`LlmStatusRail`.
     """
     from openjiuwen.harness.factory import create_deep_agent
     from openjiuwen.harness.rails.sys_operation_rail import SysOperationRail
@@ -179,12 +187,23 @@ def build_reward_agent(
     rail = ContextBudgetRail(context_budget_tokens, reason_prefix="reward")
     gate = _SubmitGate()
     submit_rail = RewardSubmitRail(gate)
+    rails: list[AgentRail] = [SysOperationRail(with_code_tool=True), submit_rail, rail]
+    if status_sink is not None:
+        rails.append(
+            LlmStatusRail(
+                status_sink,
+                stage="reward",
+                agent_id=_AGENT_CARD_ID,
+                model=model_name,
+                counter=status_counter if status_counter is not None else [0],
+            )
+        )
     agent = create_deep_agent(
         model,
         card=card,
         system_prompt=system_prompt,
         tools=[SubmitRewardTool(reward_sink, gate)],
-        rails=[SysOperationRail(with_code_tool=True), submit_rail, rail],
+        rails=rails,
         workspace=workspace,
         restrict_to_work_dir=True,
         max_iterations=max_iterations,

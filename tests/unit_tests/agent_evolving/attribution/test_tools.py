@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
@@ -111,6 +112,28 @@ async def test_submit_attribution_atomic_and_overwrite() -> None:
     )
     assert result["status"] == "updated"
     assert runtime.attributions[signal_id][0]["text_md"] == "better cause"
+
+
+async def test_submit_attribution_entries_carry_attr_ids() -> None:
+    runtime = NodeBackedRuntime(_nodes())
+    tools = _tool_map(runtime)
+    signal_id = _signals()[0].signal_id
+    await _invoke(
+        tools["submit_attribution"],
+        diag_signal_id=signal_id,
+        results=[
+            {"text_md": "cause", "start_node_id": "main:1"},
+            {"text_md": "span", "start_node_id": "main:0", "end_node_id": "main:1"},
+        ],
+    )
+    entries = runtime.attributions[signal_id]
+    assert len(entries) == 2
+    attr_ids = {entry["attr_id"] for entry in entries}
+    assert len(attr_ids) == 2
+    for attr_id in attr_ids:
+        assert re.fullmatch(r"attr-[0-9a-f]{8}", attr_id)
+    assert entries[0]["text_md"] == "cause"
+    assert entries[1]["end_node_id"] == "main:1"
 
 
 async def test_submit_attribution_whole_error_on_bad_entry() -> None:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import pytest
@@ -18,6 +19,7 @@ from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode
 from openjiuwen.agent_evolving.attribution.run import (
     NodeBackedRuntime,
     build_reward_user_prompt,
+    prepare_reward_temp_dir,
     run_attribution,
     run_diagnosis,
 )
@@ -56,6 +58,15 @@ def _task_parse(with_artifacts: bool = True) -> TaskParseResult:
 
 def _signal() -> DiagnosticSignal:
     return DiagnosticSignal.create("错误", source=SignalSource.KEYWORD_TOOL, node_ids=["main:1"])
+
+
+def _tier_signal(tier: str) -> DiagnosticSignal:
+    return DiagnosticSignal.create(
+        f"{tier} 信号",
+        source=SignalSource.REWARD,
+        tier=tier,
+        node_ids=["main:1"],
+    )
 
 
 def test_build_reward_user_prompt_zh() -> None:
@@ -101,6 +112,195 @@ async def test_run_diagnosis_skips_reward_without_model() -> None:
     )
     assert result.signal_mode == "rule_jev"
     assert result.run_meta["reward"]["skipped"] == "no model injected"
+
+
+def _reward_payload() -> dict[str, Any]:
+    return {
+        "schema_version": "attribution.reward.v1",
+        "overall": {"comment": "整体不错", "total_score": 87},
+        "categories": [{"name": "正确性", "comment": "基本正确", "score": 90}],
+        "dimensions": [
+            {
+                "category": "正确性",
+                "requirement": "结果应正确",
+                "comment": "有一处错误",
+                "score": 70,
+                "related_signal_ids": ["diag-a"],
+            }
+        ],
+    }
+
+
+class _FakeRewardGate:
+    def __init__(self) -> None:
+        self.submitted = False
+
+    def mark(self) -> None:
+        self.submitted = True
+
+
+class _FakeRewardAgent:
+    def __init__(self, sink: Any, gate: _FakeRewardGate) -> None:
+        self._sink = sink
+        self._gate = gate
+
+    async def invoke(self, prompt: str) -> dict[str, Any]:
+        del prompt
+        self._sink.submit(_reward_payload())
+        self._gate.mark()
+        return {}
+
+
+async def test_run_diagnosis_reward_success_exposes_full_payload(monkeypatch: Any) -> None:
+    async def fake_keyword(*args: Any, **kwargs: Any) -> tuple[list[DiagnosticSignal], dict[str, Any]]:
+        del args, kwargs
+        return [_signal()], {"mode": "rule"}
+
+    def fake_build_reward(**kwargs: Any) -> tuple[Any, _FakeRail, _FakeRewardGate]:
+        gate = _FakeRewardGate()
+        return _FakeRewardAgent(kwargs["reward_sink"], gate), _FakeRail(), gate
+
+    monkeypatch.setattr(run_module, "run_keyword_diagnosis", fake_keyword)
+    monkeypatch.setattr(run_module, "build_reward_agent", fake_build_reward)
+    result = await run_diagnosis(
+        run_id="r1",
+        language="zh",
+        nodes_by_subagent=_nodes(),
+        user_attribution="",
+        task_parse=_task_parse(with_artifacts=True),
+        keyword_mode="rule",
+        model=object(),
+        reward_card=object(),
+    )
+    assert result.signal_mode == "reward"
+    assert result.reward_overall is not None
+    assert result.reward_overall.total_score == 87
+    assert result.reward_overall.comment == "整体不错"
+    assert result.reward_payload is not None
+    assert result.reward_payload["schema_version"] == "attribution.reward.v1"
+    assert result.reward_payload["overall"]["total_score"] == 87
+    assert result.reward_payload["categories"] == [{"name": "正确性", "comment": "基本正确", "score": 90}]
+    assert result.reward_payload["dimensions"][0]["category"] == "正确性"
+    assert len(result.signals) == 1
+    assert result.signals[0].source == SignalSource.REWARD
+    assert result.signals[0].score == 70
+    assert result.run_meta["reward"]["submitted"] is True
+
+
+class _CollectSink:
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    def report(self, event: Any) -> None:
+        self.events.append(event)
+
+
+async def test_run_diagnosis_forwards_reward_status_and_budget(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_keyword(*args: Any, **kwargs: Any) -> tuple[list[DiagnosticSignal], dict[str, Any]]:
+        del args, kwargs
+        return [_signal()], {"mode": "rule"}
+
+    def fake_build_reward(**kwargs: Any) -> tuple[Any, _FakeRail, _FakeRewardGate]:
+        captured.update(kwargs)
+        gate = _FakeRewardGate()
+        return _FakeRewardAgent(kwargs["reward_sink"], gate), _FakeRail(), gate
+
+    monkeypatch.setattr(run_module, "run_keyword_diagnosis", fake_keyword)
+    monkeypatch.setattr(run_module, "build_reward_agent", fake_build_reward)
+    sink = _CollectSink()
+    counter = [7]
+    await run_diagnosis(
+        run_id="r1",
+        language="zh",
+        nodes_by_subagent=_nodes(),
+        user_attribution="",
+        task_parse=_task_parse(with_artifacts=True),
+        keyword_mode="rule",
+        model=object(),
+        reward_card=object(),
+        status_sink=sink,
+        model_name="m1",
+        status_counter=counter,
+    )
+    assert captured["status_sink"] is sink
+    assert captured["model_name"] == "m1"
+    assert captured["status_counter"] is counter
+    assert captured["context_budget_tokens"] == 600_000
+    assert captured["max_iterations"] == 32
+
+
+async def test_run_diagnosis_prepares_reward_temp_dir(monkeypatch: Any, tmp_path: Any) -> None:
+    async def fake_keyword(*args: Any, **kwargs: Any) -> tuple[list[DiagnosticSignal], dict[str, Any]]:
+        del args, kwargs
+        return [_signal()], {"mode": "rule"}
+
+    def fake_build_reward(**kwargs: Any) -> tuple[Any, _FakeRail, _FakeRewardGate]:
+        gate = _FakeRewardGate()
+        return _FakeRewardAgent(kwargs["reward_sink"], gate), _FakeRail(), gate
+
+    monkeypatch.setattr(run_module, "run_keyword_diagnosis", fake_keyword)
+    monkeypatch.setattr(run_module, "build_reward_agent", fake_build_reward)
+    stale = tmp_path / ".reward_temp" / "stale.txt"
+    stale.parent.mkdir()
+    stale.write_text("old", encoding="utf-8")
+    await run_diagnosis(
+        run_id="r1",
+        language="zh",
+        nodes_by_subagent=_nodes(),
+        user_attribution="",
+        task_parse=_task_parse(with_artifacts=True),
+        keyword_mode="rule",
+        model=object(),
+        reward_card=object(),
+        workspace=str(tmp_path),
+    )
+    temp = tmp_path / ".reward_temp"
+    assert temp.is_dir()
+    assert list(temp.iterdir()) == []
+
+
+async def test_prepare_reward_temp_dir_tolerates_failure(tmp_path: Any) -> None:
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x", encoding="utf-8")
+    prepare_reward_temp_dir(str(blocker / "workspace"))
+
+
+async def test_build_reward_agent_wires_llm_status_rail(monkeypatch: Any) -> None:
+    from openjiuwen.agent_evolving.attribution.reward.reward_agent import build_reward_agent
+    from openjiuwen.harness import factory as harness_factory
+
+    captured: dict[str, Any] = {}
+
+    def fake_create_deep_agent(model: Any, **kwargs: Any) -> Any:
+        del model
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(harness_factory, "create_deep_agent", fake_create_deep_agent)
+    sink = _CollectSink()
+    build_reward_agent(
+        model=object(),
+        card=object(),
+        system_prompt="p",
+        workspace="/w",
+        reward_sink=None,
+        status_sink=sink,
+        model_name="m1",
+        status_counter=[3],
+    )
+    rails = captured["rails"]
+    status_rails = [rail for rail in rails if type(rail).__name__ == "LlmStatusRail"]
+    assert len(status_rails) == 1
+    status_rail = status_rails[0]
+    assert status_rail._stage == "reward"
+    assert status_rail._agent_id == "attribution-reward-agent"
+    assert status_rail._model == "m1"
+    assert status_rail._counter == [3]
+    budget_rails = [rail for rail in rails if type(rail).__name__ == "ContextBudgetRail"]
+    assert len(budget_rails) == 1
+    assert budget_rails[0]._budget == 600_000
 
 
 class _FakeDeepAgent:
@@ -161,6 +361,9 @@ async def test_run_attribution_success_single_round(monkeypatch: Any) -> None:
     assert outcome.wake_attempted is False
     assert fake_agent.invocations == 1
     assert outcome.counts["attributed"] == 1
+    entry = runtime.attributions[signals[0].signal_id][0]
+    assert re.fullmatch(r"attr-[0-9a-f]{8}", entry["attr_id"])
+    assert entry["start_node_id"] == "main:1"
 
 
 async def test_run_attribution_wake_once_then_success(monkeypatch: Any) -> None:
@@ -257,6 +460,57 @@ async def test_run_attribution_empty_signals_short_circuits() -> None:
     )
     assert outcome.status == "success"
     assert outcome.completed is True
+    assert outcome.skipped_signal_ids == []
+
+
+async def test_run_attribution_skips_perfect_signals(monkeypatch: Any) -> None:
+    runtime = NodeBackedRuntime(_nodes())
+    perfect = _tier_signal("perfect")
+    fair = _tier_signal("fair")
+    weak = _tier_signal("weak")
+    uncertain = _tier_signal("uncertain")
+    signals = [perfect, fair, weak, uncertain]
+    fake_agent = _FakeDeepAgent(runtime, [fair, weak, uncertain], rounds_to_finish=1)
+    _patch_build(monkeypatch, fake_agent, _FakeRail())
+    monkeypatch.setattr("openjiuwen.core.session.agent.create_agent_session", _FakeSession)
+    outcome = await run_attribution(
+        model=object(),
+        nodes_by_subagent=_nodes(),
+        signals=signals,
+        task_description="写报告",
+        runtime=runtime,
+        total_timeout_s=None,
+    )
+    assert outcome.status == "success"
+    assert outcome.completed is True
+    assert outcome.skipped_signal_ids == [perfect.signal_id]
+    assert set(runtime.attributions) == {fair.signal_id, weak.signal_id, uncertain.signal_id}
+    assert perfect.signal_id not in runtime.attributions
+    assert fake_agent.invocations == 1
+    assert perfect.text not in fake_agent.prompts[0]
+
+
+async def test_run_attribution_all_perfect_short_circuits(monkeypatch: Any) -> None:
+    built: list[bool] = []
+
+    def build_marker(**kwargs: Any) -> tuple[Any, _FakeRail]:
+        del kwargs
+        built.append(True)
+        return _FakeDeepAgent(NodeBackedRuntime(_nodes()), [], rounds_to_finish=1), _FakeRail()
+
+    monkeypatch.setattr(run_module, "build_attribution_agent", build_marker)
+    perfect = _tier_signal("perfect")
+    outcome = await run_attribution(
+        model=object(),
+        nodes_by_subagent=_nodes(),
+        signals=[perfect],
+        task_description="写报告",
+    )
+    assert outcome.status == "success"
+    assert outcome.completed is True
+    assert outcome.skipped_signal_ids == [perfect.signal_id]
+    assert outcome.counts["attributed"] == 0
+    assert built == []
 
 
 async def test_run_attribution_agent_error(monkeypatch: Any) -> None:

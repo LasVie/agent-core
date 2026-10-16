@@ -322,6 +322,15 @@ def build_subject_nodes(
             message_id, trace_id, span_id, start_ns, end_ns = message_sources[signature]
             used_signatures.add(signature)
             source_kind = "msg"
+            if role == "assistant" and signature in llm_by_signature:
+                # A reply's commit can land much later than the reply itself:
+                # the window is committed when the next user turn arrives, so
+                # a commit-derived timestamp would push the answer past the
+                # time the user selected on the axis.  The llm span records
+                # when the reply was actually produced; prefer that window
+                # while keeping the commit's identity ids.
+                _, _, produced_start, produced_end = llm_by_signature[signature]
+                start_ns, end_ns = produced_start, produced_end
         elif role == "assistant":
             source_kind = "llm"
             call_ids = [
@@ -395,7 +404,13 @@ def slice_nodes_by_range(
     nodes_by_subagent: Mapping[str, list[TrajectoryNode]],
     ranges: Sequence[tuple[str, int, int]],
 ) -> dict[str, list[TrajectoryNode]]:
-    """Slice nodes to the closed interval ``start_ts <= node.start_ts_ns <= end_ts``.
+    """Slice nodes to the closed window ``[start_ts, end_ts]``.
+
+    A node joins only when the window covers its full ``[start, end]``
+    interval (``start_ts <= node.start_ts_ns and node.end_ts_ns <= end_ts``),
+    so a reply that finished after the selected end is excluded even when its
+    start falls inside.  A node without a known end (``end_ts_ns == 0``) is
+    judged by its start only.
 
     Each subagent may carry at most one range; subjects without a range drop
     out entirely (proposal §2.3: unselected subjects do not participate).
@@ -409,7 +424,9 @@ def slice_nodes_by_range(
         if subagent not in range_map:
             continue
         start_ts, end_ts = range_map[subagent]
-        result[subagent] = [node for node in nodes if start_ts <= node.start_ts_ns <= end_ts]
+        result[subagent] = [
+            node for node in nodes if start_ts <= node.start_ts_ns and (node.end_ts_ns == 0 or node.end_ts_ns <= end_ts)
+        ]
     return result
 
 

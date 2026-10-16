@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from openjiuwen.agent_evolving.attribution.agent import (
@@ -31,12 +33,16 @@ from openjiuwen.agent_evolving.attribution.model import (
     StatusSink,
     SubjectRef,
     TaskParseResult,
+    new_attr_id,
 )
 from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode, search_keyword
 from openjiuwen.agent_evolving.attribution.reward.reward_agent import build_reward_agent, load_reward_prompt
 from openjiuwen.agent_evolving.attribution.reward.reward_schema import RewardResult, reward_to_signals
 from openjiuwen.agent_evolving.attribution.task_parse import TaskParseLLM, run_task_parse
 from openjiuwen.agent_evolving.attribution.tools import render_partial_view, render_trajectory_view
+from openjiuwen.core.common.logging import logger
+
+_REWARD_TEMP_DIRNAME = ".reward_temp"
 
 
 class NodeBackedRuntime:
@@ -92,7 +98,13 @@ class NodeBackedRuntime:
 
     def record_attribution(self, signal_id: str, entries: list[dict[str, Any]]) -> str:
         status = "updated" if signal_id in self.attributions else "recorded"
-        self.attributions[signal_id] = [dict(entry) for entry in entries]
+        stored: list[dict[str, Any]] = []
+        for entry in entries:
+            copy = dict(entry)
+            if not copy.get("attr_id"):
+                copy["attr_id"] = new_attr_id()
+            stored.append(copy)
+        self.attributions[signal_id] = stored
         return status
 
     def mark_signal_invalid(self, signal_id: str) -> str:
@@ -204,7 +216,7 @@ async def run_diagnosis(
     jev_concurrency: int = 8,
     model: Any = None,
     reward_card: Any = None,
-    reward_budget_tokens: int = 400_000,
+    reward_budget_tokens: int = 600_000,
     reward_max_iterations: int = 32,
     status_sink: StatusSink | None = None,
     model_name: str = "",
@@ -254,6 +266,7 @@ async def run_diagnosis(
             run_meta=run_meta,
         )
     sink = _MemoryRewardSink()
+    prepare_reward_temp_dir(workspace)
     agent, rail, gate = build_reward_agent(
         model=model,
         card=reward_card,
@@ -263,6 +276,9 @@ async def run_diagnosis(
         context_budget_tokens=reward_budget_tokens,
         max_iterations=reward_max_iterations,
         reward_sink=sink,
+        status_sink=status_sink,
+        model_name=model_name,
+        status_counter=counter,
     )
     try:
         await agent.invoke(
@@ -309,7 +325,25 @@ async def run_diagnosis(
         signals=reward_signals,
         signal_mode="reward",
         run_meta=run_meta,
+        reward_payload=reward.to_payload(),
     )
+
+
+def prepare_reward_temp_dir(workspace: str | None) -> None:
+    """Create an empty ``<workspace>/.reward_temp/`` scratch dir for the Reward run.
+
+    The Reward prompt points its temporary scripts/intermediate files at this
+    directory; clearing it first keeps one run from seeing a previous run's
+    leftovers.  Failure is logged but never fatal — the agent can still run.
+    """
+    effective = workspace or "."
+    try:
+        temp_dir = Path(effective) / _REWARD_TEMP_DIRNAME
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        logger.warning("[reward] failed to prepare %s; continuing", Path(effective) / _REWARD_TEMP_DIRNAME)
 
 
 def _now_ms() -> int:
@@ -357,18 +391,25 @@ async def run_attribution(
     The host may pass its own runtime and session; otherwise a
     :class:`NodeBackedRuntime` and a fresh agent session are used.  The 900s
     timeout covers both invoke rounds when ``total_timeout_s`` is set.
+
+    ``tier == "perfect"`` signals never enter this stage: they are filtered
+    here (proposal §4.5) and reported via ``skipped_signal_ids`` so the host
+    can surface the skip in state.
     """
-    if not signals:
+    active_signals = [signal for signal in signals if signal.tier != "perfect"]
+    skipped_signal_ids = sorted(signal.signal_id for signal in signals if signal.tier == "perfect")
+    if not active_signals:
         return AttributionRunOutcome(
             status="success",
             completed=True,
+            skipped_signal_ids=skipped_signal_ids,
             counts={"attributed": 0, "invalid": 0, "artifact": 0, "skill": 0},
             token_usage={"attribution": 0},
         )
     active_runtime = runtime or NodeBackedRuntime(nodes_by_subagent, language)
     agent, rail = build_attribution_agent(
         model=model,
-        signals=signals,
+        signals=active_signals,
         runtime=active_runtime,
         task_description=task_description,
         reward_overall=reward_overall,
@@ -387,7 +428,7 @@ async def run_attribution(
     initial_prompt = build_attribution_initial_prompt(
         task_description=task_description,
         reward_overall=reward_overall,
-        signals=signals,
+        signals=active_signals,
         subjects=active_runtime.subjects(),
         language=language,
     )
@@ -406,7 +447,8 @@ async def run_attribution(
                 status="failed",
                 failure_kind="tokens_exceeded",
                 completed=completed,
-                pending_signal_ids=_pending(active_runtime, signals),
+                pending_signal_ids=_pending(active_runtime, active_signals),
+                skipped_signal_ids=skipped_signal_ids,
                 wake_attempted=wake_attempted,
                 counts=counts,
                 token_usage={"attribution": rail.spent},
@@ -415,6 +457,7 @@ async def run_attribution(
             return AttributionRunOutcome(
                 status="success",
                 completed=True,
+                skipped_signal_ids=skipped_signal_ids,
                 wake_attempted=wake_attempted,
                 counts=counts,
                 token_usage={"attribution": rail.spent},
@@ -423,7 +466,8 @@ async def run_attribution(
             status="failed",
             failure_kind="incomplete",
             completed=False,
-            pending_signal_ids=_pending(active_runtime, signals),
+            pending_signal_ids=_pending(active_runtime, active_signals),
+            skipped_signal_ids=skipped_signal_ids,
             wake_attempted=wake_attempted,
             counts=counts,
             token_usage={"attribution": rail.spent},
@@ -451,21 +495,22 @@ async def run_attribution(
 
     try:
         await invoke_with_timeout(initial_prompt)
-        all_done, check = _overview_all_done(active_runtime, [signal.signal_id for signal in signals])
+        all_done, check = _overview_all_done(active_runtime, [signal.signal_id for signal in active_signals])
         if all_done:
             return outcome(True, False)
         if deadline is not None and deadline - loop.time() <= 0:
             return outcome(False, False)
         wake_text = build_wake_text(check, language)
         await invoke_with_timeout(wake_text)
-        all_done, _ = _overview_all_done(active_runtime, [signal.signal_id for signal in signals])
+        all_done, _ = _overview_all_done(active_runtime, [signal.signal_id for signal in active_signals])
         return outcome(all_done, True)
     except asyncio.TimeoutError:
         return AttributionRunOutcome(
             status="failed",
             failure_kind="timeout",
             completed=False,
-            pending_signal_ids=_pending(active_runtime, signals),
+            pending_signal_ids=_pending(active_runtime, active_signals),
+            skipped_signal_ids=skipped_signal_ids,
             wake_attempted=False,
             counts={},
             token_usage={"attribution": rail.spent},
@@ -476,7 +521,8 @@ async def run_attribution(
             failure_kind="error",
             error_detail=str(exc)[:300],
             completed=False,
-            pending_signal_ids=_pending(active_runtime, signals),
+            pending_signal_ids=_pending(active_runtime, active_signals),
+            skipped_signal_ids=skipped_signal_ids,
             wake_attempted=False,
             counts={},
             token_usage={"attribution": rail.spent},

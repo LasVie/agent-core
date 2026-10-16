@@ -64,6 +64,11 @@ def new_signal_id() -> str:
     return f"diag-{uuid.uuid4().hex[:24]}"
 
 
+def new_attr_id() -> str:
+    """Return a fresh ``attr-<8hex>`` id for one attribution entry."""
+    return f"attr-{uuid.uuid4().hex[:8]}"
+
+
 @dataclass(frozen=True)
 class DiagnosticSignal:
     """One diagnosis output fed to the attribution agent.
@@ -226,12 +231,19 @@ class DiagnosisRequest:
 
 @dataclass(frozen=True)
 class DiagnosisResult:
-    """Stage-two output: either reward dimensions or keyword/Jev signals."""
+    """Stage-two output: either reward dimensions or keyword/Jev signals.
+
+    ``reward_payload`` carries the full validated reward submission
+    (``attribution.reward.v1``: overall + categories + dimensions) so a host
+    can display the Reward stage in full; ``reward_overall`` stays as the
+    compact display summary.
+    """
 
     reward_overall: RewardOverall | None
     signals: list[DiagnosticSignal]
     signal_mode: Literal["reward", "rule_jev"]
     run_meta: dict[str, Any] = field(default_factory=dict)
+    reward_payload: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -241,9 +253,11 @@ class AttributionEntry:
     text_md: str
     start_node_id: str
     end_node_id: str | None = None
+    attr_id: str = field(default_factory=new_attr_id)
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "attr_id": self.attr_id,
             "text_md": self.text_md,
             "start_node_id": self.start_node_id,
             "end_node_id": self.end_node_id,
@@ -259,6 +273,7 @@ class AttributionRunOutcome:
     error_detail: str | None = None
     completed: bool = False
     pending_signal_ids: list[str] = field(default_factory=list)
+    skipped_signal_ids: list[str] = field(default_factory=list)
     wake_attempted: bool = False
     counts: dict[str, Any] = field(default_factory=dict)
     token_usage: dict[str, Any] = field(default_factory=dict)
@@ -336,6 +351,7 @@ __all__ = [
     "TaskParseResult",
     "jev_tier",
     "make_signal_id",
+    "new_attr_id",
     "new_signal_id",
     "reward_tier",
 ]
