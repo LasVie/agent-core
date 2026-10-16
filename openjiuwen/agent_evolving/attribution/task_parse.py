@@ -1,0 +1,856 @@
+# coding: utf-8
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+"""Stage one: rule-based file-artifact extraction and the task-parse pseudo-agent.
+
+The pseudo-agent is a single tool-carrying LLM call; the tools only exist to
+get a structured response back.  The file-artifact rules follow
+``CYR/CONTEXT_01a_tool_re_strings.md``: send_file_to_user (R0) beats files
+that were created (R1), which beat files that were only edited (R2).
+"""
+
+from __future__ import annotations
+
+import json
+import ntpath
+import posixpath
+import re
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
+from typing import Any, Awaitable, Protocol
+
+from openjiuwen.agent_evolving.attribution.model import TaskParseResult
+from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode
+
+_ASSISTANT_NO_TOOL_CALL_LIMIT = 10000
+_EDGE_NODE_LIMIT = 2000
+_USER_MESSAGE_LIMIT = 1000
+_EDGE_NODE_COUNT = 5
+_FILE_CANDIDATE_LIMIT = 10
+
+_PATH_TOKEN = r"(?:'[^']+'|\"[^\"]+\"|[^\s'\"|;&<>]+)"
+_PS_PATH = r"(?:'[^']+'|\"[^\"]+\"|[A-Za-z]:\\[^\s;|]+|[^\s;|]+)"
+_DEVICE_PATHS = re.compile(r"(?i)^(?:/dev/(?:null|fd|zero|random|stdout|stderr)|nul(?:\.|$))")
+_UNRESOLVED_PATH = re.compile(r"[~$%]")
+
+_WRITE_TOOLS = {"write_file"}
+_EDIT_TOOLS = {"edit_file", "apply_patch"}
+_SHELL_TOOLS = frozenset({"bash", "mcp_exec_command", "cmd", "powershell", "create_terminal"})
+_R0_TOOL = "send_file_to_user"
+
+# POSIX (sh/bash/zsh) ---------------------------------------------------------
+
+_RE_TEE = re.compile(
+    rf"(?<![\w.-])tee\b(?P<append>\s+-a\b)?(?:\s+(?!-a\b)-\S+)*\s+"
+    rf"(?P<paths>{_PATH_TOKEN}(?:\s+{_PATH_TOKEN})*)"
+)
+_RE_TOUCH = re.compile(r"(?<![\w.-])touch\b(?:\s+-\S+)*\s+(?P<paths>.+)")
+_RE_MKDIR = re.compile(r"(?<![\w.-])(?:mkdir|md)\b(?:\s+-\S+)*\s+(?P<paths>.+)")
+_RE_CP = re.compile(r"(?<![\w.-])(?:cp|install)\b")
+_RE_MV = re.compile(r"(?<![\w.-])mv\b")
+_RE_LN = re.compile(r"(?<![\w.-])ln\b(?=[^;&|]*\s-s\b)")
+_RE_TRUNCATE = re.compile(rf"(?<![\w.-])truncate\b[^;&|]*\s-s\s+\S+\s+(?P<path>{_PATH_TOKEN})")
+_RE_DD = re.compile(r"(?<![\w.-])dd\b[^;&|]*\bof=(?P<path>[^\s;&|]+)")
+_RE_DOWNLOAD = re.compile(rf"(?<![\w.-])(?:wget|curl)\b[^;&|]*?(?:\s-O|\s--output|\s-o)\s*(?P<path>{_PATH_TOKEN})")
+_RE_SED_I = re.compile(r"(?<![\w.-])sed\b(?=[^;&|]*?(?:\s-[A-Za-z]*i[A-Za-z.]*\b|\s--in-place\b))")
+_RE_PERL_I = re.compile(r"(?<![\w.-])perl\b(?=[^;&|]*\s-[A-Za-z]*i)")
+_RE_GAWK_I = re.compile(r"(?<![\w.-])gawk\b(?=[^;&|]*\s-i\s+inplace\b)")
+_RE_SORT_O = re.compile(rf"(?<![\w.-])sort\b[^;&|]*\s-o\s*(?P<path>{_PATH_TOKEN})")
+_RE_DOS2UNIX = re.compile(r"(?<![\w.-])(?:dos2unix|unix2dos)\b")
+_RE_PATCH = re.compile(r"(?<![\w.-])patch\b|(?<![\w.-])git\s+apply\b")
+_RE_TAR_X = re.compile(r"(?<![\w.-])tar\b[^;&|]*\s-[A-Za-z]*x")
+_RE_UNZIP = re.compile(r"(?<![\w.-])unzip\b")
+_RE_PY_OPEN = re.compile(r"open\s*\(\s*(?P<q>['\"])(?P<path>.+?)(?P=q)\s*,\s*(?P<q2>['\"])[wax][+bt]*(?P=q2)")
+
+# Windows cmd ----------------------------------------------------------------
+
+_RE_COPY = re.compile(r"(?i)(?<!\w)(?:copy|xcopy|robocopy)\b")
+_RE_MOVE = re.compile(r"(?i)(?<!\w)move\b")
+_RE_REN = re.compile(r"(?i)(?<!\w)(?:ren|rename)\b")
+_RE_MD = re.compile(r"(?i)(?<!\w)(?:md|mkdir)\b")
+_RE_FSUTIL = re.compile(r"(?i)fsutil\s+file\s+createnew\s+(?P<path>[^\s;&|]+)")
+_RE_CERTUTIL = re.compile(r"(?i)certutil\b[^;&|]*-decode\s+\S+\s+(?P<path>[^\s;&|]+)")
+
+# PowerShell -----------------------------------------------------------------
+
+_RE_PS_WRITE = re.compile(
+    rf"(?i)(?<![\w-])(?:Set-Content|Out-File|Tee-Object)\b[^;|]*?(?:-FilePath|-Path)?\s*(?P<path>{_PS_PATH})"
+)
+_RE_PS_APPEND = re.compile(rf"(?i)(?<![\w-])Add-Content\b[^;|]*?(?:-Path)?\s*(?P<path>{_PS_PATH})")
+_RE_PS_NEWITEM = re.compile(rf"(?i)(?<![\w-])New-Item\b[^;|]*?(?:-Path)?\s*(?P<path>{_PS_PATH})")
+_RE_PS_COPY = re.compile(r"(?i)(?<![\w-])(?:Copy-Item|Move-Item|Rename-Item)\b")
+_RE_PS_EXPORT = re.compile(rf"(?i)(?<![\w-])(?:Export-Csv|Export-Clixml)\b[^;|]*?(?:-Path)?\s*(?P<path>{_PS_PATH})")
+_RE_DOTNET_IO = re.compile(
+    r"(?i)\[(?:System\.)?IO\.File\]::(?:WriteAllText|WriteAllLines|WriteAllBytes|AppendAllText|AppendAllLines)"
+    r"\s*\(\s*(?P<q>['\"])(?P<path>.+?)(?P=q)"
+)
+
+
+class TaskParseError(Exception):
+    """The pseudo-agent refused the run (incomplete or unrelated tasks)."""
+
+    def __init__(self, error_type: str, message: str) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.message = message
+
+
+class TaskParseLLM(Protocol):
+    """Minimal async model surface for the task-parse pseudo-agent call."""
+
+    async def invoke(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any) -> Any:
+        """Return a response with ``tool_calls`` and ``content`` surfaces."""
+
+
+def _json_loads(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return value
+
+
+def _arguments(tool_call: Mapping[str, Any]) -> Any:
+    function = tool_call.get("function")
+    if isinstance(function, Mapping):
+        arguments = function.get("arguments")
+    else:
+        arguments = tool_call.get("arguments")
+    return _json_loads(arguments) if arguments is not None else {}
+
+
+def _split_segments(command: str) -> list[str]:
+    """Split a shell command on ``;``, ``&&``, ``||`` and newlines outside quotes."""
+    segments: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    index = 0
+    length = len(command)
+    while index < length:
+        char = command[index]
+        if quote is not None:
+            current.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in ("'", '"'):
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+        if char in (";", "\n", "\r"):
+            segments.append("".join(current))
+            current = []
+            index += 1
+            continue
+        if char in ("&", "|") and index + 1 < length and command[index + 1] == char:
+            segments.append("".join(current))
+            current = []
+            index += 2
+            continue
+        current.append(char)
+        index += 1
+    if current:
+        segments.append("".join(current))
+    return segments
+
+
+def _strip_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def _positional_tokens(segment: str, is_windows: bool = False) -> list[str]:
+    tokens: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    for char in segment:
+        if quote is not None:
+            current.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+            current.append(char)
+            continue
+        if char.isspace():
+            if current:
+                tokens.append(_strip_quotes("".join(current)))
+                current = []
+            continue
+        current.append(char)
+    if current:
+        tokens.append(_strip_quotes("".join(current)))
+    positional: list[str] = []
+    for token in tokens:
+        if token.startswith("-"):
+            continue
+        if is_windows and token.startswith("/"):
+            continue
+        if "=" in token and not token.startswith(("/", "\\")):
+            continue
+        positional.append(token)
+    return positional
+
+
+def _clean_path(path: str) -> str | None:
+    value = _strip_quotes(path).strip()
+    if not value:
+        return None
+    if _DEVICE_PATHS.search(value):
+        return None
+    return value
+
+
+def _normalize_path(path: str, workspace: str | None) -> str | None:
+    cleaned = _clean_path(path)
+    if cleaned is None:
+        return None
+    if _UNRESOLVED_PATH.search(cleaned):
+        return None
+    looks_windows = bool(re.match(r"^[A-Za-z]:[\\/]", cleaned)) or "\\" in cleaned
+    norm = ntpath.normpath if looks_windows else posixpath.normpath
+    normalized = norm(cleaned)
+    if looks_windows:
+        normalized = normalized.casefold()
+    if not posixpath.isabs(normalized) and not ntpath.isabs(normalized) and workspace:
+        normalized = norm(str(Path(workspace) / normalized))
+    return normalized
+
+
+def _extract_r0(arguments: Any) -> list[str]:
+    value = arguments.get("abs_file_path_list") if isinstance(arguments, Mapping) else None
+    if value is None:
+        return []
+    parsed = _json_loads(value)
+    if isinstance(parsed, str):
+        parsed = _json_loads(parsed)
+    if isinstance(parsed, list):
+        return [item for item in (str(entry) for entry in parsed) if item]
+    if isinstance(parsed, str) and parsed:
+        return [parsed]
+    return []
+
+
+def _scan_redirects(segment: str) -> list[tuple[str, str]]:
+    """Scan ``>`` / ``>>`` redirects outside of quotes (heredocs excluded)."""
+    result: list[tuple[str, str]] = []
+    index = 0
+    length = len(segment)
+    while index < length:
+        char = segment[index]
+        if char in ("'", '"'):
+            quote = char
+            index += 1
+            while index < length and segment[index] != quote:
+                index += 1
+            index += 1
+            continue
+        if char != ">":
+            index += 1
+            continue
+        if segment[index - 1 : index] in ("=", "<", ">", "&", "-"):
+            index += 1
+            continue
+        run_end = index
+        while run_end < length and segment[run_end] == ">":
+            run_end += 1
+        if run_end < length and segment[run_end] == "<":
+            index = run_end
+            continue
+        cursor = run_end
+        while cursor < length and segment[cursor].isspace():
+            cursor += 1
+        if cursor >= length:
+            break
+        if segment[cursor] in ("'", '"'):
+            quote = segment[cursor]
+            cursor += 1
+            start = cursor
+            while cursor < length and segment[cursor] != quote:
+                cursor += 1
+            result.append((segment[start:cursor], "create"))
+            index = cursor + 1
+            continue
+        start = cursor
+        while cursor < length and not segment[cursor].isspace() and segment[cursor] not in ";&|<>":
+            cursor += 1
+        result.append((segment[start:cursor], "create"))
+        index = cursor
+    return result
+
+
+def _extract_shell_paths(tool_name: str, command: str) -> tuple[list[tuple[str, str]], int]:
+    """Return ``[(path, operation), ...]`` plus a low-confidence count."""
+    created: list[tuple[str, str]] = []
+    edited: list[tuple[str, str]] = []
+    low_confidence = 0
+    is_windows = tool_name in {"cmd", "powershell", "create_terminal"}
+
+    for segment in _split_segments(command):
+        if not segment.strip():
+            continue
+        if is_windows:
+            created.extend(_cmd_paths(segment))
+            edited.extend(_ps_append_paths(segment))
+            created.extend(_ps_create_paths(segment))
+            continue
+        created.extend(_scan_redirects(segment))
+        for match in _RE_TEE.finditer(segment):
+            append = match.group("append") is not None
+            for path in (match.group("paths") or "").split():
+                (edited if append else created).append((path, "edit" if append else "create"))
+        for match in _RE_TOUCH.finditer(segment):
+            created.extend((path, "create") for path in _split_paths(match.group("paths")))
+        for match in _RE_MKDIR.finditer(segment):
+            created.extend((path, "create") for path in _split_paths(match.group("paths")))
+        for pattern, operation in (
+            (_RE_CP, "create"),
+            (_RE_MV, "create"),
+            (_RE_LN, "create"),
+        ):
+            if pattern.search(segment):
+                positional = _positional_tokens(segment)
+                if len(positional) >= 2:
+                    created.append((positional[-1], operation))
+        for pattern, operation in ((_RE_SED_I, "edit"), (_RE_PERL_I, "edit"), (_RE_GAWK_I, "edit")):
+            if pattern.search(segment):
+                positional = _positional_tokens(segment)
+                if positional:
+                    edited.append((positional[-1], operation))
+        for pattern, operation in ((_RE_SORT_O, "create"), (_RE_TRUNCATE, "create"), (_RE_DD, "create")):
+            match = pattern.search(segment)
+            if match:
+                created.append((match.group("path"), operation))
+        for pattern, operation in ((_RE_DOWNLOAD, "create"),):
+            match = pattern.search(segment)
+            if match:
+                created.append((match.group("path"), operation))
+        for pattern, operation in ((_RE_DOS2UNIX, "edit"),):
+            if pattern.search(segment):
+                positional = _positional_tokens(segment)
+                if len(positional) >= 2:
+                    edited.append((positional[1], operation))
+        if _RE_PATCH.search(segment) or _RE_TAR_X.search(segment) or _RE_UNZIP.search(segment):
+            low_confidence += 1
+        if _RE_PY_OPEN.search(segment):
+            low_confidence += 1
+    return created + edited, low_confidence
+
+
+def _split_paths(value: str) -> list[str]:
+    return [path for path in (part.strip() for part in value.split()) if path]
+
+
+def _cmd_paths(segment: str) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    if _RE_FSUTIL.search(segment):
+        match = _RE_FSUTIL.search(segment)
+        if match:
+            result.append((match.group("path"), "create"))
+    if _RE_CERTUTIL.search(segment):
+        match = _RE_CERTUTIL.search(segment)
+        if match:
+            result.append((match.group("path"), "create"))
+    for pattern in (_RE_COPY, _RE_MOVE, _RE_REN, _RE_MD):
+        if pattern.search(segment):
+            positional = _positional_tokens(segment, is_windows=True)
+            if len(positional) >= 3:
+                result.append((positional[2], "create"))
+            elif _RE_MD.search(segment) and len(positional) >= 2:
+                result.append((positional[1], "create"))
+    return result
+
+
+def _ps_append_paths(segment: str) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    for match in _RE_PS_APPEND.finditer(segment):
+        result.append((match.group("path"), "edit"))
+    return result
+
+
+_PS_FLAG_PATH = re.compile(rf"(?i)(?:-FilePath|-Path)\s+(?P<path>{_PS_PATH})")
+
+
+def _ps_create_paths(segment: str) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    for pattern in (_RE_PS_WRITE, _RE_PS_NEWITEM, _RE_PS_EXPORT):
+        match = pattern.search(segment)
+        if not match:
+            continue
+        flag = _PS_FLAG_PATH.search(segment)
+        if flag:
+            result.append((flag.group("path"), "create"))
+            continue
+        positional = _positional_tokens(segment, is_windows=True)
+        if len(positional) >= 2:
+            result.append((positional[1], "create"))
+    for match in _RE_DOTNET_IO.finditer(segment):
+        operation = "create" if "write" in segment[match.start() : match.end()].lower() else "edit"
+        result.append((match.group("path"), operation))
+    if _RE_PS_COPY.search(segment):
+        destination = re.search(r"(?i)-Destination\s+(\S+)", segment)
+        if destination:
+            result.append((destination.group(1), "create"))
+        else:
+            positional = _positional_tokens(segment, is_windows=True)
+            if len(positional) >= 2:
+                result.append((positional[-1], "create"))
+    return result
+
+
+def extract_file_candidates(
+    nodes_by_subagent: Mapping[str, list[TrajectoryNode]],
+    workspace: str | None = None,
+) -> tuple[list[tuple[str, str, str]], dict[str, Any]]:
+    """Scan assistant tool calls for file artifacts and return candidates.
+
+    Returns ``(file_candidates, run_meta)``; candidates are
+    ``[(normalized_path, node_id, tool_type), ...]`` ordered R0 > R1 > R2.
+    """
+    r0_entries: dict[str, tuple[str, str]] = {}
+    created: set[str] = set()
+    edited: set[str] = set()
+    last_touch: dict[str, tuple[str, str]] = {}
+    first_seen: dict[str, int] = {}
+    order = 0
+    stats = {"low_confidence": 0, "unresolved": 0}
+
+    def touch(path: str, node_id: str, tool_type: str, operation: str | None) -> None:
+        nonlocal order
+        last_touch[path] = (node_id, tool_type)
+        first_seen.setdefault(path, order)
+        order += 1
+        if operation == "create":
+            created.add(path)
+        elif operation == "edit":
+            edited.add(path)
+        else:
+            r0_entries[path] = (node_id, tool_type)
+
+    for subagent in sorted(nodes_by_subagent):
+        for node in nodes_by_subagent[subagent]:
+            if node.role != "assistant" or not node.tool_calls:
+                continue
+            for tool_call in node.tool_calls:
+                name = str(tool_call.get("name") or tool_call.get("function", {}).get("name") or "")
+                arguments = _arguments(tool_call)
+                if not isinstance(arguments, Mapping):
+                    arguments = {}
+                if name == _R0_TOOL:
+                    for raw_path in _extract_r0(arguments):
+                        path = _normalize_path(raw_path, workspace)
+                        if path is None:
+                            stats["unresolved"] += 1
+                            continue
+                        touch(path, node.node_id, name, None)
+                    continue
+                if name in _WRITE_TOOLS:
+                    for key in ("file_path", "path"):
+                        if arguments.get(key):
+                            path = _normalize_path(str(arguments[key]), workspace)
+                            if path is None:
+                                stats["unresolved"] += 1
+                                continue
+                            touch(path, node.node_id, name, "create")
+                            break
+                    continue
+                if name in _EDIT_TOOLS:
+                    if name == "apply_patch":
+                        stats["low_confidence"] += 1
+                        continue
+                    for key in ("file_path", "path"):
+                        if arguments.get(key):
+                            path = _normalize_path(str(arguments[key]), workspace)
+                            if path is None:
+                                stats["unresolved"] += 1
+                                continue
+                            touch(path, node.node_id, name, "edit")
+                            break
+                    continue
+                if name in _SHELL_TOOLS:
+                    command = arguments.get("command")
+                    if not isinstance(command, str):
+                        continue
+                    hits, low = _extract_shell_paths(name, command)
+                    stats["low_confidence"] += low
+                    for raw_path, operation in hits:
+                        path = _normalize_path(raw_path, workspace)
+                        if path is None:
+                            stats["unresolved"] += 1
+                            continue
+                        touch(path, node.node_id, f"{name}:{operation}", operation)
+
+    def grade(path: str) -> int:
+        if path in r0_entries:
+            return 0
+        if path in created:
+            return 1
+        return 2
+
+    all_paths = set(r0_entries) | created | edited
+    candidates = sorted(
+        ((path, *last_touch[path]) for path in all_paths),
+        key=lambda item: (grade(item[0]), first_seen.get(item[0], order)),
+    )
+    return candidates, stats
+
+
+def _node_has_tool_calls(node: TrajectoryNode) -> bool:
+    return bool(node.tool_calls)
+
+
+def build_task_parse_digest(
+    nodes_by_subagent: Mapping[str, list[TrajectoryNode]],
+    file_candidates: Sequence[tuple[str, str, str]],
+    language: str = "zh",
+) -> str:
+    """Assemble the disclosure digest (assistant texts, head/tail, users)."""
+    assistant_block: list[str] = []
+    edge_block: list[str] = []
+    user_block: list[str] = []
+    disclosed: set[int] = set()
+    node_id_by_index: dict[int, str] = {}
+    index_by_node_id: dict[str, int] = {}
+
+    flat: list[TrajectoryNode] = []
+    for subagent in sorted(nodes_by_subagent):
+        for node in nodes_by_subagent[subagent]:
+            node_id_by_index[id(node)] = node.node_id
+            index_by_node_id[node.node_id] = len(flat)
+            flat.append(node)
+
+    for node in flat:
+        if node.role == "assistant" and not _node_has_tool_calls(node) and node.content:
+            assistant_block.append(f"{node.node_id}: {node.content[:_ASSISTANT_NO_TOOL_CALL_LIMIT]}")
+            disclosed.add(id(node))
+
+    for subagent in sorted(nodes_by_subagent):
+        nodes = nodes_by_subagent[subagent]
+        for node in nodes[:_EDGE_NODE_COUNT] + nodes[-_EDGE_NODE_COUNT:]:
+            if id(node) in disclosed:
+                continue
+            edge_block.append(f"{node.node_id}: {_node_line(node, _EDGE_NODE_LIMIT)}")
+            disclosed.add(id(node))
+
+    for node in flat:
+        if node.role != "user" or id(node) in disclosed:
+            continue
+        content = str(node.content or "")
+        if "<system-reminder>" in content:
+            continue
+        user_block.append(f"{node.node_id}: {content[:_USER_MESSAGE_LIMIT]}")
+        disclosed.add(id(node))
+
+    sections: list[str] = []
+    assistant_text = "\n".join(assistant_block) if assistant_block else "（无）"
+    edge_text = "\n".join(edge_block) if edge_block else "（无）"
+    user_text = "\n".join(user_block) if user_block else "（无）"
+    sections.append(f"## 助手消息正文（不含 tool call 的 assistant 消息）\n{assistant_text}")
+    sections.append(f"## 各 subagent 首/尾节点（前 5 + 后 5，带 node_id）\n{edge_text}")
+    sections.append(f"## 过程中的用户消息\n{user_text}")
+    if file_candidates:
+        rows = "\n".join(
+            f"- {path} | {node_id} | {tool_type}"
+            for path, node_id, tool_type in file_candidates[:_FILE_CANDIDATE_LIMIT]
+        )
+        sections.append(f"## 文件产物候选（路径 | 节点ID | 工具类型，按优先级排序）\n{rows}")
+    del node_id_by_index, index_by_node_id
+    return "\n\n".join(sections)
+
+
+def _node_line(node: TrajectoryNode, limit: int) -> str:
+    text = node.content or ""
+    if node.tool_calls:
+        import json as _json
+
+        text = f"{text}\ntool_calls: {_json.dumps(node.tool_calls, ensure_ascii=False)}"
+    return text[:limit]
+
+
+def _response_content_preview(response: Any) -> str | None:
+    content = getattr(response, "content", None)
+    if content is None and isinstance(response, Mapping):
+        content = response.get("content")
+    if isinstance(content, str):
+        return content[:100] or None
+    return None
+
+
+def _now_ns() -> int:
+    import time
+
+    return time.time_ns()
+
+
+TASK_PARSE_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "report_task_description",
+            "description": (
+                "汇报总结的任务描述文本（可含多个相关子任务）。 / Report the summarized task "
+                "description (may cover multiple related subtasks)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "任务描述文本。 / The task description text."}
+                },
+                "required": ["task"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "report_message_artifacts",
+            "description": (
+                "汇报任务消息产物节点（node_id 必须照抄轨迹摘要，不可编造）。 / Report the task "
+                "message artifact nodes (node_ids must be copied from the digest; never fabricate)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "任务消息产物的节点 ID 列表。 / List of node ids of the task message artifacts.",
+                    }
+                },
+                "required": ["node_ids"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "report_file_artifacts",
+            "description": (
+                "汇报任务文件产物（绝对路径，必须来自候选清单；可舍弃无关文件）。 / Report the task "
+                "file artifacts (absolute paths, chosen from the candidate list; unrelated files "
+                "may be dropped)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "任务文件产物的绝对路径列表。 / List of absolute paths of the task file artifacts."
+                        ),
+                    }
+                },
+                "required": ["paths"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "report_task_error",
+            "description": (
+                "报错：选中区域不含完整任务（incomplete_task）或含多个互不相关子任务"
+                "（multiple_unrelated_tasks）；不得与汇报类工具同轮调用。 / Report an error: "
+                "incomplete_task or multiple_unrelated_tasks; must not be mixed with report "
+                "tools in the same turn."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "error_type": {
+                        "type": "string",
+                        "enum": ["incomplete_task", "multiple_unrelated_tasks"],
+                        "description": (
+                            "只允许 incomplete_task 或 multiple_unrelated_tasks。/ Only "
+                            '"incomplete_task" or "multiple_unrelated_tasks".'
+                        ),
+                    }
+                },
+                "required": ["error_type"],
+            },
+        },
+    },
+]
+
+_TASK_ERROR_MESSAGES = {
+    "incomplete_task": "选中区域不包含完整任务（无法提取任务描述文本），流程中止。",
+    "multiple_unrelated_tasks": "选中轨迹包含多个无关子任务，流程中止。",
+}
+
+_PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
+
+_prompt_cache: dict[str, str] = {}
+
+
+def load_task_parse_prompt(language: str) -> str:
+    lang = "zh" if str(language).strip().lower() in {"zh", "cn"} else "en"
+    if lang not in _prompt_cache:
+        _prompt_cache[lang] = (_PROMPT_DIR / f"task_parse_{lang}.md").read_text(encoding="utf-8")
+    return _prompt_cache[lang]
+
+
+def _response_tool_calls(response: Any) -> list[dict[str, Any]]:
+    raw = getattr(response, "tool_calls", None)
+    if raw is None and isinstance(response, Mapping):
+        raw = response.get("tool_calls")
+    if not raw:
+        return []
+    result: list[dict[str, Any]] = []
+    for call in raw:
+        if isinstance(call, Mapping):
+            result.append(dict(call))
+            continue
+        function = getattr(call, "function", None)
+        name = getattr(function, "name", None) or getattr(call, "name", None)
+        arguments = getattr(function, "arguments", None) or getattr(call, "arguments", None)
+        if name is not None:
+            result.append({"name": name, "arguments": arguments or "{}"})
+    return result
+
+
+def _artifact_text(nodes_by_subagent: Mapping[str, list[TrajectoryNode]], node_id: str) -> str | None:
+    for nodes in nodes_by_subagent.values():
+        for node in nodes:
+            if node.node_id == node_id:
+                return node.content
+    return None
+
+
+async def run_task_parse(
+    nodes_by_subagent: Mapping[str, list[TrajectoryNode]],
+    language: str,
+    llm: TaskParseLLM,
+    *,
+    workspace: str | None = None,
+    on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    max_retries: int = 2,
+    system_prompt: str | None = None,
+    status_sink: Any = None,
+    model_name: str = "",
+    status_counter: list[int] | None = None,
+) -> TaskParseResult:
+    """Run the file-artifact rules and the task-parse pseudo-agent.
+
+    The pseudo-agent gets one response per attempt; malformed responses retry
+    up to ``max_retries`` times.  An explicit ``report_task_error`` aborts the
+    run with :class:`TaskParseError`.
+    """
+    file_candidates, extraction_stats = extract_file_candidates(nodes_by_subagent, workspace)
+    digest = build_task_parse_digest(nodes_by_subagent, file_candidates, language)
+    system = system_prompt or load_task_parse_prompt(language)
+    counter = status_counter if status_counter is not None else [0]
+    attempts = 0
+    while attempts <= max_retries:
+        attempts += 1
+        started_at = _now_ns()
+        try:
+            response = await llm.invoke(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": digest},
+                ],
+                tools=TASK_PARSE_TOOLS,
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed call counts as one attempt
+            from openjiuwen.agent_evolving.attribution.agent import emit_single_llm_event
+
+            emit_single_llm_event(
+                status_sink,
+                stage="task_parse",
+                model=model_name,
+                counter=counter,
+                started_at_ns=started_at,
+                ended_at_ns=_now_ns(),
+                retry_index=attempts - 1,
+                error=str(exc)[:200],
+            )
+            if attempts > max_retries:
+                raise
+            continue
+        calls = _response_tool_calls(response)
+        from openjiuwen.agent_evolving.attribution.agent import emit_single_llm_event
+
+        emit_single_llm_event(
+            status_sink,
+            stage="task_parse",
+            model=model_name,
+            counter=counter,
+            started_at_ns=started_at,
+            ended_at_ns=_now_ns(),
+            preview=_response_content_preview(response),
+            tool_calls=[str(call.get("name") or "") for call in calls],
+            retry_index=attempts - 1,
+        )
+        error_calls = [call for call in calls if call.get("name") == "report_task_error"]
+        report_calls = [call for call in calls if call.get("name") != "report_task_error"]
+        if error_calls and not report_calls:
+            arguments = _arguments(error_calls[0])
+            error_type = (
+                str(arguments.get("error_type") or "incomplete_task")
+                if isinstance(arguments, Mapping)
+                else "incomplete_task"
+            )
+            message = _TASK_ERROR_MESSAGES.get(error_type, _TASK_ERROR_MESSAGES["incomplete_task"])
+            raise TaskParseError(error_type, message)
+        if error_calls and report_calls:
+            continue
+        description = next((call for call in calls if call.get("name") == "report_task_description"), None)
+        if description is None:
+            continue
+        task_description = _arguments(description)
+        if not isinstance(task_description, Mapping) or not str(task_description.get("task") or "").strip():
+            continue
+        message_artifacts: list[tuple[str, str]] = []
+        for call in calls:
+            if call.get("name") != "report_message_artifacts":
+                continue
+            arguments = _arguments(call)
+            if not isinstance(arguments, Mapping):
+                continue
+            for node_id in arguments.get("node_ids") or ():
+                text = _artifact_text(nodes_by_subagent, str(node_id))
+                if text is not None:
+                    message_artifacts.append((str(node_id), text))
+        file_artifacts: list[str] = []
+        for call in calls:
+            if call.get("name") != "report_file_artifacts":
+                continue
+            arguments = _arguments(call)
+            if not isinstance(arguments, Mapping):
+                continue
+            for path in arguments.get("paths") or ():
+                file_artifacts.append(str(path))
+        run_meta = {
+            "attempts": attempts,
+            "file_candidates": len(file_candidates),
+            "extraction": extraction_stats,
+            "file_artifacts": len(file_artifacts),
+            "message_artifacts": len(message_artifacts),
+        }
+        if on_progress is not None:
+            await on_progress(run_meta)
+        return TaskParseResult(
+            task_description=str(task_description["task"]),
+            message_artifacts=message_artifacts,
+            file_artifacts=file_artifacts,
+            file_candidates=list(file_candidates),
+            run_meta=run_meta,
+        )
+    raise TaskParseError("invalid_response", f"task parse failed after {attempts} attempts")
+
+
+__all__ = [
+    "TASK_PARSE_TOOLS",
+    "TaskParseError",
+    "TaskParseLLM",
+    "build_task_parse_digest",
+    "extract_file_candidates",
+    "load_task_parse_prompt",
+    "run_task_parse",
+]
