@@ -516,6 +516,14 @@ async def run_attribution(
             token_usage={"attribution": rail.spent},
         )
     except Exception as exc:  # noqa: BLE001 - surface the error to the host
+        # The outcome carries the detail back to the host, but the traceback
+        # belongs in the log: this branch runs inside a deep-agent loop where
+        # exceptions can carry an empty message, so log it with full context.
+        logger.exception(
+            "[attribution] run failed with an exception: model=%s signals=%d",
+            model_name or "-",
+            len(active_signals),
+        )
         return AttributionRunOutcome(
             status="failed",
             failure_kind="error",
