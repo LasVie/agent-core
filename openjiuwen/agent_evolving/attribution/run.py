@@ -30,6 +30,7 @@ from openjiuwen.agent_evolving.attribution.model import (
     DiagnosisResult,
     DiagnosticSignal,
     RewardOverall,
+    SignalSource,
     StatusSink,
     SubjectRef,
     TaskParseResult,
@@ -40,7 +41,11 @@ from openjiuwen.agent_evolving.attribution.reward.fast_reward_adapter import fas
 from openjiuwen.agent_evolving.attribution.reward.reward_agent import build_reward_agent, load_reward_prompt
 from openjiuwen.agent_evolving.attribution.reward.reward_schema import RewardResult, reward_to_signals
 from openjiuwen.agent_evolving.attribution.task_parse import TaskParseLLM, run_task_parse
-from openjiuwen.agent_evolving.attribution.tools import render_partial_view, render_trajectory_view
+from openjiuwen.agent_evolving.attribution.tools import (
+    artifact_improvement_required,
+    render_partial_view,
+    render_trajectory_view,
+)
 from openjiuwen.core.common.logging import logger
 
 _REWARD_TEMP_DIRNAME = ".reward_temp"
@@ -61,6 +66,7 @@ class NodeBackedRuntime:
         self.attributions: dict[str, list[dict[str, Any]]] = {}
         self.invalid_signals: set[str] = set()
         self.artifact_improvement: str | None = None
+        self.artifact_improvement_required = True
         self.skill_improvements: dict[str, str] = {}
         for nodes in nodes_by_subagent.values():
             for node in nodes:
@@ -255,6 +261,8 @@ async def run_diagnosis(
         ended_at_ns=_now_ms(),
         token_usage={},
     )
+    if not signals:
+        signals = [_no_problem_signal(language)]
     has_artifacts = bool(task_parse.message_artifacts or task_parse.file_artifacts)
     run_meta: dict[str, Any] = {"keyword": keyword_meta}
     if not has_artifacts:
@@ -296,13 +304,7 @@ async def run_diagnosis(
                 run_meta=run_meta,
             )
         run_meta["reward"] = reward_meta
-        return _reward_diagnosis(
-            reward,
-            signals,
-            run_meta,
-            tiers=[d["tier"] for d in payload["dimensions"]],
-            error_node_ids=_error_node_ids(nodes_by_subagent),
-        )
+        return _reward_diagnosis(reward, signals, run_meta, tiers=[d["tier"] for d in payload["dimensions"]])
     sink = _MemoryRewardSink()
     prepare_reward_temp_dir(workspace)
     agent, rail, gate = build_reward_agent(
@@ -351,12 +353,22 @@ async def run_diagnosis(
             run_meta=run_meta,
         )
     reward = RewardResult.from_payload(sink.payload)
-    return _reward_diagnosis(reward, signals, run_meta, error_node_ids=_error_node_ids(nodes_by_subagent))
+    return _reward_diagnosis(reward, signals, run_meta)
 
 
-def _error_node_ids(nodes_by_subagent: dict[str, list[TrajectoryNode]]) -> frozenset[str]:
-    """Ids of the tool rows the runtime itself recorded as failed."""
-    return frozenset(node.node_id for nodes in nodes_by_subagent.values() for node in nodes if node.error)
+_NO_PROBLEM_TEXT = {
+    "zh": "未发现过程问题：选中范围内没有失败的工具调用，用户也没有追加消息。",
+    "en": "No process problem found: no failed tool call and no follow-up message from the user in the selection.",
+}
+
+
+def _no_problem_signal(language: str) -> DiagnosticSignal:
+    """A ``perfect`` signal standing for "nothing found", so an empty run ends as no problem, not as an error.
+
+    Attribution skips perfect signals, so the run completes with no root cause.
+    """
+    text = _NO_PROBLEM_TEXT["en" if str(language).lower().startswith("en") else "zh"]
+    return DiagnosticSignal.create(text, source=SignalSource.KEYWORD_TOOL, tier="perfect")
 
 
 def _reward_diagnosis(
@@ -364,14 +376,12 @@ def _reward_diagnosis(
     signals: list[DiagnosticSignal],
     run_meta: dict[str, Any],
     tiers: list[str] | None = None,
-    error_node_ids: frozenset[str] = frozenset(),
 ) -> DiagnosisResult:
-    """Reward dimensions as signals, followed by the tool errors no dimension took up.
+    """Reward dimensions as signals, followed by the process signals no dimension took up.
 
-    A failed tool call is kept beside the reward signals: the deliverable can be good while
-    the run still went wrong somewhere.  Only rows the runtime recorded as failed count
-    (``error_node_ids``); a keyword that merely appears in a document, a prompt or a
-    conversation is not a process signal.
+    A process signal (a failed tool call, the user's follow-up message; see
+    :func:`~openjiuwen.agent_evolving.attribution.keyword_detect.detect_rule_signals`) is kept
+    beside the reward signals: the deliverable can be good while the run still went wrong somewhere.
     ``tiers`` (one per dimension) replace the score-band tiers when the Reward judged each claim itself.
     """
     reward_signals = reward_to_signals(reward, signals)
@@ -385,17 +395,8 @@ def _reward_diagnosis(
             run_meta=run_meta,
         )
     taken = {signal_id for dimension in reward.dimensions for signal_id in dimension.related_signal_ids}
-    kept = [
-        signal
-        for signal in signals
-        if signal.signal_id not in taken
-        and signal.tier != "perfect"
-        and any(node_id in error_node_ids for node_id in signal.node_ids)
-    ]
+    kept = [signal for signal in signals if signal.signal_id not in taken and signal.tier != "perfect"]
     run_meta["process_signals_kept"] = len(kept)
-    run_meta["process_signals_dropped"] = sum(
-        1 for signal in signals if signal.signal_id not in taken and signal.tier != "perfect"
-    ) - len(kept)
     return DiagnosisResult(
         reward_overall=reward.overall,
         signals=reward_signals + kept,
@@ -432,7 +433,9 @@ def _overview_all_done(runtime: AttributionAgentRuntime, signal_ids: list[str]) 
     overview = runtime.completion_overview()
     attributed = set(overview.get("attributed_signal_ids") or ())
     invalid = set(overview.get("invalid_signal_ids") or ())
-    artifact_submitted = bool(overview.get("artifact_improvement_submitted"))
+    artifact_submitted = bool(overview.get("artifact_improvement_submitted")) or not (
+        artifact_improvement_required(runtime)
+    )
     pending = sorted(set(signal_ids) - attributed - invalid)
     if not pending and artifact_submitted:
         return True, {"all_done": True}
@@ -483,6 +486,9 @@ async def run_attribution(
             token_usage={"attribution": 0},
         )
     active_runtime = runtime or NodeBackedRuntime(nodes_by_subagent, language)
+    # a deliverable was reviewed only when the Reward scored one: without it there is nothing to improve
+    review_deliverables = any(signal.source == SignalSource.REWARD for signal in signals)
+    active_runtime.artifact_improvement_required = review_deliverables
     agent, rail = build_attribution_agent(
         model=model,
         signals=active_signals,
@@ -507,6 +513,7 @@ async def run_attribution(
         signals=active_signals,
         subjects=active_runtime.subjects(),
         language=language,
+        review_deliverables=review_deliverables,
     )
 
     def outcome(completed: bool, wake_attempted: bool) -> AttributionRunOutcome:

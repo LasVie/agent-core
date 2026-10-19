@@ -359,6 +359,11 @@ class MarkSignalInvalidTool(_AttributionTool):
         return self.ok({"status": status, "signal_id": signal_id})
 
 
+def artifact_improvement_required(runtime: Any) -> bool:
+    """Whether this run must submit an artifact improvement: only when a deliverable was reviewed."""
+    return bool(getattr(runtime, "artifact_improvement_required", True))
+
+
 class SubmitArtifactImprovementTool(_AttributionTool):
     """提交产物/任务执行改进意见。"""
 
@@ -383,6 +388,17 @@ class SubmitArtifactImprovementTool(_AttributionTool):
         md_string = str(inputs.get("md_string") or "")
         if not md_string.strip():
             return self.fail("md_string must be a non-empty string")
+        if not artifact_improvement_required(self._runtime):
+            return self.ok(
+                {
+                    "error": (
+                        "本次没有评估交付物（框选中没有交付物的最终版本），不提交产物改进意见；把建议写进"
+                        "归因或技能改进。/ No deliverable was reviewed this run (the selection holds no final "
+                        "version of one): submit no artifact improvement; put advice in attributions or skill "
+                        "improvements."
+                    )
+                }
+            )
         status = self._runtime.record_artifact_improvement(md_string)
         return self.ok({"status": status})
 
@@ -436,7 +452,9 @@ class CheckAttributionCompleteTool(_AttributionTool):
         overview = self._runtime.completion_overview()
         attributed = set(overview.get("attributed_signal_ids") or ())
         invalid = set(overview.get("invalid_signal_ids") or ())
-        artifact_submitted = bool(overview.get("artifact_improvement_submitted"))
+        artifact_submitted = bool(overview.get("artifact_improvement_submitted")) or not (
+            artifact_improvement_required(self._runtime)
+        )
         pending = sorted(self._signal_ids - attributed - invalid)
         if not pending and artifact_submitted:
             return self.ok({"all_done": True})

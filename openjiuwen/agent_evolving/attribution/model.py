@@ -216,6 +216,10 @@ class TaskParseResult:
     run_meta: dict[str, Any] = field(default_factory=dict)
     user_request: str = ""
     """The user's own messages, verbatim and in order: the task as the user stated it."""
+    deliverables_outside_selection: list[str] = field(default_factory=list)
+    """Deliverable files whose final version was written after or outside the selection: not reviewed."""
+    selection_partial: bool = False
+    """Whether the selection leaves out part of the session (some subject or some nodes)."""
 
 
 @dataclass(frozen=True)

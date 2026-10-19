@@ -347,8 +347,13 @@ def build_attribution_initial_prompt(
     signals: list[DiagnosticSignal],
     subjects: list[SubjectRef],
     language: str = "zh",
+    review_deliverables: bool = True,
 ) -> str:
-    """Assemble the initial user prompt template (task, reward, signals, subjects)."""
+    """Assemble the initial user prompt template (task, reward, signals, subjects).
+
+    ``review_deliverables=False`` (no deliverable was reviewed: the selection holds none's final version)
+    adds a scope note: analyse the process only and submit no artifact improvement.
+    """
     lang = _normalize_language(language)
     reward_block = (
         f"- 总分：{reward_overall.total_score}\n- 总评：{reward_overall.comment}"
@@ -374,6 +379,13 @@ def build_attribution_initial_prompt(
             "Process every diagnostic signal above: attribute it (submit_attribution) or mark it "
             "invalid (mark_signal_invalid); submit the artifact/task-execution improvement and, when "
             "applicable, skill improvements; finally call check_attribution_complete until all_done=true."
+            + (
+                ""
+                if review_deliverables
+                else "\n\n## Scope\nThe selection holds no final version of a deliverable, so no deliverable "
+                "was reviewed: analyse the process only (tool errors, environment, efficiency, how skills were "
+                "used) and do not call submit_artifact_improvement; check_attribution_complete does not ask for it."
+            )
         )
     return (
         "## 任务描述\n"
@@ -387,6 +399,12 @@ def build_attribution_initial_prompt(
         "请逐条处理上述诊断信号：定位归因（submit_attribution）或标记无效（mark_signal_invalid）；"
         "提交产物/任务执行改进意见与（如适用）技能改进意见；最后调用 check_attribution_complete，"
         "直到 all_done=true。"
+        + (
+            ""
+            if review_deliverables
+            else "\n\n## 本次范围\n框选中没有交付物的最终版本，本次没有评估交付物：只分析过程问题（工具报错、环境、"
+            "效率、Skill 用法），不要调用 submit_artifact_improvement；check_attribution_complete 不会要求它。"
+        )
     )
 
 

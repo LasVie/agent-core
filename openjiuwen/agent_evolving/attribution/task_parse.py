@@ -37,6 +37,7 @@ _WRITE_TOOLS = {"write_file"}
 _EDIT_TOOLS = {"edit_file", "apply_patch"}
 _SHELL_TOOLS = frozenset({"bash", "mcp_exec_command", "cmd", "powershell", "create_terminal"})
 _R0_TOOL = "send_file_to_user"
+_TEAM_MEMBER_KIND = "team_member"
 
 # POSIX (sh/bash/zsh) ---------------------------------------------------------
 
@@ -741,6 +742,65 @@ def _artifact_text(nodes_by_subagent: Mapping[str, list[TrajectoryNode]], node_i
     return None
 
 
+def _is_team_internal(nodes_by_subagent: Mapping[str, list[TrajectoryNode]], node_id: str) -> bool:
+    """Whether the node belongs to a team member: its messages go to the leader, never to the user."""
+    return any(
+        node.node_id == node_id and node.kind == _TEAM_MEMBER_KIND
+        for nodes in nodes_by_subagent.values()
+        for node in nodes
+    )
+
+
+def last_writes(nodes_by_subagent: Mapping[str, list[TrajectoryNode]], workspace: str | None = None) -> dict[str, str]:
+    """``{path: node_id}`` of the latest call, across all subjects, that wrote each file.
+
+    Calls are taken in time order over every subject (a member may rewrite what the leader wrote);
+    sending a file to the user is not a write.
+    """
+    import dataclasses
+
+    rows = sorted((node for nodes in nodes_by_subagent.values() for node in nodes), key=lambda node: node.start_ts_ns)
+    writes_only = [
+        dataclasses.replace(
+            node,
+            tool_calls=[
+                call
+                for call in node.tool_calls
+                if str(call.get("name") or call.get("function", {}).get("name") or "") != _R0_TOOL
+            ],
+        )
+        if node.tool_calls
+        else node
+        for node in rows
+    ]
+    candidates, _ = extract_file_candidates({"": writes_only}, workspace)
+    return {path: node_id for path, node_id, _ in candidates}
+
+
+def _scope_to_selection(
+    nodes_by_subagent: Mapping[str, list[TrajectoryNode]],
+    message_artifacts: list[tuple[str, str]],
+    file_artifacts: list[str],
+    workspace: str | None,
+) -> tuple[list[tuple[str, str]], list[str], list[str], bool]:
+    """Keep the deliverables whose final version the selection holds.
+
+    A reply counts when the user received it (not a team member's message to the leader).  A file
+    counts when its last write in the whole session is a selected node: a file written again later is
+    reviewed at a version the selection never saw.  Returns the kept messages and files, the files left
+    out, and whether the selection leaves out part of the session.
+    """
+    messages = [item for item in message_artifacts if not _is_team_internal(nodes_by_subagent, item[0])]
+    whole = getattr(nodes_by_subagent, "whole", None)
+    if whole is None:
+        return messages, file_artifacts, [], False
+    selected = {node.node_id for nodes in nodes_by_subagent.values() for node in nodes}
+    partial = sum(len(nodes) for nodes in whole.values()) > len(selected)
+    final = last_writes(whole, workspace)
+    outside = [path for path in file_artifacts if path in final and final[path] not in selected]
+    return messages, [path for path in file_artifacts if path not in outside], outside, partial
+
+
 async def run_task_parse(
     nodes_by_subagent: Mapping[str, list[TrajectoryNode]],
     language: str,
@@ -846,6 +906,10 @@ async def run_task_parse(
                 continue
             for path in arguments.get("paths") or ():
                 file_artifacts.append(str(path))
+        reported_messages, reported_files = len(message_artifacts), len(file_artifacts)
+        message_artifacts, file_artifacts, outside, partial = _scope_to_selection(
+            nodes_by_subagent, message_artifacts, file_artifacts, workspace
+        )
         run_meta = {
             "attempts": attempts,
             "file_candidates": len(file_candidates),
@@ -853,6 +917,9 @@ async def run_task_parse(
             "file_artifacts": len(file_artifacts),
             "message_artifacts": len(message_artifacts),
             "user_requests": len(user_requests),
+            "team_internal_messages_dropped": reported_messages - len(message_artifacts),
+            "files_outside_selection": reported_files - len(file_artifacts),
+            "selection_partial": partial,
         }
         if on_progress is not None:
             await on_progress(run_meta)
@@ -863,6 +930,8 @@ async def run_task_parse(
             file_candidates=list(file_candidates),
             run_meta=run_meta,
             user_request="\n\n".join(text for _, text in user_requests),
+            deliverables_outside_selection=outside,
+            selection_partial=partial,
         )
     raise TaskParseError("invalid_response", f"task parse failed after {attempts} attempts")
 
@@ -874,6 +943,7 @@ __all__ = [
     "build_task_parse_digest",
     "user_request_of",
     "extract_file_candidates",
+    "last_writes",
     "load_task_parse_prompt",
     "run_task_parse",
 ]

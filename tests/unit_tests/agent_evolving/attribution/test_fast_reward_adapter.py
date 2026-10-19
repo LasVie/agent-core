@@ -182,10 +182,10 @@ async def test_fast_reward_diagnosis_keeps_failed_tool_calls(monkeypatch: Any, t
     tool_error = DiagnosticSignal.create(
         "Error: File has not been fully read yet.", source=SignalSource.KEYWORD_TOOL, node_ids=[failed.node_id]
     )
-    word_only = DiagnosticSignal.create(  # an error word inside a document the member read: not a failure
-        "万一某个环节出问题怎么办", source=SignalSource.KEYWORD_TOOL, node_ids=[f"{MEMBER}:1"]
+    complaint = DiagnosticSignal.create(
+        "没有路径我怎么知道去哪里看文件", source=SignalSource.KEYWORD_USER, node_ids=[f"{LEADER}:1"]
     )
-    monkeypatch.setattr(run_module, "run_keyword_diagnosis", _keyword([tool_error, word_only]))
+    monkeypatch.setattr(run_module, "run_keyword_diagnosis", _keyword([tool_error, complaint]))
     events: list[Any] = []
     result = await run_diagnosis(
         run_id="r",
@@ -201,10 +201,11 @@ async def test_fast_reward_diagnosis_keeps_failed_tool_calls(monkeypatch: Any, t
     assert seen["txt_response"] == "最终答复" and seen["user_note"] == "外婆的时间要核对"
     assert result.signal_mode == "reward" and result.reward_overall.total_score == 72
     # tiers follow each claim's status, not a score band (a partial requirement scores 50 yet is fair)
-    assert [s.tier for s in result.signals] == ["weak", "fair", "fair", "perfect", "uncertain"]
+    assert [s.tier for s in result.signals] == ["weak", "fair", "fair", "perfect", "uncertain", "uncertain"]
     assert [s.score for s in result.signals[:4]] == [0, 50, 0, 100]
-    assert result.signals[-1].signal_id == tool_error.signal_id  # the failed tool call still reaches attribution
-    assert result.run_meta["process_signals_kept"] == 1 and result.run_meta["process_signals_dropped"] == 1
+    # the failed tool call and the user's follow-up still reach attribution
+    assert [s.signal_id for s in result.signals[-2:]] == [tool_error.signal_id, complaint.signal_id]
+    assert result.run_meta["process_signals_kept"] == 2
     assert result.run_meta["reward"]["engine"] == "fast_reward"
     assert result.reward_payload["schema_version"] == "attribution.reward.v1"
     assert [e.stage for e in events if getattr(e, "stage", "") == "reward"]

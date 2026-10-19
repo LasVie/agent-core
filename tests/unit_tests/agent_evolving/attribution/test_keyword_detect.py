@@ -1,8 +1,9 @@
 # coding: utf-8
-"""Tests for keyword diagnosis (rule and Jev modes) and signal models."""
+"""Tests for process-signal diagnosis (rule and Jev modes) and signal models."""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -19,71 +20,82 @@ from openjiuwen.agent_evolving.attribution.model import (
     reward_tier,
 )
 from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode
+from openjiuwen.agent_evolving.attribution.snapshot import SlicedNodes
 
 pytestmark = pytest.mark.asyncio
 
 
-def _node(index: int, role: str, content: str, name: str | None = None, subagent: str = "main") -> TrajectoryNode:
+def _node(
+    index: int,
+    role: str,
+    content: str,
+    name: str | None = None,
+    subagent: str = "main",
+    error: bool = False,
+    kind: str = "main_agent",
+) -> TrajectoryNode:
     return TrajectoryNode(
         node_id=f"{subagent}:{index}",
         subagent_key=subagent,
         display_name="M",
-        kind="main_agent",
+        kind=kind,
         role=role,
         content=content,
         name=name,
         start_ts_ns=index * 100,
         end_ts_ns=index * 100 + 50,
+        error=error,
     )
 
 
-def test_rule_signal_negation_suppression() -> None:
-    nodes = {
-        "main": [
-            _node(0, "user", "这个结果不对，出错了"),
-            _node(1, "user", "没有错误，一切正常"),
-            _node(2, "user", "not wrong, all good"),
-            _node(3, "user", "cannot fail 这个设计"),
-            _node(4, "user", "won't fail"),
-        ]
-    }
-    signals = detect_rule_signals(nodes)
-    assert [signal.node_ids[0] for signal in signals] == ["main:0"]
+def _user(index: int, text: str, subagent: str = "main", kind: str = "main_agent") -> TrajectoryNode:
+    envelope = json.dumps({"type": "user input", "content": text}, ensure_ascii=False)
+    return _node(index, "user", f"你收到一条消息：\n{envelope}", subagent=subagent, kind=kind)
 
 
-def test_rule_signal_data_fetch_and_schema_dump_skipped() -> None:
+def test_rule_signals_take_failed_tool_calls_only() -> None:
     nodes = {
         "main": [
-            _node(0, "tool", "web content with an error in it", name="web_fetch"),
-            _node(1, "tool", "{'content': '---\\nname: tool\\ndescription: does error stuff'}", name="mcp__tools"),
-            _node(2, "tool", "error in my script", name="bash"),
+            _node(0, "tool", "---\nname: planner\n万一某个环节出问题怎么办", name="skill_tool"),  # a document
+            _node(1, "tool", "PASS 53 项断言全部通过，没有错误", name="bash"),  # test output
+            _node(2, "tool", "Error: File has not been fully read yet.", name="write_file", error=True),
+            _node(3, "tool", "Error: File has not been fully read yet.", name="write_file", error=True),  # repeat
         ]
     }
     signals = detect_rule_signals(nodes)
     assert [signal.node_ids[0] for signal in signals] == ["main:2"]
+    assert signals[0].source == SignalSource.KEYWORD_TOOL
+    assert signals[0].text.startswith("write_file: Error: File has not been fully read yet.")
+    assert signals[0].tier == "uncertain"
 
 
-def test_rule_signal_top_k_density_and_order() -> None:
+def test_rule_signals_cap_failed_tool_calls() -> None:
+    nodes = {"main": [_node(i, "tool", f"Error {i}", name="bash", error=True) for i in range(15)]}
+    assert len(detect_rule_signals(nodes)) == 10
+
+
+def test_rule_signals_take_the_users_follow_ups_not_the_first_request() -> None:
     nodes = {
-        "a": [_node(0, "tool", "错误 错误 错误 错误", name="bash", subagent="a")],
-        "b": [_node(0, "tool", "错误", name="bash", subagent="b")],
-        "c": [_node(0, "tool", "something 失败 here", name="bash", subagent="c")],
+        "main": [
+            _user(0, "帮我安排周六"),
+            _node(1, "user", "<system-reminder>有错误</system-reminder>"),  # not the user's words
+            _user(2, "没有路径我怎么知道去哪里看文件"),  # no error word, still a follow-up
+        ],
+        "member": [
+            _node(3, "user", "请把定稿写入 schedule.md，出错就重新做", subagent="member", kind="team_member"),
+        ],
+        "leader": [_user(4, "没有路径我怎么知道去哪里看文件", subagent="leader", kind="team_leader")],  # same text
     }
     signals = detect_rule_signals(nodes)
-    assert signals[0].node_ids[0] == "a:0"
+    assert [(signal.source, signal.node_ids[0]) for signal in signals] == [(SignalSource.KEYWORD_USER, "main:2")]
+    assert signals[0].text == "没有路径我怎么知道去哪里看文件"
 
 
-def test_rule_signal_excerpt_and_fields() -> None:
-    content = "x" * 50 + "发生了错误" + "y" * 50
-    nodes = {"main": [_node(0, "tool", content, name="bash")]}
-    signals = detect_rule_signals(nodes)
-    assert len(signals) == 1
-    signal = signals[0]
-    assert signal.source == SignalSource.KEYWORD_TOOL
-    assert "发生了错误" in signal.text
-    assert signal.tier == "uncertain"
-    assert signal.node_ids == ["main:0"]
-    assert signal.message_id is None
+def test_rule_signals_know_the_first_request_from_outside_the_selection() -> None:
+    sliced = SlicedNodes({"main": [_user(5, "用 agent team 重新做一份")]})
+    sliced.user_requests = (_user(0, "帮我安排周六"), _user(5, "用 agent team 重新做一份"))
+    signals = detect_rule_signals(sliced)
+    assert [signal.node_ids[0] for signal in signals] == ["main:5"]
 
 
 class _FakeJevClient:
@@ -112,7 +124,7 @@ async def test_jev_signals_threshold_and_tier() -> None:
 
 
 async def test_jev_unavailable_degrades_to_rule() -> None:
-    nodes = {"main": [_node(0, "tool", "error happened", name="bash")]}
+    nodes = {"main": [_node(0, "tool", "error happened", name="bash", error=True)]}
     client = _FakeJevClient([0.95], fail=True)
     signals, meta = await run_keyword_diagnosis(nodes, "jev", jev_client=client)
     assert meta["mode"] == "rule"

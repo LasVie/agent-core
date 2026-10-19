@@ -401,14 +401,17 @@ def build_nodes_from_snapshot(snapshot: Mapping[str, Any]) -> dict[str, list[Tra
 
 
 class SlicedNodes(dict):
-    """The sliced nodes per subject (a plain ``dict`` to every caller), plus ``user_requests``.
+    """The sliced nodes per subject (a plain ``dict`` to every caller), plus ``user_requests`` and ``whole``.
 
     ``user_requests`` are the user's own messages of the whole session up to the end of the
     selection, taken before slicing: the task comes from them even when the selected window
     starts after the request or covers only team members (whose inbound rows are dispatches).
+    ``whole`` is every subject's nodes before slicing: it tells whether a deliverable's final
+    version was written inside the selection.
     """
 
     user_requests: tuple[TrajectoryNode, ...] = ()
+    whole: Mapping[str, list[TrajectoryNode]] | None = None
 
 
 def slice_nodes_by_range(
@@ -426,7 +429,7 @@ def slice_nodes_by_range(
     Each subagent may carry at most one range; subjects without a range drop
     out entirely (proposal §2.3: unselected subjects do not participate).
     The result is a :class:`SlicedNodes` carrying the user's own messages up to the
-    selection's end, read from all subjects before slicing.
+    selection's end, read from all subjects before slicing, and the unsliced nodes.
     """
     range_map: dict[str, tuple[int, int]] = {}
     for item in ranges:
@@ -435,6 +438,7 @@ def slice_nodes_by_range(
     result = SlicedNodes()
     latest_end = max((end_ts for _, end_ts in range_map.values()), default=None)
     result.user_requests = tuple(user_request_nodes(nodes_by_subagent, until_ns=latest_end))
+    result.whole = nodes_by_subagent
     for subagent, nodes in nodes_by_subagent.items():
         if subagent not in range_map:
             continue

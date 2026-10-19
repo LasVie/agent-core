@@ -50,6 +50,11 @@ _LABELS = {
         "judged": "判定：{done}/{total} 个维度已判定",
         "finished": "完成：总分 {score}",
         "elapsed": "已用 {minutes}分{seconds:02d}秒",
+        "scope": "本次评估范围：只评估框选中保留了最终版本的交付物（{files}）。",
+        "scope_no_files": "本次评估范围：框选中没有交付文件的最终版本，不评估文件。",
+        "scope_reply": "回复：评估给用户的这条回复。",
+        "scope_no_reply": "回复：框选中没有给用户的回复，不评估回复写了什么。",
+        "scope_outside": "不在范围内（最终版本在框选之外）：{files}，不对它们下判断。",
     },
     "en": {
         "floor": "Requirement",
@@ -65,6 +70,11 @@ _LABELS = {
         "judged": "Judging: {done}/{total} criteria judged",
         "finished": "Done: total {score}",
         "elapsed": "{minutes}m{seconds:02d}s",
+        "scope": "Review scope: only the deliverables whose final version is in the selection ({files}).",
+        "scope_no_files": "Review scope: no deliverable file has its final version in the selection; none is reviewed.",
+        "scope_reply": "Reply: the reply to the user is reviewed.",
+        "scope_no_reply": "Reply: the selection holds no reply to the user; what the reply says is not reviewed.",
+        "scope_outside": "Out of scope (final version outside the selection): {files}; nothing is judged about them.",
     },
 }
 
@@ -127,10 +137,13 @@ def final_reply(task_parse: TaskParseResult, nodes_by_subagent: Mapping[str, Seq
 
     Messages a team member sent inside the team are skipped while a message to the user exists.  When task
     parsing reported no message artifact, the last assistant message without a tool call from the main agent
-    or the leader is the reply (an empty reply would make every claim about the reply unmet).
+    or the leader is the reply (an empty reply would make every claim about the reply unmet) -- unless the
+    selection covers only part of the session: there the latest message may be progress, not the answer.
     """
     nodes = {node.node_id: node for rows in nodes_by_subagent.values() for node in rows}
     candidates = [(node_id, text) for node_id, text in task_parse.message_artifacts if text]
+    if not candidates and task_parse.selection_partial:
+        return ""
     if not candidates:
         candidates = [
             (node.node_id, str(node.content))
@@ -142,6 +155,24 @@ def final_reply(task_parse: TaskParseResult, nodes_by_subagent: Mapping[str, Seq
     if not pool:
         return ""
     return max(pool, key=lambda item: getattr(nodes.get(item[0]), "start_ts_ns", 0))[1]
+
+
+def review_scope(task_parse: TaskParseResult, artifacts: Sequence[str], reply: str, language: str) -> str:
+    """What this review covers, appended to the task when the selection leaves deliverables out; else ``""``.
+
+    Without it the criteria would ask for every deliverable the user named, and those whose final
+    version lies outside the selection would come out unmet.
+    """
+    outside = task_parse.deliverables_outside_selection
+    if not outside and not (task_parse.selection_partial and not reply):
+        return ""
+    labels = _labels(language)
+    names = ", ".join(Path(path).name for path in artifacts)
+    lines = [labels["scope"].format(files=names) if artifacts else labels["scope_no_files"]]
+    lines.append(labels["scope_reply"] if reply else labels["scope_no_reply"])
+    if outside:
+        lines.append(labels["scope_outside"].format(files=", ".join(Path(path).name for path in outside)))
+    return "\n".join(lines)
 
 
 class _ProgressLines:
@@ -308,6 +339,9 @@ async def run_fast_reward(
     task = task_parse.user_request or task_parse.task_description
     artifacts = existing_paths(task_parse.file_artifacts)
     reply = final_reply(task_parse, nodes_by_subagent)
+    scope = review_scope(task_parse, artifacts, reply, language)
+    if scope:
+        task = f"{task}\n\n{scope}"
     config = fast_reward_config(model)
     started = time.time_ns()
 
@@ -348,6 +382,7 @@ async def run_fast_reward(
         "artifacts": artifacts,
         "reply_chars": len(reply),
         "task_from_user": bool(task_parse.user_request),
+        "scope": scope,
         "claims": len(result.get("sub_category_items") or ()),
         "warnings": list((result.get("meta") or {}).get("warnings") or ()),
     }
@@ -359,6 +394,7 @@ __all__ = [
     "fast_reward_config",
     "fast_reward_enabled",
     "existing_paths",
+    "review_scope",
     "final_reply",
     "route_from_model",
     "run_fast_reward",
