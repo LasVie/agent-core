@@ -14,7 +14,7 @@ from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode
 from openjiuwen.agent_evolving.attribution.reward.fast_reward_adapter import final_reply, review_scope
 from openjiuwen.agent_evolving.attribution.run import NodeBackedRuntime, run_attribution, run_diagnosis
 from openjiuwen.agent_evolving.attribution.snapshot import slice_nodes_by_range
-from openjiuwen.agent_evolving.attribution.task_parse import last_writes, run_task_parse
+from openjiuwen.agent_evolving.attribution.task_parse import build_after_selection_block, last_writes, run_task_parse
 from openjiuwen.agent_evolving.attribution.tools import build_attribution_tools
 
 pytestmark = pytest.mark.asyncio
@@ -167,3 +167,67 @@ async def test_no_artifact_improvement_when_no_deliverable_was_reviewed() -> Non
     assert runtime.artifact_improvement is None
     await _invoke(tools["mark_signal_invalid"], diag_signal_id=signal.signal_id)
     assert (await _invoke(tools["check_attribution_complete"]))["all_done"] is True
+
+
+def test_after_selection_block_lists_later_messages_replies_and_writes() -> None:
+    sliced = slice_nodes_by_range(_session(), [(LEADER, 10, 50), (MEMBER, 30, 50)])
+    block = build_after_selection_block(sliced)
+    assert block.startswith("## 框选之后发生的事")
+    lines = block.splitlines()[1:]
+    assert lines == [
+        "- 写文件: /w/schedule.md",  # leader:5 at 80; sending message.md at 85 is not a write
+        "- 给用户的回复: 都做好了：schedule.md 与 message.md",
+    ]
+    whole = slice_nodes_by_range(_session(), [(LEADER, 0, 100), (MEMBER, 0, 100)])
+    assert build_after_selection_block(whole) == ""  # nothing after a selection reaching the end
+    assert build_after_selection_block(_session()) == ""  # a plain dict knows no session
+
+
+class _FeedbackLlm:
+    def __init__(self, feedback_ids: list[str] | None) -> None:
+        self._ids = feedback_ids
+        self.digest = ""
+
+    async def invoke(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any) -> Any:
+        del tools, kwargs
+        self.digest = messages[1]["content"]
+        calls = [{"name": "report_task_description", "arguments": json.dumps({"task": "排周六"})}]
+        if self._ids is not None:
+            calls.append({"name": "report_user_feedback", "arguments": json.dumps({"node_ids": self._ids})})
+        return {"tool_calls": calls}
+
+
+def _with_follow_ups() -> dict[str, list[TrajectoryNode]]:
+    nodes = _session()
+
+    def said(seq: int, ts: int, text: str) -> TrajectoryNode:
+        envelope = json.dumps({"type": "user input", "content": text}, ensure_ascii=False)
+        return _node(LEADER, seq, ts, "user", f"你收到一条消息：\n{envelope}")
+
+    nodes[LEADER] += [said(8, 92, "没有路径我怎么知道去哪里看文件"), said(9, 94, "用 agent team 重新做一份")]
+    nodes[LEADER].sort(key=lambda node: node.start_ts_ns)
+    return nodes
+
+
+async def test_only_feedback_follow_ups_stay_process_signals() -> None:
+    sliced = slice_nodes_by_range(_with_follow_ups(), [(LEADER, 0, 100)])
+    llm = _FeedbackLlm([f"{LEADER}:8"])
+    parse = await run_task_parse(sliced, "zh", llm)
+    assert parse.user_feedback == ["没有路径我怎么知道去哪里看文件"]
+    assert "report_user_feedback" not in llm.digest  # the tool is offered, not described in the digest
+    result = await run_diagnosis(
+        run_id="r", language="zh", nodes_by_subagent=sliced, user_attribution="", task_parse=parse
+    )
+    user_signals = [signal.text for signal in result.signals if signal.source == SignalSource.KEYWORD_USER]
+    assert user_signals == ["没有路径我怎么知道去哪里看文件"]  # the new request is not a complaint
+    assert result.run_meta["user_messages_not_feedback"] == 1
+
+
+async def test_unjudged_follow_ups_all_stay() -> None:
+    sliced = slice_nodes_by_range(_with_follow_ups(), [(LEADER, 0, 100)])
+    parse = await run_task_parse(sliced, "zh", _FeedbackLlm(None))
+    assert parse.user_feedback is None
+    result = await run_diagnosis(
+        run_id="r", language="zh", nodes_by_subagent=sliced, user_attribution="", task_parse=parse
+    )
+    assert sum(signal.source == SignalSource.KEYWORD_USER for signal in result.signals) == 2

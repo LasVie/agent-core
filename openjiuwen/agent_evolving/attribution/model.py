@@ -220,6 +220,9 @@ class TaskParseResult:
     """Deliverable files whose final version was written after or outside the selection: not reviewed."""
     selection_partial: bool = False
     """Whether the selection leaves out part of the session (some subject or some nodes)."""
+    user_feedback: list[str] | None = None
+    """The user's follow-up messages judged to be feedback on the work (a correction, a complaint, asking for
+    something left out); ``None`` when task parsing did not judge them."""
 
 
 @dataclass(frozen=True)

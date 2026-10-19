@@ -45,7 +45,7 @@ _TOOL_SCHEMA_PATTERN = re.compile(r"\{'content': '---\\nname: [^\n]+\\ndescripti
 
 _JEV_TEXT_LIMIT = 1024
 _JEV_THRESHOLD = 0.8
-_SIGNAL_TEXT_LIMIT = 600
+SIGNAL_TEXT_LIMIT = 600
 _MAX_TOOL_ERRORS = 10
 
 
@@ -70,7 +70,7 @@ def _tool_error_signals(nodes_by_subagent: Mapping[str, list[TrajectoryNode]]) -
             text = f"{name}: {content}" if name else content
             signals.append(
                 DiagnosticSignal.create(
-                    text[:_SIGNAL_TEXT_LIMIT] or name or "tool error",
+                    text[:SIGNAL_TEXT_LIMIT] or name or "tool error",
                     source=SignalSource.KEYWORD_TOOL,
                     node_ids=[node.node_id],
                     ts_ns=node.start_ts_ns,
@@ -106,7 +106,7 @@ def _user_follow_up_signals(nodes_by_subagent: Mapping[str, list[TrajectoryNode]
         seen.add(text)
         signals.append(
             DiagnosticSignal.create(
-                text[:_SIGNAL_TEXT_LIMIT],
+                text[:SIGNAL_TEXT_LIMIT],
                 source=SignalSource.KEYWORD_USER,
                 node_ids=[node.node_id],
                 ts_ns=node.start_ts_ns,

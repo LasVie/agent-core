@@ -27,6 +27,10 @@ _USER_MESSAGE_LIMIT = 1000
 _USER_REQUEST_LIMIT = 8000
 _EDGE_NODE_COUNT = 5
 _FILE_CANDIDATE_LIMIT = 10
+_AFTER_REPLY_LIMIT = 200
+_AFTER_USER_LIMIT = 300
+_AFTER_HEAD = 10
+_AFTER_TAIL = 20
 
 _PATH_TOKEN = r"(?:'[^']+'|\"[^\"]+\"|[^\s'\"|;&<>]+)"
 _PS_PATH = r"(?:'[^']+'|\"[^\"]+\"|[A-Za-z]:\\[^\s;|]+|[^\s;|]+)"
@@ -583,6 +587,57 @@ def build_task_parse_digest(
     return "\n\n".join(sections)
 
 
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def build_after_selection_block(
+    nodes_by_subagent: Mapping[str, list[TrajectoryNode]],
+    workspace: str | None = None,
+    language: str = "zh",
+) -> str:
+    """What happened after the selection ended, in time order, or ``""`` when nothing did.
+
+    Lists the user's messages, the replies the user got and the deliverable files written after the
+    latest selected node: enough to tell whether a reply or a file in the selection was later
+    delivered again (a redo, a new version) and so is not the final deliverable.  Needs the unsliced
+    nodes (``SlicedNodes.whole``).
+    """
+    whole = getattr(nodes_by_subagent, "whole", None)
+    selected = [node for nodes in nodes_by_subagent.values() for node in nodes]
+    if whole is None or not selected:
+        return ""
+    end = max(max(node.end_ts_ns, node.start_ts_ns) for node in selected)
+    later = sorted(
+        (node for nodes in whole.values() for node in nodes if node.start_ts_ns > end),
+        key=lambda node: node.start_ts_ns,
+    )
+    if not later:
+        return ""
+    zh = language != "en"
+    writes = {node_id: path for path, node_id in last_writes({"": later}, workspace).items()}
+    rows: list[str] = []
+    for node in later:
+        text = user_request_text(node)
+        if text:
+            rows.append(f"- {'用户' if zh else 'user'}: {_clip(text, _AFTER_USER_LIMIT)}")
+        elif node.role == "assistant" and not node.tool_calls and node.content and node.kind != _TEAM_MEMBER_KIND:
+            rows.append(f"- {'给用户的回复' if zh else 'reply to the user'}: {_clip(node.content, _AFTER_REPLY_LIMIT)}")
+        if node.node_id in writes:
+            rows.append(f"- {'写文件' if zh else 'file written'}: {writes[node.node_id]}")
+    if len(rows) > _AFTER_HEAD + _AFTER_TAIL:
+        rows = rows[:_AFTER_HEAD] + ["- …"] + rows[-_AFTER_TAIL:]
+    if not rows:
+        return ""
+    title = (
+        "## 框选之后发生的事（按时间顺序；只作参考，不能从这里选产物）"
+        if zh
+        else "## What happened after the selection (in time order; for reference only, never pick artifacts here)"
+    )
+    return f"{title}\n" + "\n".join(rows)
+
+
 def _node_line(node: TrajectoryNode, limit: int) -> str:
     text = node.content or ""
     if node.tool_calls:
@@ -673,6 +728,33 @@ TASK_PARSE_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "report_user_feedback",
+            "description": (
+                "汇报用户本人追加的消息里，表明之前的工作有问题或没满足用户的那些（纠正、抱怨、追问漏掉的"
+                "信息）；新需求、换一种做法、回答、确认都不算；没有就传空列表。 / Report which of the user's "
+                "follow-up messages say the work so far was wrong or fell short (a correction, a complaint, "
+                "asking for something left out); a new request, another way of doing it, an answer or a "
+                "confirmation is not; pass an empty list when there is none."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "这些用户消息的节点 ID（照抄「用户本人发出的消息」）。 / Node ids of those "
+                            "messages, copied from the user's own messages."
+                        ),
+                    }
+                },
+                "required": ["node_ids"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "report_task_error",
             "description": (
                 "报错：选中区域不含完整任务（incomplete_task）或含多个互不相关子任务"
@@ -740,6 +822,24 @@ def _artifact_text(nodes_by_subagent: Mapping[str, list[TrajectoryNode]], node_i
             if node.node_id == node_id:
                 return node.content
     return None
+
+
+def _user_feedback_texts(calls: list[dict[str, Any]], user_requests: Sequence[tuple[str, str]]) -> list[str] | None:
+    """Texts of the user's messages the model judged to be feedback on the work; ``None`` when it did not say."""
+    reported = [call for call in calls if call.get("name") == "report_user_feedback"]
+    if not reported:
+        return None
+    by_id = dict(user_requests)
+    texts: list[str] = []
+    for call in reported:
+        arguments = _arguments(call)
+        if not isinstance(arguments, Mapping):
+            continue
+        for node_id in arguments.get("node_ids") or ():
+            text = by_id.get(str(node_id))
+            if text and text not in texts:
+                texts.append(text)
+    return texts
 
 
 def _is_team_internal(nodes_by_subagent: Mapping[str, list[TrajectoryNode]], node_id: str) -> bool:
@@ -823,6 +923,9 @@ async def run_task_parse(
     file_candidates, extraction_stats = extract_file_candidates(nodes_by_subagent, workspace)
     user_requests = user_request_of(nodes_by_subagent)
     digest = build_task_parse_digest(nodes_by_subagent, file_candidates, language, user_requests)
+    after = build_after_selection_block(nodes_by_subagent, workspace, language)
+    if after:
+        digest = f"{digest}\n\n{after}"
     system = system_prompt or load_task_parse_prompt(language)
     counter = status_counter if status_counter is not None else [0]
     attempts = 0
@@ -906,6 +1009,7 @@ async def run_task_parse(
                 continue
             for path in arguments.get("paths") or ():
                 file_artifacts.append(str(path))
+        user_feedback = _user_feedback_texts(calls, user_requests)
         reported_messages, reported_files = len(message_artifacts), len(file_artifacts)
         message_artifacts, file_artifacts, outside, partial = _scope_to_selection(
             nodes_by_subagent, message_artifacts, file_artifacts, workspace
@@ -920,6 +1024,8 @@ async def run_task_parse(
             "team_internal_messages_dropped": reported_messages - len(message_artifacts),
             "files_outside_selection": reported_files - len(file_artifacts),
             "selection_partial": partial,
+            "after_selection_shown": bool(after),
+            "user_feedback": None if user_feedback is None else len(user_feedback),
         }
         if on_progress is not None:
             await on_progress(run_meta)
@@ -932,6 +1038,7 @@ async def run_task_parse(
             user_request="\n\n".join(text for _, text in user_requests),
             deliverables_outside_selection=outside,
             selection_partial=partial,
+            user_feedback=user_feedback,
         )
     raise TaskParseError("invalid_response", f"task parse failed after {attempts} attempts")
 
@@ -940,6 +1047,7 @@ __all__ = [
     "TASK_PARSE_TOOLS",
     "TaskParseError",
     "TaskParseLLM",
+    "build_after_selection_block",
     "build_task_parse_digest",
     "user_request_of",
     "extract_file_candidates",

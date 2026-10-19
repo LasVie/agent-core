@@ -24,7 +24,7 @@ from openjiuwen.agent_evolving.attribution.agent import (
     build_wake_text,
     emit_single_llm_event,
 )
-from openjiuwen.agent_evolving.attribution.keyword_detect import run_keyword_diagnosis
+from openjiuwen.agent_evolving.attribution.keyword_detect import SIGNAL_TEXT_LIMIT, run_keyword_diagnosis
 from openjiuwen.agent_evolving.attribution.model import (
     AttributionRunOutcome,
     DiagnosisResult,
@@ -261,10 +261,12 @@ async def run_diagnosis(
         ended_at_ns=_now_ms(),
         token_usage={},
     )
+    run_meta: dict[str, Any] = {"keyword": keyword_meta}
+    if task_parse.user_feedback is not None and keyword_meta.get("mode") == "rule":
+        signals, run_meta["user_messages_not_feedback"] = _keep_user_feedback(signals, task_parse.user_feedback)
     if not signals:
         signals = [_no_problem_signal(language)]
     has_artifacts = bool(task_parse.message_artifacts or task_parse.file_artifacts)
-    run_meta: dict[str, Any] = {"keyword": keyword_meta}
     if not has_artifacts:
         run_meta["reward"] = {"skipped": "no artifacts"}
         return DiagnosisResult(
@@ -354,6 +356,16 @@ async def run_diagnosis(
         )
     reward = RewardResult.from_payload(sink.payload)
     return _reward_diagnosis(reward, signals, run_meta)
+
+
+def _keep_user_feedback(signals: list[DiagnosticSignal], feedback: list[str]) -> tuple[list[DiagnosticSignal], int]:
+    """Drop the user's follow-up messages task parsing judged not to be feedback (a new request, an answer).
+
+    Returns the kept signals and how many user messages were dropped.
+    """
+    texts = {text[:SIGNAL_TEXT_LIMIT] for text in feedback}
+    kept = [signal for signal in signals if signal.source != SignalSource.KEYWORD_USER or signal.text in texts]
+    return kept, len(signals) - len(kept)
 
 
 _NO_PROBLEM_TEXT = {
