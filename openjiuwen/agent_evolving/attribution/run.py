@@ -36,6 +36,7 @@ from openjiuwen.agent_evolving.attribution.model import (
     new_attr_id,
 )
 from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode, search_keyword
+from openjiuwen.agent_evolving.attribution.reward.fast_reward_adapter import fast_reward_enabled, run_fast_reward
 from openjiuwen.agent_evolving.attribution.reward.reward_agent import build_reward_agent, load_reward_prompt
 from openjiuwen.agent_evolving.attribution.reward.reward_schema import RewardResult, reward_to_signals
 from openjiuwen.agent_evolving.attribution.task_parse import TaskParseLLM, run_task_parse
@@ -164,14 +165,20 @@ def build_reward_user_prompt(
     signals: list[DiagnosticSignal],
     user_attribution: str,
     language: str = "zh",
+    user_request: str = "",
 ) -> str:
-    """Assemble the Reward stage user prompt (P5)."""
+    """Assemble the Reward stage user prompt (P5); ``user_request`` (the user's own words) leads it."""
     if language == "en":
         message_block = "\n".join(f"- {node_id}: {text}" for node_id, text in message_artifacts) or "(none)"
         file_block = "\n".join(f"- {path}" for path in file_artifacts) or "(none)"
         signal_block = "\n".join(json.dumps(signal.to_dict(), ensure_ascii=False) for signal in signals) or "(none)"
+        request_block = (
+            f"## The User's Own Request (verbatim; the task is judged against it)\n{user_request}\n\n"
+            if user_request
+            else ""
+        )
         return (
-            "## Task Description\n"
+            request_block + "## Task Description\n"
             f"{task_description}\n\n"
             "## Task Message Artifacts ((node_id, text) pairs)\n"
             f"{message_block}\n\n"
@@ -187,8 +194,9 @@ def build_reward_user_prompt(
     message_block = "\n".join(f"- {node_id}: {text}" for node_id, text in message_artifacts) or "（无）"
     file_block = "\n".join(f"- {path}" for path in file_artifacts) or "（无）"
     signal_block = "\n".join(json.dumps(signal.to_dict(), ensure_ascii=False) for signal in signals) or "（无）"
+    request_block = f"## 用户本人的请求（原文，按它评价）\n{user_request}\n\n" if user_request else ""
     return (
-        "## 任务描述\n"
+        request_block + "## 任务描述\n"
         f"{task_description}\n\n"
         "## 任务消息产物（(node_id, 文本) 对）\n"
         f"{message_block}\n\n"
@@ -265,6 +273,30 @@ async def run_diagnosis(
             signal_mode="rule_jev",
             run_meta=run_meta,
         )
+    if fast_reward_enabled():
+        try:
+            payload, reward_meta = await run_fast_reward(
+                task_parse=task_parse,
+                nodes_by_subagent=nodes_by_subagent,
+                user_attribution=user_attribution,
+                model=model,
+                language=language,
+                status_sink=status_sink,
+                model_name=model_name,
+                status_counter=counter,
+            )
+            reward = RewardResult.from_payload(payload)
+        except Exception as exc:  # noqa: BLE001 - fallback to rule/Jev signals, as for the Reward agent
+            logger.warning("[attribution] Fast Reward failed: %s", exc)
+            run_meta["reward"] = {"engine": "fast_reward", "failed": type(exc).__name__, "error": str(exc)[:200]}
+            return DiagnosisResult(
+                reward_overall=None,
+                signals=signals,
+                signal_mode="rule_jev",
+                run_meta=run_meta,
+            )
+        run_meta["reward"] = reward_meta
+        return _reward_diagnosis(reward, signals, run_meta)
     sink = _MemoryRewardSink()
     prepare_reward_temp_dir(workspace)
     agent, rail, gate = build_reward_agent(
@@ -289,6 +321,7 @@ async def run_diagnosis(
                 signals=signals,
                 user_attribution=user_attribution,
                 language=language,
+                user_request=task_parse.user_request,
             )
         )
     except Exception as exc:  # noqa: BLE001 - fallback to rule/Jev signals
@@ -312,6 +345,19 @@ async def run_diagnosis(
             run_meta=run_meta,
         )
     reward = RewardResult.from_payload(sink.payload)
+    return _reward_diagnosis(reward, signals, run_meta)
+
+
+def _reward_diagnosis(
+    reward: RewardResult,
+    signals: list[DiagnosticSignal],
+    run_meta: dict[str, Any],
+) -> DiagnosisResult:
+    """Reward dimensions as signals, followed by the process signals no dimension took up.
+
+    A process signal (a tool error, the user's negative feedback) is kept beside the reward
+    signals: the deliverable can be good while the run still went wrong somewhere.
+    """
     reward_signals = reward_to_signals(reward, signals)
     if not reward_signals:
         return DiagnosisResult(
@@ -320,9 +366,12 @@ async def run_diagnosis(
             signal_mode="rule_jev",
             run_meta=run_meta,
         )
+    taken = {signal_id for dimension in reward.dimensions for signal_id in dimension.related_signal_ids}
+    kept = [signal for signal in signals if signal.signal_id not in taken and signal.tier != "perfect"]
+    run_meta["process_signals_kept"] = len(kept)
     return DiagnosisResult(
         reward_overall=reward.overall,
-        signals=reward_signals,
+        signals=reward_signals + kept,
         signal_mode="reward",
         run_meta=run_meta,
         reward_payload=reward.to_payload(),
