@@ -296,7 +296,13 @@ async def run_diagnosis(
                 run_meta=run_meta,
             )
         run_meta["reward"] = reward_meta
-        return _reward_diagnosis(reward, signals, run_meta, tiers=[d["tier"] for d in payload["dimensions"]])
+        return _reward_diagnosis(
+            reward,
+            signals,
+            run_meta,
+            tiers=[d["tier"] for d in payload["dimensions"]],
+            error_node_ids=_error_node_ids(nodes_by_subagent),
+        )
     sink = _MemoryRewardSink()
     prepare_reward_temp_dir(workspace)
     agent, rail, gate = build_reward_agent(
@@ -345,7 +351,12 @@ async def run_diagnosis(
             run_meta=run_meta,
         )
     reward = RewardResult.from_payload(sink.payload)
-    return _reward_diagnosis(reward, signals, run_meta)
+    return _reward_diagnosis(reward, signals, run_meta, error_node_ids=_error_node_ids(nodes_by_subagent))
+
+
+def _error_node_ids(nodes_by_subagent: dict[str, list[TrajectoryNode]]) -> frozenset[str]:
+    """Ids of the tool rows the runtime itself recorded as failed."""
+    return frozenset(node.node_id for nodes in nodes_by_subagent.values() for node in nodes if node.error)
 
 
 def _reward_diagnosis(
@@ -353,11 +364,14 @@ def _reward_diagnosis(
     signals: list[DiagnosticSignal],
     run_meta: dict[str, Any],
     tiers: list[str] | None = None,
+    error_node_ids: frozenset[str] = frozenset(),
 ) -> DiagnosisResult:
-    """Reward dimensions as signals, followed by the process signals no dimension took up.
+    """Reward dimensions as signals, followed by the tool errors no dimension took up.
 
-    A process signal (a tool error, the user's negative feedback) is kept beside the reward
-    signals: the deliverable can be good while the run still went wrong somewhere.
+    A failed tool call is kept beside the reward signals: the deliverable can be good while
+    the run still went wrong somewhere.  Only rows the runtime recorded as failed count
+    (``error_node_ids``); a keyword that merely appears in a document, a prompt or a
+    conversation is not a process signal.
     ``tiers`` (one per dimension) replace the score-band tiers when the Reward judged each claim itself.
     """
     reward_signals = reward_to_signals(reward, signals)
@@ -371,8 +385,17 @@ def _reward_diagnosis(
             run_meta=run_meta,
         )
     taken = {signal_id for dimension in reward.dimensions for signal_id in dimension.related_signal_ids}
-    kept = [signal for signal in signals if signal.signal_id not in taken and signal.tier != "perfect"]
+    kept = [
+        signal
+        for signal in signals
+        if signal.signal_id not in taken
+        and signal.tier != "perfect"
+        and any(node_id in error_node_ids for node_id in signal.node_ids)
+    ]
     run_meta["process_signals_kept"] = len(kept)
+    run_meta["process_signals_dropped"] = sum(
+        1 for signal in signals if signal.signal_id not in taken and signal.tier != "perfect"
+    ) - len(kept)
     return DiagnosisResult(
         reward_overall=reward.overall,
         signals=reward_signals + kept,

@@ -152,7 +152,7 @@ def _keyword(signals: list[DiagnosticSignal]) -> Any:
     return fake
 
 
-async def test_run_diagnosis_scores_with_fast_reward_and_keeps_process_signals(monkeypatch: Any, tmp_path: Any) -> None:
+async def test_fast_reward_diagnosis_keeps_failed_tool_calls(monkeypatch: Any, tmp_path: Any) -> None:
     seen: dict[str, Any] = {}
 
     async def fake_reward(task: str, artifacts: list[str], config: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
@@ -165,15 +165,32 @@ async def test_run_diagnosis_scores_with_fast_reward_and_keeps_process_signals(m
     monkeypatch.setattr(pipeline, "reward", fake_reward)
     monkeypatch.setattr(adapter, "fast_reward_config", lambda model: {"producer": {}, "judge": {}})
     monkeypatch.setattr(run_module, "build_reward_agent", lambda **kwargs: pytest.fail("the Reward agent ran"))
-    complaint = DiagnosticSignal.create(
-        "没有路径我怎么知道去哪里看文件", source=SignalSource.KEYWORD_USER, node_ids=[f"{LEADER}:1"]
+    nodes = _nodes()
+    failed = TrajectoryNode(
+        node_id=f"{MEMBER}:2",
+        subagent_key=MEMBER,
+        display_name=MEMBER,
+        kind="team_member",
+        role="tool",
+        name="write_file",
+        content="Error: File has not been fully read yet.",
+        start_ts_ns=96,
+        end_ts_ns=97,
+        error=True,
     )
-    monkeypatch.setattr(run_module, "run_keyword_diagnosis", _keyword([complaint]))
+    nodes[MEMBER].append(failed)
+    tool_error = DiagnosticSignal.create(
+        "Error: File has not been fully read yet.", source=SignalSource.KEYWORD_TOOL, node_ids=[failed.node_id]
+    )
+    word_only = DiagnosticSignal.create(  # an error word inside a document the member read: not a failure
+        "万一某个环节出问题怎么办", source=SignalSource.KEYWORD_TOOL, node_ids=[f"{MEMBER}:1"]
+    )
+    monkeypatch.setattr(run_module, "run_keyword_diagnosis", _keyword([tool_error, word_only]))
     events: list[Any] = []
     result = await run_diagnosis(
         run_id="r",
         language="zh",
-        nodes_by_subagent=_nodes(),
+        nodes_by_subagent=nodes,
         user_attribution="外婆的时间要核对",
         task_parse=_task_parse(tmp_path),
         model=object(),
@@ -186,7 +203,8 @@ async def test_run_diagnosis_scores_with_fast_reward_and_keeps_process_signals(m
     # tiers follow each claim's status, not a score band (a partial requirement scores 50 yet is fair)
     assert [s.tier for s in result.signals] == ["weak", "fair", "fair", "perfect", "uncertain"]
     assert [s.score for s in result.signals[:4]] == [0, 50, 0, 100]
-    assert result.signals[-1].signal_id == complaint.signal_id  # the user's complaint still reaches attribution
+    assert result.signals[-1].signal_id == tool_error.signal_id  # the failed tool call still reaches attribution
+    assert result.run_meta["process_signals_kept"] == 1 and result.run_meta["process_signals_dropped"] == 1
     assert result.run_meta["reward"]["engine"] == "fast_reward"
     assert result.reward_payload["schema_version"] == "attribution.reward.v1"
     assert [e.stage for e in events if getattr(e, "stage", "") == "reward"]

@@ -40,6 +40,7 @@ def _nodes() -> dict[str, list[TrajectoryNode]]:
                 name="bash" if index else None,
                 start_ts_ns=index * 100,
                 end_ts_ns=index * 100 + 50,
+                error=index == 1,  # main:1 is a failed tool call; main:2 only mentions an error word
             )
             for index in range(3)
         ]
@@ -153,9 +154,11 @@ class _FakeRewardAgent:
 
 async def test_run_diagnosis_reward_success_exposes_full_payload(monkeypatch: Any) -> None:
     monkeypatch.setenv("ATTRIBUTION_REWARD", "agent")  # the Reward deep agent path
+
     async def fake_keyword(*args: Any, **kwargs: Any) -> tuple[list[DiagnosticSignal], dict[str, Any]]:
         del args, kwargs
-        return [_signal()], {"mode": "rule"}
+        word_only = DiagnosticSignal.create("错误", source=SignalSource.KEYWORD_TOOL, node_ids=["main:2"])
+        return [_signal(), word_only], {"mode": "rule"}
 
     def fake_build_reward(**kwargs: Any) -> tuple[Any, _FakeRail, _FakeRewardGate]:
         gate = _FakeRewardGate()
@@ -182,11 +185,14 @@ async def test_run_diagnosis_reward_success_exposes_full_payload(monkeypatch: An
     assert result.reward_payload["overall"]["total_score"] == 87
     assert result.reward_payload["categories"] == [{"name": "正确性", "comment": "基本正确", "score": 90}]
     assert result.reward_payload["dimensions"][0]["category"] == "正确性"
-    assert len(result.signals) == 2  # the reward dimension, then the process signal no dimension took up
+    # the reward dimension, then the failed tool call no dimension took up; a keyword in plain text is dropped
+    assert len(result.signals) == 2
     assert result.signals[0].source == SignalSource.REWARD
     assert result.signals[0].score == 70
     assert result.signals[1].source == SignalSource.KEYWORD_TOOL
+    assert result.signals[1].node_ids == ["main:1"]
     assert result.run_meta["process_signals_kept"] == 1
+    assert result.run_meta["process_signals_dropped"] == 1
     assert result.run_meta["reward"]["submitted"] is True
 
 
@@ -237,6 +243,7 @@ async def test_run_diagnosis_forwards_reward_status_and_budget(monkeypatch: Any)
 
 async def test_run_diagnosis_prepares_reward_temp_dir(monkeypatch: Any, tmp_path: Any) -> None:
     monkeypatch.setenv("ATTRIBUTION_REWARD", "agent")  # the Reward deep agent path
+
     async def fake_keyword(*args: Any, **kwargs: Any) -> tuple[list[DiagnosticSignal], dict[str, Any]]:
         del args, kwargs
         return [_signal()], {"mode": "rule"}
