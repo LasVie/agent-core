@@ -61,6 +61,8 @@
 
 ## 补充用例 A4：只框中间几段（开发者看过程）
 
+这个会话已打包成固定 demo：`demo-data/web_1a152586c02_saturday.tar.gz`，导入方法和建议的框选见 `demo-data/README.md`。
+
 会话 `web_1a152586c02_c1c9b47c964f`，照 `dg_b6560655…` 的框法选三个不重叠的窗口：leader 12:09–12:45、schedule-planner 12:44:42–12:45:08、message-writer 15:57:02–15:57:22。提交八之后应看到：
 
 | 看什么 | 预期 |
