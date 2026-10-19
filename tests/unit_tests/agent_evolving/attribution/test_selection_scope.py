@@ -290,3 +290,44 @@ async def test_without_a_named_final_reply_a_redone_reply_is_dropped() -> None:
     whole = slice_nodes_by_range(_session(), [(LEADER, 0, 100)])
     kept = await run_task_parse(whole, "zh", _FinalLlm(None, [f"{LEADER}:7"]))
     assert [node_id for node_id, _ in kept.message_artifacts] == [f"{LEADER}:7"]  # nothing came after it
+
+
+class _FilesLlm:
+    def __init__(self, final: list[str] | None, reported: list[str]) -> None:
+        self._final = final
+        self._reported = reported
+        self.digest = ""
+
+    async def invoke(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any) -> Any:
+        del tools, kwargs
+        self.digest = messages[1]["content"]
+        calls = [
+            {"name": "report_task_description", "arguments": json.dumps({"task": "排周六"})},
+            {"name": "report_file_artifacts", "arguments": json.dumps({"paths": self._reported})},
+        ]
+        if self._final is not None:
+            calls.append({"name": "report_final_files", "arguments": json.dumps({"paths": self._final})})
+        return {"tool_calls": calls}
+
+
+def _renamed() -> dict[str, list[TrajectoryNode]]:
+    nodes = _redone()  # the user asks again at 92 and 94
+    nodes[MEMBER].append(_node(MEMBER, 4, 98, calls=_write("/w/schedule-v2.md"), kind="team_member"))
+    return nodes
+
+
+async def test_a_file_replaced_under_another_name_is_not_reviewed() -> None:
+    sliced = slice_nodes_by_range(_renamed(), [(MEMBER, 0, 50), (LEADER, 0, 50)])
+    llm = _FilesLlm(["/w/schedule-v2.md", "/w/message.md"], ["/w/message.md"])
+    parse = await run_task_parse(sliced, "zh", llm)
+    assert parse.file_artifacts == ["/w/message.md"]  # named final and last written inside
+    assert parse.deliverables_outside_selection == ["/w/schedule-v2.md"]
+    assert "## 整个会话里写过的文件" in llm.digest
+    assert "/w/schedule-v2.md [00:00:00]（最后一次写入在框选外）" in llm.digest
+
+
+async def test_without_named_final_files_a_file_followed_by_a_redo_is_dropped() -> None:
+    sliced = slice_nodes_by_range(_renamed(), [(MEMBER, 0, 50), (LEADER, 0, 50)])
+    parse = await run_task_parse(sliced, "zh", _FilesLlm(None, ["/w/message.md"]))
+    assert parse.file_artifacts == []  # the user asked again at 92 and schedule-v2.md was written at 98
+    assert parse.deliverables_outside_selection == ["/w/message.md"]
