@@ -169,18 +169,27 @@ async def test_no_artifact_improvement_when_no_deliverable_was_reviewed() -> Non
     assert (await _invoke(tools["check_attribution_complete"]))["all_done"] is True
 
 
-def test_after_selection_block_lists_later_messages_replies_and_writes() -> None:
-    sliced = slice_nodes_by_range(_session(), [(LEADER, 10, 50), (MEMBER, 30, 50)])
+def test_outside_block_lists_what_the_selection_leaves_out_after_it_began() -> None:
+    sliced = slice_nodes_by_range(_session(), [(LEADER, 10, 50), (MEMBER, 40, 50)])
     block = build_after_selection_block(sliced)
-    assert block.startswith("## 框选之后发生的事")
-    lines = block.splitlines()[1:]
+    assert block.startswith("## 框选之外的后续进展")
+    lines = [line.split("] ", 1)[1] for line in block.splitlines()[1:]]  # drop the clock
     assert lines == [
-        "- 写文件: /w/schedule.md",  # leader:5 at 80; sending message.md at 85 is not a write
-        "- 给用户的回复: 都做好了：schedule.md 与 message.md",
-    ]
+        "写文件: /w/schedule.md",  # leader:5 at 80; sending message.md at 85 is not a write
+        "给用户的回复: 都做好了：schedule.md 与 message.md",
+    ]  # the member's dispatch at 30 is left out too, but it is neither the user's message nor a reply
     whole = slice_nodes_by_range(_session(), [(LEADER, 0, 100), (MEMBER, 0, 100)])
-    assert build_after_selection_block(whole) == ""  # nothing after a selection reaching the end
+    assert build_after_selection_block(whole) == ""  # nothing left out
     assert build_after_selection_block(_session()) == ""  # a plain dict knows no session
+
+
+def test_outside_block_covers_gaps_between_windows() -> None:
+    nodes = _session()
+    nodes[LEADER].append(_node(LEADER, 10, 60, content="第一轮做完了"))  # between the two windows
+    nodes[LEADER].sort(key=lambda node: node.start_ts_ns)
+    sliced = slice_nodes_by_range(nodes, [(LEADER, 10, 50), (MEMBER, 70, 100)])
+    block = build_after_selection_block(sliced)
+    assert "给用户的回复: 第一轮做完了" in block  # before the latest end, yet outside the selection
 
 
 class _FeedbackLlm:

@@ -542,7 +542,7 @@ def build_task_parse_digest(
 
     for node in flat:
         if node.role == "assistant" and not _node_has_tool_calls(node) and node.content:
-            assistant_block.append(f"{node.node_id}: {node.content[:_ASSISTANT_NO_TOOL_CALL_LIMIT]}")
+            assistant_block.append(f"{node.node_id}{_clock(node)}: {node.content[:_ASSISTANT_NO_TOOL_CALL_LIMIT]}")
             disclosed.add(id(node))
 
     for subagent in sorted(nodes_by_subagent):
@@ -564,7 +564,14 @@ def build_task_parse_digest(
 
     sections: list[str] = []
     if user_requests:
-        request_text = "\n\n".join(f"{node_id}: {text[:_USER_REQUEST_LIMIT]}" for node_id, text in user_requests)
+        clocks = {
+            node.node_id: _clock(node)
+            for node in getattr(nodes_by_subagent, "user_requests", None) or flat
+            if node.node_id in dict(user_requests)
+        }
+        request_text = "\n\n".join(
+            f"{node_id}{clocks.get(node_id, '')}: {text[:_USER_REQUEST_LIMIT]}" for node_id, text in user_requests
+        )
         title = (
             "## 用户本人发出的消息（原文，按时间顺序；任务以此为准）"
             if language != "en"
@@ -587,6 +594,15 @@ def build_task_parse_digest(
     return "\n\n".join(sections)
 
 
+def _clock(node: TrajectoryNode) -> str:
+    """`` [HH:MM:SS]`` (UTC) of a node's start, to compare what came first; ``""`` when unknown."""
+    if not node.start_ts_ns:
+        return ""
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(node.start_ts_ns / 1e9, tz=timezone.utc).strftime(" [%H:%M:%S]")
+
+
 def _clip(text: str, limit: int) -> str:
     text = " ".join(str(text).split())
     return text if len(text) <= limit else text[:limit] + "…"
@@ -597,10 +613,11 @@ def build_after_selection_block(
     workspace: str | None = None,
     language: str = "zh",
 ) -> str:
-    """What happened after the selection ended, in time order, or ``""`` when nothing did.
+    """What happened outside the selection after it began, in time order, or ``""`` when nothing did.
 
-    Lists the user's messages, the replies the user got and the deliverable files written after the
-    latest selected node: enough to tell whether a reply or a file in the selection was later
+    Lists the user's messages, the replies the user got and the files written that the selection leaves
+    out, from its first node on -- after its end, and between non-overlapping windows of different
+    subjects -- each with its time: enough to tell whether a reply or a file in the selection was later
     delivered again (a redo, a new version) and so is not the final deliverable.  Needs the unsliced
     nodes (``SlicedNodes.whole``).
     """
@@ -608,9 +625,10 @@ def build_after_selection_block(
     selected = [node for nodes in nodes_by_subagent.values() for node in nodes]
     if whole is None or not selected:
         return ""
-    end = max(max(node.end_ts_ns, node.start_ts_ns) for node in selected)
+    start = min(node.start_ts_ns for node in selected)
+    chosen = {node.node_id for node in selected}
     later = sorted(
-        (node for nodes in whole.values() for node in nodes if node.start_ts_ns > end),
+        (node for nodes in whole.values() for node in nodes if node.start_ts_ns > start and node.node_id not in chosen),
         key=lambda node: node.start_ts_ns,
     )
     if not later:
@@ -620,20 +638,23 @@ def build_after_selection_block(
     rows: list[str] = []
     for node in later:
         text = user_request_text(node)
+        clock = _clock(node).strip()
         if text:
-            rows.append(f"- {'用户' if zh else 'user'}: {_clip(text, _AFTER_USER_LIMIT)}")
+            rows.append(f"- {clock} {'用户' if zh else 'user'}: {_clip(text, _AFTER_USER_LIMIT)}")
         elif node.role == "assistant" and not node.tool_calls and node.content and node.kind != _TEAM_MEMBER_KIND:
-            rows.append(f"- {'给用户的回复' if zh else 'reply to the user'}: {_clip(node.content, _AFTER_REPLY_LIMIT)}")
+            label = "给用户的回复" if zh else "reply to the user"
+            rows.append(f"- {clock} {label}: {_clip(node.content, _AFTER_REPLY_LIMIT)}")
         if node.node_id in writes:
-            rows.append(f"- {'写文件' if zh else 'file written'}: {writes[node.node_id]}")
+            rows.append(f"- {clock} {'写文件' if zh else 'file written'}: {writes[node.node_id]}")
     if len(rows) > _AFTER_HEAD + _AFTER_TAIL:
         rows = rows[:_AFTER_HEAD] + ["- …"] + rows[-_AFTER_TAIL:]
     if not rows:
         return ""
     title = (
-        "## 框选之后发生的事（按时间顺序；只作参考，不能从这里选产物）"
+        "## 框选之外的后续进展（框选开始后没被选中的部分，按时间顺序；只作参考，不能从这里选产物）"
         if zh
-        else "## What happened after the selection (in time order; for reference only, never pick artifacts here)"
+        else "## What happened outside the selection (after it began, in time order; for reference only, "
+        "never pick artifacts here)"
     )
     return f"{title}\n" + "\n".join(rows)
 
