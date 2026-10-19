@@ -96,6 +96,33 @@ def test_claims_become_dimensions_with_tiers_and_unknowns_are_counted() -> None:
 
 def test_final_reply_is_the_last_message_the_user_got(tmp_path: Any) -> None:
     assert adapter.final_reply(_task_parse(tmp_path), _nodes()) == "最终答复"
+    bare = TaskParseResult(task_description="t", message_artifacts=[], file_artifacts=[], file_candidates=[])
+    nodes = _nodes()
+    nodes[LEADER].append(
+        TrajectoryNode(
+            node_id=f"{LEADER}:3",
+            subagent_key=LEADER,
+            display_name=LEADER,
+            kind="team_leader",
+            role="assistant",
+            content="两个文件都已发送给你",
+            start_ts_ns=99,
+            end_ts_ns=100,
+        )
+    )
+    nodes[MEMBER].append(
+        TrajectoryNode(
+            node_id=f"{MEMBER}:2",
+            subagent_key=MEMBER,
+            display_name=MEMBER,
+            kind="team_member",
+            role="assistant",
+            content="任务已完成",
+            start_ts_ns=120,
+            end_ts_ns=121,
+        )
+    )
+    assert adapter.final_reply(bare, nodes) == "两个文件都已发送给你"  # no artifact reported: the leader's last reply
 
 
 def test_route_from_model_reads_the_core_model_and_refuses_a_bare_one() -> None:

@@ -123,12 +123,20 @@ def existing_paths(paths: Sequence[str]) -> list[str]:
 
 
 def final_reply(task_parse: TaskParseResult, nodes_by_subagent: Mapping[str, Sequence[TrajectoryNode]]) -> str:
-    """The text the user got last among the message artifacts.
+    """The text the user got last: the latest message artifact, else the latest reply in the trajectory.
 
-    Messages a team member sent inside the team are skipped while a message to the user exists.
+    Messages a team member sent inside the team are skipped while a message to the user exists.  When task
+    parsing reported no message artifact, the last assistant message without a tool call from the main agent
+    or the leader is the reply (an empty reply would make every claim about the reply unmet).
     """
     nodes = {node.node_id: node for rows in nodes_by_subagent.values() for node in rows}
     candidates = [(node_id, text) for node_id, text in task_parse.message_artifacts if text]
+    if not candidates:
+        candidates = [
+            (node.node_id, str(node.content))
+            for node in nodes.values()
+            if node.role == "assistant" and not node.tool_calls and node.content and node.kind != "team_member"
+        ]
     to_user = [item for item in candidates if getattr(nodes.get(item[0]), "kind", "") != "team_member"]
     pool = to_user or candidates
     if not pool:
