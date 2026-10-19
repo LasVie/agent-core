@@ -76,17 +76,17 @@ def _task_parse(tmp_path: Any) -> TaskParseResult:
 def test_claims_become_dimensions_with_tiers_and_unknowns_are_counted() -> None:
     payload = adapter.to_reward_payload(_fast_result(), "zh")
     assert payload["overall"] == {
-        "comment": "时间表可用，外婆到达时间与约束冲突 另有 1 项因证据不足未能判定。",
+        "comment": "要求 1/3 满足 · 挑战 1/1 未做到。时间表可用，外婆到达时间与约束冲突 另有 1 项因证据不足未能判定。",
         "total_score": 72,
     }
-    assert [(d["requirement"], d["score"], d["tier"]) for d in payload["dimensions"]] == [
-        ("[要求] 每段时间都排得开", 100, "perfect"),
+    assert [(d["requirement"], d["score"], d["tier"]) for d in payload["dimensions"]] == [  # what to fix first
         ("[要求] 外婆到达在 5 点以后", 0, "weak"),
         ("[要求] 购物清单标出顺路时段", 50, "fair"),
         ("[挑战] 预判师傅超时的应对", 0, "fair"),
+        ("[要求] 每段时间都排得开", 100, "perfect"),
     ]
-    assert payload["dimensions"][1]["comment"] == "16:55 到，早于 5 点"
-    assert payload["dimensions"][0]["comment"] == "每段时间都排得开"  # no reason: the claim itself
+    assert payload["dimensions"][0]["comment"] == "16:55 到，早于 5 点"
+    assert payload["dimensions"][3]["comment"] == "每段时间都排得开"  # no reason: the claim itself
     assert payload["categories"] == [{"name": "日程", "comment": "一处冲突", "score": 70}]
     with pytest.raises(ValueError):
         adapter.to_reward_payload(_fast_result(total=None))
@@ -157,12 +157,54 @@ async def test_run_diagnosis_scores_with_fast_reward_and_keeps_process_signals(m
     assert seen["txt_response"] == "最终答复" and seen["user_note"] == "外婆的时间要核对"
     assert result.signal_mode == "reward" and result.reward_overall.total_score == 72
     # tiers follow each claim's status, not a score band (a partial requirement scores 50 yet is fair)
-    assert [s.tier for s in result.signals] == ["perfect", "weak", "fair", "fair", "uncertain"]
-    assert [s.score for s in result.signals[:4]] == [100, 0, 50, 0]
+    assert [s.tier for s in result.signals] == ["weak", "fair", "fair", "perfect", "uncertain"]
+    assert [s.score for s in result.signals[:4]] == [0, 50, 0, 100]
     assert result.signals[-1].signal_id == complaint.signal_id  # the user's complaint still reaches attribution
     assert result.run_meta["reward"]["engine"] == "fast_reward"
     assert result.reward_payload["schema_version"] == "attribution.reward.v1"
     assert [e.stage for e in events if getattr(e, "stage", "") == "reward"]
+
+
+async def test_progress_streams_what_fast_reward_does_now(monkeypatch: Any, tmp_path: Any) -> None:
+    import asyncio
+
+    from openjiuwen.agent_evolving.fast_reward import pipeline, progress
+
+    async def fake_reward(task: str, artifacts: list[str], config: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        steps = progress.current()
+        steps.stage("criteria")
+        kwargs["log"]("3 criteria: plan, list, message; tools: ['read', 'python']")
+        steps.stage("evidence", total=3)
+        kwargs["log"]("evidence c1 (python) for plan")
+        kwargs["log"]("evidence c2 (read) for list, message")
+        steps.stage("judging", total=3)
+        for name in ("plan", "list", "message"):
+            await steps.counted(asyncio.sleep(0), name)
+        return _fast_result()
+
+    monkeypatch.delenv("ATTRIBUTION_REWARD", raising=False)
+    monkeypatch.setattr(pipeline, "reward", fake_reward)
+    monkeypatch.setattr(adapter, "fast_reward_config", lambda model: {})
+    monkeypatch.setattr(run_module, "run_keyword_diagnosis", _keyword([]))
+    events: list[Any] = []
+    await run_diagnosis(
+        run_id="r",
+        language="zh",
+        nodes_by_subagent=_nodes(),
+        user_attribution="",
+        task_parse=_task_parse(tmp_path),
+        model=object(),
+        status_sink=SimpleNamespace(report=events.append),
+    )
+    lines = [e.response_preview for e in events if e.stage == "reward"]
+    assert lines[0].startswith("░░░░░░░░░░ 3% · 出题：根据用户的请求写判定项 · 已用 0分")
+    assert any("出题完成：3 个维度" in line for line in lines)
+    assert any("取证：第 2 项检查完成（read）" in line for line in lines)
+    assert any("判定：3/3 个维度已判定" in line for line in lines)
+    assert lines[-1].startswith("▓▓▓▓▓▓▓▓▓▓ 100% · 完成：总分 72")
+    percents = [int(line.split("% ")[0].split(" ")[-1]) for line in lines]
+    assert percents == sorted(percents)  # the bar only moves forward
+    assert not isinstance(progress.current(), adapter._ProgressLines)  # the run's progress slot is restored
 
 
 async def test_a_failed_fast_reward_falls_back_to_the_process_signals(monkeypatch: Any, tmp_path: Any) -> None:

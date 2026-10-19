@@ -34,10 +34,43 @@ DEFAULT_DEADLINE_SECONDS = 600
 _REQUIREMENT_TIER = {"met": "perfect", "partial": "fair", "unmet": "weak"}
 _CHALLENGE_TIER = {"met": "perfect", "partial": "fair", "unmet": "fair"}
 _CLAIM_SCORE = {"met": 100, "partial": 50, "unmet": 0}
+_TIER_ORDER = {"weak": 0, "fair": 1, "perfect": 2}
 _LABELS = {
-    "zh": {"floor": "要求", "challenge": "挑战", "unknown": "另有 {count} 项因证据不足未能判定。"},
-    "en": {"floor": "Requirement", "challenge": "Challenge", "unknown": "{count} more claims could not be settled."},
+    "zh": {
+        "floor": "要求",
+        "challenge": "挑战",
+        "counts": "要求 {floor_met}/{floor} 满足 · 挑战 {challenge_open}/{challenge} 未做到",
+        "unknown": "另有 {count} 项因证据不足未能判定。",
+        "criteria": "出题：根据用户的请求写判定项",
+        "criteria_done": "出题完成：{count} 个维度",
+        "evidence": "取证：实际运行交付物，覆盖 {count} 个维度",
+        "check": "取证：第 {count} 项检查完成（{tool}）",
+        "evidence_done": "取证结束，共 {count} 项检查",
+        "judging": "判定：逐条判定 0/{total} 个维度",
+        "judged": "判定：{done}/{total} 个维度已判定",
+        "finished": "完成：总分 {score}",
+        "elapsed": "已用 {minutes}分{seconds:02d}秒",
+    },
+    "en": {
+        "floor": "Requirement",
+        "challenge": "Challenge",
+        "counts": "requirements {floor_met}/{floor} met · challenges {challenge_open}/{challenge} open",
+        "unknown": "{count} more claims could not be settled.",
+        "criteria": "Criteria: writing claims from the user's request",
+        "criteria_done": "Criteria written: {count} criteria",
+        "evidence": "Evidence: running the deliverable for {count} criteria",
+        "check": "Evidence: check {count} done ({tool})",
+        "evidence_done": "Evidence done: {count} checks",
+        "judging": "Judging: 0/{total} criteria",
+        "judged": "Judging: {done}/{total} criteria judged",
+        "finished": "Done: total {score}",
+        "elapsed": "{minutes}m{seconds:02d}s",
+    },
 }
+
+
+def _labels(language: str) -> dict[str, str]:
+    return _LABELS["en" if str(language).lower().startswith("en") else "zh"]
 
 
 def fast_reward_enabled() -> bool:
@@ -103,21 +136,93 @@ def final_reply(task_parse: TaskParseResult, nodes_by_subagent: Mapping[str, Seq
     return max(pool, key=lambda item: getattr(nodes.get(item[0]), "start_ts_ns", 0))[1]
 
 
+class _ProgressLines:
+    """Fast Reward's progress as status lines: what it does now, a bar and the time used.
+
+    Installed as Fast Reward's progress object (its ``stage``/``tick``/``counted`` calls) and as its log
+    (evidence checks are counted from it); every step the user would care about becomes one line.
+    """
+
+    def __init__(self, say: Any, language: str) -> None:
+        self._say = say
+        self._labels = _labels(language)
+        self._started = time.monotonic()
+        self._percent = 0
+        self._criteria = 0
+        self._checks = 0
+        self._done = 0
+        self._total = 0
+        self._stage = ""
+
+    def line(self, percent: int, doing: str) -> None:
+        self._percent = max(self._percent, min(100, percent))
+        filled = round(self._percent / 10)
+        seconds = int(time.monotonic() - self._started)
+        elapsed = self._labels["elapsed"].format(minutes=seconds // 60, seconds=seconds % 60)
+        self._say(f"{'▓' * filled}{'░' * (10 - filled)} {self._percent}% · {doing} · {elapsed}")
+
+    def stage(self, stage: str, total: int = 0, detail: str = "") -> None:
+        del detail
+        self._stage = stage
+        if stage == "criteria":
+            self.line(3, self._labels["criteria"])
+        elif stage == "evidence":
+            self._criteria = total
+            self.line(15, self._labels["evidence"].format(count=total))
+        elif stage == "judging":
+            if self._checks:
+                self.line(68, self._labels["evidence_done"].format(count=self._checks))
+            self._done, self._total = 0, total
+            self.line(70, self._labels["judging"].format(total=total))
+
+    def tick(self, detail: str = "") -> None:
+        del detail
+        self._done += 1
+        share = self._done / self._total if self._total else 1
+        self.line(70 + round(28 * share), self._labels["judged"].format(done=self._done, total=self._total))
+
+    async def counted(self, awaitable: Any, detail: str) -> Any:
+        result = await awaitable
+        self.tick(detail)
+        return result
+
+    def finish(self, total: Any) -> None:  # not called by the pipeline; the adapter ends the run itself
+        del total
+
+    def fail(self, error: Any) -> None:
+        del error
+
+    def log(self, message: str) -> None:
+        if message.startswith("evidence ") and " for " in message:
+            self._checks += 1
+            tool = message.split("(", 1)[-1].split(")", 1)[0] if "(" in message else "-"
+            expected = max(6, 2 * self._criteria)
+            self.line(
+                15 + round(52 * min(1.0, self._checks / expected)),
+                self._labels["check"].format(count=self._checks, tool=tool),
+            )
+        elif " criteria: " in message and "; tools: " in message:
+            count = message.split(" criteria: ", 1)[0].strip()
+            self.line(12, self._labels["criteria_done"].format(count=count))
+
+
 def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[str, Any]:
     """A Fast Reward result as an ``attribution.reward.v1`` payload.
 
     Each dimension also carries ``tier`` (from the claim's status); ``run_diagnosis`` applies it to the
-    signal instead of the score band.
+    signal instead of the score band.  Dimensions come in reading order: requirements not met, challenges
+    not done, then what was met; the overall comment opens with those counts.
 
     Raises:
         ValueError: The result has no total score (no evidence) or no claim it could settle.
     """
-    labels = _LABELS["en" if str(language).lower().startswith("en") else "zh"]
+    labels = _labels(language)
     total = (result.get("total") or {}).get("score")
     if total is None:
         raise ValueError("Fast Reward found no evidence to score the work")
     dimensions = []
     unknown = 0
+    counts = {"floor": 0, "floor_met": 0, "challenge": 0, "challenge_open": 0}
     for item in result.get("sub_category_items") or ():
         status = item.get("status")
         challenge = item.get("type") == "proactive_challenge"
@@ -125,6 +230,12 @@ def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[s
         if tier is None:
             unknown += 1
             continue
+        if challenge:
+            counts["challenge"] += 1
+            counts["challenge_open"] += tier != "perfect"
+        else:
+            counts["floor"] += 1
+            counts["floor_met"] += tier == "perfect"
         dimensions.append(
             {
                 "category": str(item.get("category_name") or item.get("category_id") or "-"),
@@ -137,7 +248,13 @@ def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[s
         )
     if not dimensions:
         raise ValueError("Fast Reward settled no claim")
-    comment = str((result.get("total") or {}).get("summary") or "-")
+    dimensions.sort(key=lambda d: (_TIER_ORDER[d["tier"]], d["requirement"].startswith(f"[{labels['challenge']}]")))
+    comment = (
+        f"{labels['counts'].format(**counts)}。"
+        if labels is _LABELS["zh"]
+        else f"{labels['counts'].format(**counts)}. "
+    )
+    comment += str((result.get("total") or {}).get("summary") or "-")
     if unknown:
         comment = f"{comment} {labels['unknown'].format(count=unknown)}"
     categories = [
@@ -177,7 +294,7 @@ async def run_fast_reward(
             failed Reward run.
     """
     from openjiuwen.agent_evolving.attribution.agent import emit_single_llm_event
-    from openjiuwen.agent_evolving.fast_reward import pipeline
+    from openjiuwen.agent_evolving.fast_reward import pipeline, progress
 
     counter = status_counter if status_counter is not None else [0]
     task = task_parse.user_request or task_parse.task_description
@@ -185,8 +302,24 @@ async def run_fast_reward(
     reply = final_reply(task_parse, nodes_by_subagent)
     config = fast_reward_config(model)
     started = time.time_ns()
+
+    def say(line: str) -> None:
+        emit_single_llm_event(
+            status_sink,
+            stage="reward",
+            model=model_name,
+            counter=counter,
+            started_at_ns=started,
+            ended_at_ns=time.time_ns(),
+            preview=line,
+        )
+
+    lines = _ProgressLines(say, language)
+    token = progress._current.set(lines)  # noqa: SLF001 - Fast Reward's own per-run progress slot
     try:
-        result = await pipeline.reward(task, artifacts, config, txt_response=reply, user_note=user_attribution or "")
+        result = await pipeline.reward(
+            task, artifacts, config, txt_response=reply, user_note=user_attribution or "", log=lines.log
+        )
         payload = to_reward_payload(result, language)
     except Exception as exc:
         emit_single_llm_event(
@@ -199,15 +332,9 @@ async def run_fast_reward(
             error=str(exc)[:200] or type(exc).__name__,
         )
         raise
-    emit_single_llm_event(
-        status_sink,
-        stage="reward",
-        model=model_name,
-        counter=counter,
-        started_at_ns=started,
-        ended_at_ns=time.time_ns(),
-        preview=f"Fast Reward {payload['overall']['total_score']}",
-    )
+    finally:
+        progress._current.reset(token)  # noqa: SLF001
+    lines.line(100, _labels(language)["finished"].format(score=payload["overall"]["total_score"]))
     meta = {
         "engine": "fast_reward",
         "artifacts": artifacts,
