@@ -147,6 +147,9 @@ Judge only this criterion's claims, each on its own subject: how the work looks 
 looks, so a visual weakness never lowers a claim about behaviour, content or data, and the "summary" stays on this
 criterion's aspect. A check that failed to run is not a defect of the work; a check that ran and showed a failure is. When the work has no
 files, the final reply is the outcome.
+Read each claim with the Task in mind: a claim about where, when or how something is done is met only when that
+also serves what the Task needs it for (an errand placed after the moment its result was needed is not "on the way"
+or "in time", however convenient the route).
 Status per claim: met (evidence shows the whole claim), partial (evidence shows the work does only part of it),
 unmet (evidence shows it fails), unknown (no evidence either way). Partial means part of what the claim covers is
 done (some pages, some of the items); when the claim's own qualifier is missing (it asks for a specific suggestion

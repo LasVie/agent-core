@@ -81,7 +81,8 @@ async def evaluate_terminal(criterion, ctx, producer, judge, log, gathered, seei
     if visual:  # source code or the final reply cannot replace the missing visual evidence
         return to_result(criterion, {"claims": []}, evidence)
     verdict = await ask(judge, JUDGE_PROMPT + ("" if seeing else BLIND_NOTE), json.dumps(
-            {"criterion": criterion, "checks": evidence, "workspace": ctx["evidence"]["deliverable"],
+            {"task": ctx["evidence"]["task"], "criterion": criterion, "checks": evidence,
+             "workspace": ctx["evidence"]["deliverable"],
              "final_reply": ctx["evidence"]["final_reply"], "inputs": ctx["evidence"]["references"]},
             ensure_ascii=False), f"{name}: judge", shown)
     return to_result(criterion, verdict, evidence)

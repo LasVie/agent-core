@@ -349,6 +349,7 @@ async def test_a_page_is_played_in_the_browser_and_judged_with_comments(tmp_path
     assert not any("SecurityError" in e for e in check["page_errors"])         # real origin, localStorage works
     judged = [x for x in seen if x[0].startswith("You judge each claim of one criterion about an agent's delivered")]
     assert judged[0][2] == ["check 1, loaded", "check 1, after action 0"]       # screenshots reach the judge
+    assert "Make a click game" in judged[0][1]                                  # claims are read with the Task in mind
     assert "<button" not in seen[0][1]                                         # criteria see the Task only
     assert [c["category_id"] for c in report["categories"]] == ["click-scores", "visual"]   # no process criterion; a game is looked at
     page = report["categories"][0]

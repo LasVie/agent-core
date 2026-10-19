@@ -14,7 +14,9 @@ no times, counts or other fixed numbers, and never prescribes a plan.
    a stated duration is not shortened. A plan that breaks one of them is wrong, however polished.
 2. **It is feasible, checked step by step.** Each step can start when the one before ends: travel, waiting and
    handovers are counted from the figures the user gave; nobody is in two places at once; nothing that must happen
-   before something else comes after it.
+   before something else comes after it. Whatever a step needs (something to buy or bring, a document, a person) is
+   in place before that step: an errand placed "on the way" after the moment its result was needed does not serve
+   its purpose, however convenient the route.
 3. **Everything asked for is done, and done where asked.** Every item the user listed has its place in the plan; every
    deliverable has the name, location, format and recipient the user asked for. A renamed file, a copy somewhere
    else or a second version beside the first leaves the user unsure which one counts.
@@ -41,6 +43,10 @@ the one thing most likely to go wrong, leaving the user less to think about rath
 
 - **Check every constraint against every place it appears.** Take each constraint from the user's words and test it
   in the plan, the lists and the messages; a contradiction between two parts of the work is unmet.
+- **Follow each need to its use.** For every item, errand and handover in the user's words, find the step that
+  depends on it, including dependencies the user implies (something replaced because it broke is needed at its next
+  use), and check it is in place first. A claim about where or when something is done is met only when that timing
+  serves what it is for.
 - **Compute, do not read.** Times, durations, distances, costs and quantities are recomputed from the user's figures;
   the work's own claim that it fits is not evidence.
 - **Look at what was delivered.** Open the files the user will get, at the names and places they were asked for.
