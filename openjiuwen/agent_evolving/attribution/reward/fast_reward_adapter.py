@@ -8,10 +8,11 @@ deliverable, judges every claim and computes the scores in code.  This module fe
 result and turns its claims into reward dimensions, so the rest of the pipeline (signals, attribution,
 the host's display) is unchanged.
 
-Claim status -> dimension score (tiers per :func:`~openjiuwen.agent_evolving.attribution.model.reward_tier`):
-a requirement met 100 (perfect), partly met 80 (fair), unmet 40 (weak); a proactive challenge met 100,
-partly met 85 or unmet 80 (fair: room to improve, not a defect).  A claim the evidence could not settle
-("unknown") is no dimension; the overall comment counts it.
+The tier of each dimension comes from the claim's status, never from a score: a met claim is perfect
+(attribution skips it); a requirement partly met is fair and one not met is weak; a proactive challenge
+not (fully) met is fair (room to improve, not a defect).  The dimension score is Fast Reward's own claim
+score (met 100, partial 50, unmet 0), shown only.  A claim the evidence could not settle ("unknown") is no
+dimension; the overall comment counts it.
 """
 
 from __future__ import annotations
@@ -30,8 +31,9 @@ REWARD_ENGINE_ENV = "ATTRIBUTION_REWARD"
 #: Seconds Fast Reward may take for one diagnosis (``FAST_REWARD_DEADLINE`` overrides).
 DEFAULT_DEADLINE_SECONDS = 600
 
-_REQUIREMENT_SCORE = {"met": 100, "partial": 80, "unmet": 40}
-_CHALLENGE_SCORE = {"met": 100, "partial": 85, "unmet": 80}
+_REQUIREMENT_TIER = {"met": "perfect", "partial": "fair", "unmet": "weak"}
+_CHALLENGE_TIER = {"met": "perfect", "partial": "fair", "unmet": "fair"}
+_CLAIM_SCORE = {"met": 100, "partial": 50, "unmet": 0}
 _LABELS = {
     "zh": {"floor": "要求", "challenge": "挑战", "unknown": "另有 {count} 项因证据不足未能判定。"},
     "en": {"floor": "Requirement", "challenge": "Challenge", "unknown": "{count} more claims could not be settled."},
@@ -104,6 +106,9 @@ def final_reply(task_parse: TaskParseResult, nodes_by_subagent: Mapping[str, Seq
 def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[str, Any]:
     """A Fast Reward result as an ``attribution.reward.v1`` payload.
 
+    Each dimension also carries ``tier`` (from the claim's status); ``run_diagnosis`` applies it to the
+    signal instead of the score band.
+
     Raises:
         ValueError: The result has no total score (no evidence) or no claim it could settle.
     """
@@ -116,8 +121,8 @@ def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[s
     for item in result.get("sub_category_items") or ():
         status = item.get("status")
         challenge = item.get("type") == "proactive_challenge"
-        score = (_CHALLENGE_SCORE if challenge else _REQUIREMENT_SCORE).get(status)
-        if score is None:
+        tier = (_CHALLENGE_TIER if challenge else _REQUIREMENT_TIER).get(status)
+        if tier is None:
             unknown += 1
             continue
         dimensions.append(
@@ -125,7 +130,8 @@ def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[s
                 "category": str(item.get("category_name") or item.get("category_id") or "-"),
                 "requirement": f"[{labels['challenge' if challenge else 'floor']}] {item.get('rubric', '')}",
                 "comment": str(item.get("comment") or item.get("rubric") or "-"),
-                "score": score,
+                "score": _CLAIM_SCORE[status],
+                "tier": tier,
                 "related_signal_ids": [],
             }
         )

@@ -79,11 +79,11 @@ def test_claims_become_dimensions_with_tiers_and_unknowns_are_counted() -> None:
         "comment": "时间表可用，外婆到达时间与约束冲突 另有 1 项因证据不足未能判定。",
         "total_score": 72,
     }
-    assert [(d["requirement"], d["score"]) for d in payload["dimensions"]] == [
-        ("[要求] 每段时间都排得开", 100),
-        ("[要求] 外婆到达在 5 点以后", 40),
-        ("[要求] 购物清单标出顺路时段", 80),
-        ("[挑战] 预判师傅超时的应对", 80),
+    assert [(d["requirement"], d["score"], d["tier"]) for d in payload["dimensions"]] == [
+        ("[要求] 每段时间都排得开", 100, "perfect"),
+        ("[要求] 外婆到达在 5 点以后", 0, "weak"),
+        ("[要求] 购物清单标出顺路时段", 50, "fair"),
+        ("[挑战] 预判师傅超时的应对", 0, "fair"),
     ]
     assert payload["dimensions"][1]["comment"] == "16:55 到，早于 5 点"
     assert payload["dimensions"][0]["comment"] == "每段时间都排得开"  # no reason: the claim itself
@@ -156,7 +156,9 @@ async def test_run_diagnosis_scores_with_fast_reward_and_keeps_process_signals(m
     assert seen["artifacts"] == [str(tmp_path / "schedule.md")]  # a missing file is left out
     assert seen["txt_response"] == "最终答复" and seen["user_note"] == "外婆的时间要核对"
     assert result.signal_mode == "reward" and result.reward_overall.total_score == 72
+    # tiers follow each claim's status, not a score band (a partial requirement scores 50 yet is fair)
     assert [s.tier for s in result.signals] == ["perfect", "weak", "fair", "fair", "uncertain"]
+    assert [s.score for s in result.signals[:4]] == [100, 0, 50, 0]
     assert result.signals[-1].signal_id == complaint.signal_id  # the user's complaint still reaches attribution
     assert result.run_meta["reward"]["engine"] == "fast_reward"
     assert result.reward_payload["schema_version"] == "attribution.reward.v1"

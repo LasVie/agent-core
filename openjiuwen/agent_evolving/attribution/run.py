@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -296,7 +296,7 @@ async def run_diagnosis(
                 run_meta=run_meta,
             )
         run_meta["reward"] = reward_meta
-        return _reward_diagnosis(reward, signals, run_meta)
+        return _reward_diagnosis(reward, signals, run_meta, tiers=[d["tier"] for d in payload["dimensions"]])
     sink = _MemoryRewardSink()
     prepare_reward_temp_dir(workspace)
     agent, rail, gate = build_reward_agent(
@@ -352,13 +352,17 @@ def _reward_diagnosis(
     reward: RewardResult,
     signals: list[DiagnosticSignal],
     run_meta: dict[str, Any],
+    tiers: list[str] | None = None,
 ) -> DiagnosisResult:
     """Reward dimensions as signals, followed by the process signals no dimension took up.
 
     A process signal (a tool error, the user's negative feedback) is kept beside the reward
     signals: the deliverable can be good while the run still went wrong somewhere.
+    ``tiers`` (one per dimension) replace the score-band tiers when the Reward judged each claim itself.
     """
     reward_signals = reward_to_signals(reward, signals)
+    if tiers is not None:
+        reward_signals = [replace(signal, tier=tier) for signal, tier in zip(reward_signals, tiers, strict=True)]
     if not reward_signals:
         return DiagnosisResult(
             reward_overall=None,
