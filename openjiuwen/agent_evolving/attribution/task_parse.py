@@ -19,11 +19,12 @@ from pathlib import Path
 from typing import Any, Awaitable, Protocol
 
 from openjiuwen.agent_evolving.attribution.model import TaskParseResult
-from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode
+from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode, user_request_nodes, user_request_text
 
 _ASSISTANT_NO_TOOL_CALL_LIMIT = 10000
 _EDGE_NODE_LIMIT = 2000
 _USER_MESSAGE_LIMIT = 1000
+_USER_REQUEST_LIMIT = 8000
 _EDGE_NODE_COUNT = 5
 _FILE_CANDIDATE_LIMIT = 10
 
@@ -504,12 +505,22 @@ def _node_has_tool_calls(node: TrajectoryNode) -> bool:
     return bool(node.tool_calls)
 
 
+def user_request_of(nodes_by_subagent: Mapping[str, list[TrajectoryNode]]) -> list[tuple[str, str]]:
+    """``(node_id, text)`` of the user's own messages: those the slicer kept from the whole session
+    (:class:`~openjiuwen.agent_evolving.attribution.snapshot.SlicedNodes`), else those in the given nodes."""
+    nodes = getattr(nodes_by_subagent, "user_requests", None)
+    if nodes is None:
+        nodes = user_request_nodes(nodes_by_subagent)
+    return [(node.node_id, text) for node in nodes if (text := user_request_text(node))]
+
+
 def build_task_parse_digest(
     nodes_by_subagent: Mapping[str, list[TrajectoryNode]],
     file_candidates: Sequence[tuple[str, str, str]],
     language: str = "zh",
+    user_requests: Sequence[tuple[str, str]] = (),
 ) -> str:
-    """Assemble the disclosure digest (assistant texts, head/tail, users)."""
+    """Assemble the disclosure digest (the user's own messages, assistant texts, head/tail, users)."""
     assistant_block: list[str] = []
     edge_block: list[str] = []
     user_block: list[str] = []
@@ -547,6 +558,14 @@ def build_task_parse_digest(
         disclosed.add(id(node))
 
     sections: list[str] = []
+    if user_requests:
+        request_text = "\n\n".join(f"{node_id}: {text[:_USER_REQUEST_LIMIT]}" for node_id, text in user_requests)
+        title = (
+            "## 用户本人发出的消息（原文，按时间顺序；任务以此为准）"
+            if language != "en"
+            else "## The user's own messages (verbatim, in order; the task comes from these)"
+        )
+        sections.append(f"{title}\n{request_text}")
     assistant_text = "\n".join(assistant_block) if assistant_block else "（无）"
     edge_text = "\n".join(edge_block) if edge_block else "（无）"
     user_text = "\n".join(user_block) if user_block else "（无）"
@@ -742,7 +761,8 @@ async def run_task_parse(
     run with :class:`TaskParseError`.
     """
     file_candidates, extraction_stats = extract_file_candidates(nodes_by_subagent, workspace)
-    digest = build_task_parse_digest(nodes_by_subagent, file_candidates, language)
+    user_requests = user_request_of(nodes_by_subagent)
+    digest = build_task_parse_digest(nodes_by_subagent, file_candidates, language, user_requests)
     system = system_prompt or load_task_parse_prompt(language)
     counter = status_counter if status_counter is not None else [0]
     attempts = 0
@@ -832,6 +852,7 @@ async def run_task_parse(
             "extraction": extraction_stats,
             "file_artifacts": len(file_artifacts),
             "message_artifacts": len(message_artifacts),
+            "user_requests": len(user_requests),
         }
         if on_progress is not None:
             await on_progress(run_meta)
@@ -841,6 +862,7 @@ async def run_task_parse(
             file_artifacts=file_artifacts,
             file_candidates=list(file_candidates),
             run_meta=run_meta,
+            user_request="\n\n".join(text for _, text in user_requests),
         )
     raise TaskParseError("invalid_response", f"task parse failed after {attempts} attempts")
 
@@ -850,6 +872,7 @@ __all__ = [
     "TaskParseError",
     "TaskParseLLM",
     "build_task_parse_digest",
+    "user_request_of",
     "extract_file_candidates",
     "load_task_parse_prompt",
     "run_task_parse",

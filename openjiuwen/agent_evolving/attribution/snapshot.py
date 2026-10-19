@@ -17,7 +17,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode, detect_language
+from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode, detect_language, user_request_nodes
 from openjiuwen.agent_evolving.trajectory import messages as trajectory_messages
 from openjiuwen.agent_evolving.trajectory.messages import MessageField, tool_call_id
 from openjiuwen.agent_evolving.trajectory.model import Trajectory
@@ -400,6 +400,17 @@ def build_nodes_from_snapshot(snapshot: Mapping[str, Any]) -> dict[str, list[Tra
     return result
 
 
+class SlicedNodes(dict):
+    """The sliced nodes per subject (a plain ``dict`` to every caller), plus ``user_requests``.
+
+    ``user_requests`` are the user's own messages of the whole session up to the end of the
+    selection, taken before slicing: the task comes from them even when the selected window
+    starts after the request or covers only team members (whose inbound rows are dispatches).
+    """
+
+    user_requests: tuple[TrajectoryNode, ...] = ()
+
+
 def slice_nodes_by_range(
     nodes_by_subagent: Mapping[str, list[TrajectoryNode]],
     ranges: Sequence[tuple[str, int, int]],
@@ -414,12 +425,16 @@ def slice_nodes_by_range(
 
     Each subagent may carry at most one range; subjects without a range drop
     out entirely (proposal §2.3: unselected subjects do not participate).
+    The result is a :class:`SlicedNodes` carrying the user's own messages up to the
+    selection's end, read from all subjects before slicing.
     """
     range_map: dict[str, tuple[int, int]] = {}
     for item in ranges:
         subagent, start_ts, end_ts = item
         range_map[str(subagent)] = (int(start_ts), int(end_ts))
-    result: dict[str, list[TrajectoryNode]] = {}
+    result = SlicedNodes()
+    latest_end = max((end_ts for _, end_ts in range_map.values()), default=None)
+    result.user_requests = tuple(user_request_nodes(nodes_by_subagent, until_ns=latest_end))
     for subagent, nodes in nodes_by_subagent.items():
         if subagent not in range_map:
             continue
@@ -493,6 +508,7 @@ def detect_trajectory_language(nodes_by_subagent: Mapping[str, list[TrajectoryNo
 
 __all__ = [
     "SNAPSHOT_SCHEMA_VERSION",
+    "SlicedNodes",
     "assign_node_ids",
     "build_nodes_from_snapshot",
     "build_subject_nodes",

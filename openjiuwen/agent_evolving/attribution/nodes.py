@@ -408,6 +408,64 @@ def _node_text(node: TrajectoryNode) -> str:
     return "\n".join(parts)
 
 
+_USER_ORIGINS = frozenset({"external_user_authored"})
+_TEAM_MEMBER_KIND = "team_member"
+
+
+def user_request_text(node: TrajectoryNode) -> str | None:
+    """Return what the user wrote when ``node`` is a message from the user, else ``None``.
+
+    The host wraps a user's chat message as a line of preamble followed by a JSON envelope
+    (``"type": "user input"`` or ``"origin_kind": "external_user_authored"``); the user's words
+    are its ``content``.  A plain user row of the main agent counts as the user's words too.
+    Rows that only look like user turns are not: a team member's inbound dispatches, system
+    reminders, team events and tool results that the runtime replays as user messages.
+    """
+    if node.role != "user" or node.kind == _TEAM_MEMBER_KIND or not node.content:
+        return None
+    text = str(node.content).strip()
+    start = text.find("{")
+    if start >= 0:
+        import json
+
+        try:
+            envelope, _ = json.JSONDecoder().raw_decode(text[start:])
+        except ValueError:
+            envelope = None
+        if isinstance(envelope, Mapping) and isinstance(envelope.get("content"), str):
+            if envelope.get("type") == "user input" or envelope.get("origin_kind") in _USER_ORIGINS:
+                return envelope["content"].strip() or None
+            return None
+    if node.kind in {"main_agent", "main"} and text and not text.startswith(("<", "[", "{")):
+        return text
+    return None
+
+
+def user_request_nodes(
+    nodes_by_subagent: Mapping[str, list[TrajectoryNode]],
+    until_ns: int | None = None,
+) -> list[TrajectoryNode]:
+    """The user's own messages in time order, at most one row per distinct text.
+
+    ``until_ns`` drops messages sent after that time (they ask for later work).
+    """
+    found: list[TrajectoryNode] = []
+    seen: set[str] = set()
+    rows = sorted(
+        (node for nodes in nodes_by_subagent.values() for node in nodes),
+        key=lambda node: node.start_ts_ns,
+    )
+    for node in rows:
+        text = user_request_text(node)
+        if text is None or text in seen:
+            continue
+        if until_ns is not None and node.start_ts_ns and node.start_ts_ns > until_ns:
+            continue
+        seen.add(text)
+        found.append(node)
+    return found
+
+
 def search_keyword(
     nodes_by_subagent: Mapping[str, list[TrajectoryNode]],
     pattern: str,
@@ -469,4 +527,6 @@ __all__ = [
     "render_overview",
     "render_summary",
     "search_keyword",
+    "user_request_nodes",
+    "user_request_text",
 ]

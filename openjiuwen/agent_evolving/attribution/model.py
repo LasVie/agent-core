@@ -214,6 +214,8 @@ class TaskParseResult:
     file_artifacts: list[str]
     file_candidates: list[tuple[str, str, str]]
     run_meta: dict[str, Any] = field(default_factory=dict)
+    user_request: str = ""
+    """The user's own messages, verbatim and in order: the task as the user stated it."""
 
 
 @dataclass(frozen=True)
