@@ -108,7 +108,7 @@ async def test_task_parse_keeps_only_deliverables_whose_final_version_is_selecte
     assert result.deliverables_outside_selection == ["/w/schedule.md"]  # rewritten at 80, outside
     assert result.message_artifacts == [(f"{LEADER}:4", "初稿已写好")]  # a member's message is team-internal
     assert result.selection_partial is True
-    assert result.run_meta["team_internal_messages_dropped"] == 1
+    assert result.run_meta["messages_dropped"] == 1
     assert result.run_meta["files_outside_selection"] == 1
 
 
@@ -240,3 +240,53 @@ async def test_unjudged_follow_ups_all_stay() -> None:
         run_id="r", language="zh", nodes_by_subagent=sliced, user_attribution="", task_parse=parse
     )
     assert sum(signal.source == SignalSource.KEYWORD_USER for signal in result.signals) == 2
+
+
+class _FinalLlm:
+    def __init__(self, final_id: str | None, reported: list[str]) -> None:
+        self._final = final_id
+        self._reported = reported
+        self.digest = ""
+
+    async def invoke(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any) -> Any:
+        del tools, kwargs
+        self.digest = messages[1]["content"]
+        calls = [
+            {"name": "report_task_description", "arguments": json.dumps({"task": "排周六"})},
+            {"name": "report_message_artifacts", "arguments": json.dumps({"node_ids": self._reported})},
+        ]
+        if self._final is not None:
+            calls.append({"name": "report_final_reply", "arguments": json.dumps({"node_id": self._final})})
+        return {"tool_calls": calls}
+
+
+def _redone() -> dict[str, list[TrajectoryNode]]:
+    nodes = _with_follow_ups()  # replies at 48 and 90, then the user writes at 92 and 94
+    nodes[LEADER].append(_node(LEADER, 11, 99, content="用 agent team 重做好了：schedule-v2.md"))
+    return nodes
+
+
+async def test_a_reply_named_final_outside_the_selection_leaves_no_reply_to_review() -> None:
+    sliced = slice_nodes_by_range(_redone(), [(LEADER, 0, 91)])
+    llm = _FinalLlm(f"{LEADER}:11", [f"{LEADER}:7"])
+    parse = await run_task_parse(sliced, "zh", llm)
+    assert parse.message_artifacts == []  # the selection's reply at 90 was redone at 99
+    assert parse.run_meta["final_reply"] == f"{LEADER}:11"
+    assert "## 整个会话里给用户的回复" in llm.digest
+    assert f"{LEADER}:11 [00:00:00]（框选外）: 用 agent team 重做好了" in llm.digest
+    assert f"{LEADER}:7 [00:00:00]（框选内）" in llm.digest
+
+
+async def test_a_reply_named_final_inside_the_selection_is_reviewed() -> None:
+    sliced = slice_nodes_by_range(_redone(), [(LEADER, 0, 100)])
+    parse = await run_task_parse(sliced, "zh", _FinalLlm(f"{LEADER}:11", []))
+    assert parse.message_artifacts == [(f"{LEADER}:11", "用 agent team 重做好了：schedule-v2.md")]
+
+
+async def test_without_a_named_final_reply_a_redone_reply_is_dropped() -> None:
+    sliced = slice_nodes_by_range(_redone(), [(LEADER, 0, 91)])
+    parse = await run_task_parse(sliced, "zh", _FinalLlm(None, [f"{LEADER}:7", f"{LEADER}:4"]))
+    assert parse.message_artifacts == []  # the user asked again at 92 and got another reply at 99
+    whole = slice_nodes_by_range(_session(), [(LEADER, 0, 100)])
+    kept = await run_task_parse(whole, "zh", _FinalLlm(None, [f"{LEADER}:7"]))
+    assert [node_id for node_id, _ in kept.message_artifacts] == [f"{LEADER}:7"]  # nothing came after it

@@ -608,6 +608,87 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+def _user_replies(nodes_by_subagent: Mapping[str, list[TrajectoryNode]]) -> list[TrajectoryNode]:
+    """Replies the user received (main agent or leader, no tool call), in time order, one per text and time."""
+    seen: set[tuple[str, int]] = set()
+    replies: list[TrajectoryNode] = []
+    rows = sorted((node for nodes in nodes_by_subagent.values() for node in nodes), key=lambda node: node.start_ts_ns)
+    for node in rows:
+        if node.role != "assistant" or node.tool_calls or not node.content or node.kind == _TEAM_MEMBER_KIND:
+            continue
+        key = (str(node.content), node.start_ts_ns)
+        if key in seen:
+            continue
+        seen.add(key)
+        replies.append(node)
+    return replies
+
+
+def build_reply_list_block(nodes_by_subagent: Mapping[str, list[TrajectoryNode]], language: str = "zh") -> str:
+    """Every reply the user got in the whole session, marked in or out of the selection; ``""`` without one.
+
+    Task parsing names the final delivery from this list (``report_final_reply``): a selection that holds
+    only an early reply, later redone, then reviews no reply.  Needs ``SlicedNodes.whole``.
+    """
+    whole = getattr(nodes_by_subagent, "whole", None)
+    if whole is None:
+        return ""
+    replies = _user_replies(whole)
+    if not replies:
+        return ""
+    zh = language != "en"
+    chosen = {node.node_id for nodes in nodes_by_subagent.values() for node in nodes}
+    inside, outside = ("框选内", "框选外") if zh else ("in the selection", "outside the selection")
+    rows = [
+        f"- {node.node_id}{_clock(node)}（{inside if node.node_id in chosen else outside}）: "
+        f"{_clip(node.content or '', _AFTER_REPLY_LIMIT)}"
+        for node in replies
+    ]
+    if len(rows) > _AFTER_HEAD + _AFTER_TAIL:
+        rows = rows[:_AFTER_HEAD] + ["- …"] + rows[-_AFTER_TAIL:]
+    title = (
+        "## 整个会话里给用户的回复（按时间顺序；用来指出最终交付的那一条）"
+        if zh
+        else "## Every reply the user got in the whole session (in time order; to name the final delivery)"
+    )
+    return f"{title}\n" + "\n".join(rows)
+
+
+def _final_reply_id(calls: list[dict[str, Any]], nodes_by_subagent: Mapping[str, list[TrajectoryNode]]) -> str | None:
+    """The reply the model named as the final delivery, when it is one the user got; else ``None``."""
+    whole = getattr(nodes_by_subagent, "whole", None)
+    if whole is None:
+        return None
+    ids = {node.node_id for node in _user_replies(whole)}
+    for call in calls:
+        if call.get("name") != "report_final_reply":
+            continue
+        arguments = _arguments(call)
+        node_id = str(arguments.get("node_id") or "") if isinstance(arguments, Mapping) else ""
+        if node_id in ids:
+            return node_id
+    return None
+
+
+def _superseded(node_id: str, whole: Mapping[str, list[TrajectoryNode]]) -> bool:
+    """Whether the user wrote again after this reply and got another reply: the reply was not the last word."""
+    at = next((node.start_ts_ns for nodes in whole.values() for node in nodes if node.node_id == node_id), None)
+    if at is None:
+        return False
+    asked = min(
+        (
+            node.start_ts_ns
+            for nodes in whole.values()
+            for node in nodes
+            if node.start_ts_ns > at and user_request_text(node)
+        ),
+        default=None,
+    )
+    if asked is None:
+        return False
+    return any(node.start_ts_ns > asked for node in _user_replies(whole))
+
+
 def build_after_selection_block(
     nodes_by_subagent: Mapping[str, list[TrajectoryNode]],
     workspace: str | None = None,
@@ -743,6 +824,28 @@ TASK_PARSE_TOOLS: list[dict[str, Any]] = [
                     }
                 },
                 "required": ["paths"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "report_final_reply",
+            "description": (
+                "从「整个会话里给用户的回复」中指出最终把任务结果交给用户的那一条（重做过就以最后一次交付为准；"
+                "它可以不在框选内）。 / From the replies of the whole session, name the one that finally "
+                "delivered the task's result to the user (after a redo, the last delivery; it may lie outside "
+                "the selection)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {
+                        "type": "string",
+                        "description": "该回复的节点 ID（照抄列表）。 / Its node id, copied from the list.",
+                    }
+                },
+                "required": ["node_id"],
             },
         },
     },
@@ -903,19 +1006,27 @@ def _scope_to_selection(
     message_artifacts: list[tuple[str, str]],
     file_artifacts: list[str],
     workspace: str | None,
+    final_reply_id: str | None = None,
 ) -> tuple[list[tuple[str, str]], list[str], list[str], bool]:
     """Keep the deliverables whose final version the selection holds.
 
-    A reply counts when the user received it (not a team member's message to the leader).  A file
-    counts when its last write in the whole session is a selected node: a file written again later is
-    reviewed at a version the selection never saw.  Returns the kept messages and files, the files left
-    out, and whether the selection leaves out part of the session.
+    A reply counts when the user received it (not a team member's message to the leader) and it is the
+    final delivery: the one task parsing named from the whole session (``final_reply_id``), or, when it
+    named none, a reported reply the user did not follow with another request that got another reply.
+    A file counts when its last write in the whole session is a selected node: a file written again
+    later is reviewed at a version the selection never saw.  Returns the kept messages and files, the
+    files left out, and whether the selection leaves out part of the session.
     """
     messages = [item for item in message_artifacts if not _is_team_internal(nodes_by_subagent, item[0])]
     whole = getattr(nodes_by_subagent, "whole", None)
     if whole is None:
         return messages, file_artifacts, [], False
     selected = {node.node_id for nodes in nodes_by_subagent.values() for node in nodes}
+    if final_reply_id is not None:
+        text = _artifact_text(nodes_by_subagent, final_reply_id) if final_reply_id in selected else None
+        messages = [(final_reply_id, text)] if text is not None else []
+    else:
+        messages = [item for item in messages if not _superseded(item[0], whole)]
     partial = sum(len(nodes) for nodes in whole.values()) > len(selected)
     final = last_writes(whole, workspace)
     outside = [path for path in file_artifacts if path in final and final[path] not in selected]
@@ -944,9 +1055,11 @@ async def run_task_parse(
     file_candidates, extraction_stats = extract_file_candidates(nodes_by_subagent, workspace)
     user_requests = user_request_of(nodes_by_subagent)
     digest = build_task_parse_digest(nodes_by_subagent, file_candidates, language, user_requests)
+    replies = build_reply_list_block(nodes_by_subagent, language)
     after = build_after_selection_block(nodes_by_subagent, workspace, language)
-    if after:
-        digest = f"{digest}\n\n{after}"
+    for block in (replies, after):
+        if block:
+            digest = f"{digest}\n\n{block}"
     system = system_prompt or load_task_parse_prompt(language)
     counter = status_counter if status_counter is not None else [0]
     attempts = 0
@@ -1031,9 +1144,10 @@ async def run_task_parse(
             for path in arguments.get("paths") or ():
                 file_artifacts.append(str(path))
         user_feedback = _user_feedback_texts(calls, user_requests)
+        final_reply_id = _final_reply_id(calls, nodes_by_subagent)
         reported_messages, reported_files = len(message_artifacts), len(file_artifacts)
         message_artifacts, file_artifacts, outside, partial = _scope_to_selection(
-            nodes_by_subagent, message_artifacts, file_artifacts, workspace
+            nodes_by_subagent, message_artifacts, file_artifacts, workspace, final_reply_id
         )
         run_meta = {
             "attempts": attempts,
@@ -1042,10 +1156,11 @@ async def run_task_parse(
             "file_artifacts": len(file_artifacts),
             "message_artifacts": len(message_artifacts),
             "user_requests": len(user_requests),
-            "team_internal_messages_dropped": reported_messages - len(message_artifacts),
+            "messages_dropped": reported_messages - len(message_artifacts),
             "files_outside_selection": reported_files - len(file_artifacts),
             "selection_partial": partial,
             "after_selection_shown": bool(after),
+            "final_reply": final_reply_id,
             "user_feedback": None if user_feedback is None else len(user_feedback),
         }
         if on_progress is not None:
@@ -1069,6 +1184,7 @@ __all__ = [
     "TaskParseError",
     "TaskParseLLM",
     "build_after_selection_block",
+    "build_reply_list_block",
     "build_task_parse_digest",
     "user_request_of",
     "extract_file_candidates",
