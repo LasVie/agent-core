@@ -34,12 +34,12 @@ PYTHON_SECONDS = 60
 CHECK_OUTPUT = 6000      # characters kept from one check's output
 
 def cdn_file(url):
-    """The bytes of a pinned CDN file: from the cache ($FAST_REWARD_HOME/cdn, default ~/.fast_reward/cdn), else
+    """The bytes of a pinned CDN file: from the cache ($REWARD_HOME/cdn, default ~/.reward/cdn), else
     downloaded once into it. None when it cannot be had (the page then sees a failed request, as offline)."""
     import hashlib
     import urllib.request
 
-    folder = Path(os.environ.get("FAST_REWARD_HOME") or Path.home() / ".fast_reward") / "cdn"
+    folder = Path(os.environ.get("REWARD_HOME") or Path.home() / ".reward") / "cdn"
     cached = folder / hashlib.sha256(url.encode()).hexdigest()
     if cached.is_file():
         return cached.read_bytes()
@@ -229,18 +229,18 @@ _CHANGE = ("os.remove", "os.rmdir", "os.mkdir", "os.chmod", "os.chown", "os.trun
 _WRITE = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
 def _guard(event, args):
     if event.startswith(_DENY):
-        raise PermissionError(f"fast_reward check: {event} is not allowed in a check")
+        raise PermissionError(f"reward check: {event} is not allowed in a check")
     if event == "open" and args and isinstance(args[0], (str, bytes, os.PathLike)):
         path, mode, flags = (list(args) + [None, None])[:3]
         writing = any(c in (mode or "") for c in "wax+") or bool((flags or 0) & _WRITE)
         if not _inside(path, _HERE if writing else _READ):
-            raise PermissionError(f"fast_reward check: {'writing' if writing else 'reading'} {path} is not allowed")
+            raise PermissionError(f"reward check: {'writing' if writing else 'reading'} {path} is not allowed")
     elif event in ("os.listdir", "os.scandir") and args and args[0] is not None and not _inside(args[0], _READ):
-        raise PermissionError(f"fast_reward check: listing {args[0]} is not allowed")
+        raise PermissionError(f"reward check: listing {args[0]} is not allowed")
     elif event == "os.rename" or event.startswith(_CHANGE):
         for p in [a for a in args[:2] if isinstance(a, (str, bytes, os.PathLike))]:
             if not _inside(p, _HERE):
-                raise PermissionError(f"fast_reward check: changing {p} is not allowed")
+                raise PermissionError(f"reward check: changing {p} is not allowed")
 import runpy
 sys.argv = sys.argv[1:]
 sys.addaudithook(_guard)   # from here on, for good: an audit hook cannot be removed
@@ -326,7 +326,7 @@ async def run_check(check, root, tools, number=1):
         return {**facts, "path": check.get("path"), **extra, "output": body}, []
     if tool == "python":
         # the script lives outside the workspace, so checks that list files see only the work
-        folder = Path(tempfile.mkdtemp(prefix="fast_reward_check_"))
+        folder = Path(tempfile.mkdtemp(prefix="reward_check_"))
         script = folder / f"check_{number}.py"
         script.write_text(check.get("code", ""), encoding="utf-8")
         try:

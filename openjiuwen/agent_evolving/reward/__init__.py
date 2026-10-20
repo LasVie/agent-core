@@ -1,4 +1,4 @@
-"""Fast Reward: score an agent's delivered work. Output: one standard JSON (meta, total, categories, items)
+"""Reward: score an agent's delivered work. Output: one standard JSON (meta, total, categories, items)
 and a Markdown reply rendered from it.
 
 A fixed pipeline of prompted model calls (no agent loop):
@@ -11,13 +11,13 @@ two packages do not import each other.
 
 Use from code::
 
-    from openjiuwen.agent_evolving.fast_reward import load_config, reward, render
+    from openjiuwen.agent_evolving.reward import load_config, reward, render
 
     config = load_config()                                   # or a dict like config.DEFAULT_CONFIG
     result = asyncio.run(reward(task, ["index.html"], config, txt_response=reply, user_note=note))
     print(render(result))
 
-or from the command line: ``python -m openjiuwen.agent_evolving.fast_reward --help``.
+or from the command line: ``python -m openjiuwen.agent_evolving.reward --help``.
 """
 
 from .config import DEFAULT_CONFIG, load_config

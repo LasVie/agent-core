@@ -1,4 +1,4 @@
-"""Evidence by one agent-core DeepAgent: the only ReAct step of Fast Reward.
+"""Evidence by one agent-core DeepAgent: the only ReAct step of Reward.
 
 One agent per reward run, created before evidence and destroyed after it. It sees every criterion with its claims,
 the workspace and the tools, and gathers evidence for all of them:
@@ -56,7 +56,7 @@ class EvidenceError(RuntimeError):
 
 
 def pool_entry(route):
-    """A Fast Reward model route ({"model", "base_url", "api_key", "extra_body"?, "timeout"?}) as the agent-core
+    """A Reward model route ({"model", "base_url", "api_key", "extra_body"?, "timeout"?}) as the agent-core
     model entry DeepAgent takes; an entry given as such (e.g. by JiuwenSwarm) is used as it is."""
     from openjiuwen.agent_teams.models.pool import ModelPoolEntry
 
@@ -156,7 +156,7 @@ class EvidenceRun:
         out = {"results": rows, **self.stalled(bool(fresh))}
         if self.ctx.get("seeing") and shots:
             out["multimodal"] = [{"type": "image", "data_url": "data:image/jpeg;base64," + data,
-                                  "source": "fast_reward check", "source_path": label}
+                                  "source": "reward check", "source_path": label}
                                  for label, data in shots[-SHOWN_IMAGES:]]
         return out
 
@@ -216,7 +216,7 @@ def evidence_tools(run):
 
     class EvidenceTool(Tool):
         def __init__(self, name, description, params, required, handler):
-            super().__init__(ToolCard(id=f"fast_reward.{name}", name=name, description=description,
+            super().__init__(ToolCard(id=f"reward.{name}", name=name, description=description,
                                       parallel_safe=True, properties={"resilience": {"timeout_s": None}},
                                       input_params={"type": "object", "properties": params, "required": required,
                                                     "additionalProperties": False}))
@@ -285,11 +285,11 @@ def build_agent(route, workspace, rounds):
     from openjiuwen.harness.schema.deep_agent_spec import DeepAgentSpec, WorkspaceSpec
 
     entry = pool_entry(route)
-    run_id = f"fast_reward_{uuid.uuid4().hex[:12]}"
+    run_id = f"reward_{uuid.uuid4().hex[:12]}"
     window = ContextUtils.resolve_context_max(model_name=entry.model_name,
                                               fallback_context_window_tokens=128000)
     spec = DeepAgentSpec(
-        card=AgentCard(id=run_id, name=run_id, description="Fast Reward evidence"),
+        card=AgentCard(id=run_id, name=run_id, description="Reward evidence"),
         model=entry.to_team_model_config(), system_prompt=EVIDENCE_AGENT_PROMPT, prompt_mode="none",
         enable_task_loop=False, enable_sys_operation=False, enable_task_planning=False,
         enable_subagent_runtime=False, enable_skill_discovery=False, enable_read_image_multimodal=False,
@@ -304,7 +304,7 @@ async def gather(criteria, ctx, route, log, rounds=ROUNDS, seconds=SECONDS):
     """{criterion id: (evidence, images)} gathered by one DeepAgent for all criteria."""
     from openjiuwen.core.session.agent import create_agent_session
 
-    with TemporaryDirectory(prefix="fast_reward_evidence_") as tmp:
+    with TemporaryDirectory(prefix="reward_evidence_") as tmp:
         folder = Path(tmp) / "evidence"
         folder.mkdir()
         run = EvidenceRun(criteria, ctx, folder, log)
@@ -341,7 +341,7 @@ async def gather(criteria, ctx, route, log, rounds=ROUNDS, seconds=SECONDS):
                 if not run.stop.is_set():
                     log(f"evidence agent stopped at the {int(seconds)} s limit after {len(run.results)} check(s)")
         except Exception as error:
-            raise EvidenceError(f"Fast Reward evidence failed while {stage}: {type(error).__name__}: {error}") \
+            raise EvidenceError(f"Reward evidence failed while {stage}: {type(error).__name__}: {error}") \
                 from error
         finally:
             tasks = [task for task in (streaming, stopping) if task is not None]
@@ -357,7 +357,7 @@ async def gather(criteria, ctx, route, log, rounds=ROUNDS, seconds=SECONDS):
             log(f"evidence agent stopped at the {rounds}-round limit after {len(run.results)} check(s)")
             failure = None
         if failure:   # the agent reports model errors in its stream instead of raising; fail loudly
-            raise EvidenceError(f"Fast Reward evidence failed while running the evidence agent "
+            raise EvidenceError(f"Reward evidence failed while running the evidence agent "
                                 f"(after {len(run.results)} check(s)): {failure}")
         if not run.results:
             material = ctx["plan_input"]
@@ -365,12 +365,12 @@ async def gather(criteria, ctx, route, log, rounds=ROUNDS, seconds=SECONDS):
             if material.get("final_reply", "").strip() and not work.get("files"):
                 log("text-only reply supplied directly; evidence agent requested no additional check")
                 return {cid: ([], []) for cid in run.ids}
-            raise EvidenceError("Fast Reward evidence failed: the evidence agent ran no check, so no usable reward "
+            raise EvidenceError("Reward evidence failed: the evidence agent ran no check, so no usable reward "
                                 "can be given (the model may not call tools, or the time limit is too short)")
         if not any(not (r["facts"].get("could_not_run") or r["facts"].get("skipped") or
                         r["facts"].get("timed_out")) and r["facts"].get("exit_code") in (None, 0)
                    for r in run.results):
-            raise EvidenceError("Fast Reward evidence failed: every check failed to execute; "
+            raise EvidenceError("Reward evidence failed: every check failed to execute; "
                                 "check errors are not evidence of product defects")
         missing = [cid for cid in run.ids if not run.evidence_for(cid)[0]]
         if missing:

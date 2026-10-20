@@ -100,8 +100,8 @@ def resolve_models(config):
 VISION_PROBE = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAAgACADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDz+iiivmD9yCiiigAooooAKKKKAP/Z"  # a 32x32 red square
 
 def vision_cache_path():
-    """Where probe results are kept: $FAST_REWARD_HOME/vision.json, default ~/.fast_reward/vision.json."""
-    return Path(os.environ.get("FAST_REWARD_HOME") or Path.home() / ".fast_reward") / "vision.json"
+    """Where probe results are kept: $REWARD_HOME/vision.json, default ~/.reward/vision.json."""
+    return Path(os.environ.get("REWARD_HOME") or Path.home() / ".reward") / "vision.json"
 
 async def can_see(model, log=lambda message: None, notes=None):
     """Whether the model reads images: the config's "vision" if set, else a cached probe (name a color). An unclear
@@ -145,7 +145,7 @@ async def can_see(model, log=lambda message: None, notes=None):
         pass
     return cache[key]
 
-ANSWER_LANGUAGE = ContextVar("fast_reward_answer_language", default=None)
+ANSWER_LANGUAGE = ContextVar("reward_answer_language", default=None)
 
 def items(found, *keys):
     """The list a model reply holds under the first of `keys` it has; a reply that is itself a list (some models
@@ -184,7 +184,7 @@ class Model:
         self.quota = float(config.get("timeout", 360))
         self.first_chunk = float(config.get("first_chunk_timeout", 60))
         self.idle = float(config.get("idle_timeout", 60))
-        self.deadline = None  # loop time the whole run must end by; set by fast_reward
+        self.deadline = None  # loop time the whole run must end by; set by reward
         self.vision = config.get("vision")  # True / False, or None to probe once
         self.base_url = resolve(config["base_url"])
         self.client = AsyncOpenAI(base_url=resolve(config["base_url"]), api_key=resolve(config["api_key"]),

@@ -37,7 +37,7 @@ from openjiuwen.agent_evolving.attribution.model import (
     new_attr_id,
 )
 from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode, search_keyword
-from openjiuwen.agent_evolving.attribution.reward.fast_reward_adapter import fast_reward_enabled, run_fast_reward
+from openjiuwen.agent_evolving.attribution.reward.reward_adapter import reward_enabled, run_reward
 from openjiuwen.agent_evolving.attribution.reward.reward_agent import build_reward_agent, load_reward_prompt
 from openjiuwen.agent_evolving.attribution.reward.reward_schema import RewardResult, reward_to_signals
 from openjiuwen.agent_evolving.attribution.task_parse import TaskParseLLM, run_task_parse
@@ -281,9 +281,9 @@ async def run_diagnosis(
             signal_mode="rule_jev",
             run_meta=run_meta,
         )
-    if fast_reward_enabled():
+    if reward_enabled():
         try:
-            payload, reward_meta = await run_fast_reward(
+            payload, reward_meta = await run_reward(
                 task_parse=task_parse,
                 nodes_by_subagent=nodes_by_subagent,
                 user_attribution=user_attribution,
@@ -295,8 +295,8 @@ async def run_diagnosis(
             )
             reward = RewardResult.from_payload(payload)
         except Exception as exc:  # noqa: BLE001 - fallback to rule/Jev signals, as for the Reward agent
-            logger.warning("[attribution] Fast Reward failed: %s", exc)
-            run_meta["reward"] = {"engine": "fast_reward", "failed": type(exc).__name__, "error": str(exc)[:200]}
+            logger.warning("[attribution] Reward failed: %s", exc)
+            run_meta["reward"] = {"engine": "reward", "failed": type(exc).__name__, "error": str(exc)[:200]}
             return DiagnosisResult(
                 reward_overall=None,
                 signals=signals,

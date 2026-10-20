@@ -6,7 +6,7 @@ import shutil
 
 import pytest
 
-from openjiuwen.agent_evolving.fast_reward import checks, evidence_agent, models, pipeline, workspace
+from openjiuwen.agent_evolving.reward import checks, evidence_agent, models, pipeline, workspace
 
 
 def test_missing_artifact_is_not_silently_graded_as_a_text_only_answer(tmp_path):

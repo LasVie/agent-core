@@ -1,6 +1,6 @@
-# Fast Reward
+# Reward
 
-`openjiuwen.agent_evolving.fast_reward` 给 Agent 交付的作品打分，输出**一份标准 JSON**（元信息、总分和总评、各一级维度、全部二级子项），给用户看的 Markdown 回复也由这份 JSON 渲染。
+`openjiuwen.agent_evolving.reward` 给 Agent 交付的作品打分，输出**一份标准 JSON**（元信息、总分和总评、各一级维度、全部二级子项），给用户看的 Markdown 回复也由这份 JSON 渲染。
 
 它只管评分：**不读轨迹，不给修改建议**。归因到步骤、修改建议由独立的 `fast_attribution` 包完成，它读本包的 JSON（加上轨迹）。两个包互不 import。
 
@@ -31,7 +31,7 @@ result = await reward(task, artifacts, config, txt_response="", user_note="", pr
 
 ### 输出
 
-一个 dict（`schema_version: "fast_reward/3"`），字段见下文"输出：标准 JSON"：
+一个 dict（`schema_version: "reward/3"`），字段见下文"输出：标准 JSON"：
 - `meta`：评了什么、用的模型和工具、提醒；
 - `total`：`score`（0–100）和 `summary`（总评文本）；
 - `categories[]`：一级维度，含 `category_id`、`category_name`、`rubric`、`comment`、`score`、`issues`；
@@ -85,15 +85,15 @@ playwright install chromium
 作品里有网页却没装 playwright 时直接报错（不会退回只看源码）。只装了 playwright 没装 Chromium 时，浏览器检查会逐个失败，取证 Agent 拿不到运行证据。
 
 ```bash
-python -m openjiuwen.agent_evolving.fast_reward --task task.md --artifact /abs/index.html --out reward_result.json
-python -m openjiuwen.agent_evolving.fast_reward --task task.md --artifact report.md table.xlsx \
+python -m openjiuwen.agent_evolving.reward --task task.md --artifact /abs/index.html --out reward_result.json
+python -m openjiuwen.agent_evolving.reward --task task.md --artifact report.md table.xlsx \
     --txt-response reply.md --user-note "第 2 页多一只手" --process-signal errors.txt \
     --rubric rubric.json --config config.json --out reward_result.json
 ```
 
 ```python
 import asyncio
-from openjiuwen.agent_evolving.fast_reward import load_config, reward, render
+from openjiuwen.agent_evolving.reward import load_config, reward, render
 
 config = load_config()                                       # 或直接给一个 dict
 result = asyncio.run(reward(task_text, ["report.md", "table.xlsx"], config, txt_response=reply_text))
@@ -116,7 +116,7 @@ print(render(result))                                         # Markdown 回复
 
 ```json
 {
-  "schema_version": "fast_reward/3",
+  "schema_version": "reward/3",
   "meta": {"evaluated_at": "2026-10-16T08:00:00+00:00", "task": "…", "deliverable": ["index.html"],
            "final_reply": true, "inputs": [], "user_note": "…", "process_signal": "…",
            "models": {"producer": "…", "judge": "…", "art_judge": "…"}, "tools": {"available": [], "used": []},
@@ -211,7 +211,7 @@ print(render(result))                                         # Markdown 回复
 ## 评测知识（metric 文档）
 
 开始评测前，先扫描一遍领域知识文档，挑出和这次任务相关的，交给出题和取证 Agent 使用。只作参考，不是固定模板：
-- **扫描位置**：包里的 `metrics/`（自带 `picture_book.md` 绘本、`game.md` 游戏、`personal_assistant.md` 个人助手三份评测知识）；你自己的 `~/.fast_reward/metrics/`（或 `$FAST_REWARD_HOME/metrics/`），放进去就生效；配置 `metric_guides` 列出的文件或文件夹。
+- **扫描位置**：包里的 `metrics/`（自带 `picture_book.md` 绘本、`game.md` 游戏、`personal_assistant.md` 个人助手三份评测知识）；你自己的 `~/.reward/metrics/`（或 `$REWARD_HOME/metrics/`），放进去就生效；配置 `metric_guides` 列出的文件或文件夹。
 - **怎么挑**：文档第一行写 `keywords: 绘本, picture book, …` 的，任务里出现任一关键词就选用（自带的三份都有关键词，不额外调用模型）；没写关键词的，用一次轻量的模型调用，只看任务原文和每份文档的标题加开头，挑出相关的（`guides.for_task`）。
 - **怎么用**：选中的文档拼在任务后面交给出题模型，按任务挑适用的维度，可以写单页、相邻两页或整本的子项，不替任务编死内容；取证 Agent 也能看到它（比如逐页翻看、对比各页主角）。判定理由会写明涉及哪几页。回复的"输入"一行列出用了哪些文档，JSON 里是 `guides`。
 - **评测知识只写通用原则，像宪法一样**：写"好是什么"（例如"操作即时、结果公平""图文互补"），不写具体规定（尺寸、占画面多少、数量门槛、某种画风或情节）。具体、可检查的子项由出题模型按任务现写；把品味写成固定数字，会让判定拿错误的尺子量所有作品。自带的两份（游戏、绘本）都按这个原则写。
@@ -228,7 +228,7 @@ print(render(result))                                         # Markdown 回复
 |---|---|---|---|
 | `read` | 引用文件内容，或按正则搜索关键词 | 开 | 路径不能超出临时目录。作品是网页（游戏、页面、应用）时，它的源码（.html、.js、.css）不读，取证和判定都看不到：像用户一样用它来判；探针要用的变量名用探针自己找（`Object.keys(window)`、页面上的按钮）。交付物本身是代码（脚本、库，或写在回复里的代码）时才细读代码。读文件夹时返回其中的文件列表 |
 | `python` | 写小脚本测量：重算汇总、核对行数、解析表格、校验格式 | 开 | 只用标准库，限时 60 秒；有防护，见下文 |
-| `browser` | 离线浏览器里点击、按键、等待、读运行时数值、截图 | 有网页时开（没装 playwright 直接报错） | 默认从本地虚拟地址加载；检查写 `"via": "file"` 时用 `file://` 直接打开，和用户双击文件一样（子项涉及"直接打开"时用）。动作 `drag`（按住拖动，可转动 3D 视角、拖动棋子）和 `wheel`（在元素上滚滚轮，可缩放 3D 视角）用来测鼠标交互；动作 `closeup` 截取某个元素（或它的一部分）的 2 倍清晰特写，用来看清主角、图表等细节。文件名可以是中文。页面本身加载失败时这次检查记为失败，不作为作品证据。`localStorage` 可用。外网请求一律拦截，只有一种例外：jsdelivr、unpkg、cdnjs 上写明确切版本号的库文件（如 `three@0.160.0`）。它每次内容都一样，由评测代码下载一次、缓存在 `~/.fast_reward/cdn/` 后交给页面；没写版本号（如 `@latest`）的照样拦截。累计等待最多 60 秒 |
+| `browser` | 离线浏览器里点击、按键、等待、读运行时数值、截图 | 有网页时开（没装 playwright 直接报错） | 默认从本地虚拟地址加载；检查写 `"via": "file"` 时用 `file://` 直接打开，和用户双击文件一样（子项涉及"直接打开"时用）。动作 `drag`（按住拖动，可转动 3D 视角、拖动棋子）和 `wheel`（在元素上滚滚轮，可缩放 3D 视角）用来测鼠标交互；动作 `closeup` 截取某个元素（或它的一部分）的 2 倍清晰特写，用来看清主角、图表等细节。文件名可以是中文。页面本身加载失败时这次检查记为失败，不作为作品证据。`localStorage` 可用。外网请求一律拦截，只有一种例外：jsdelivr、unpkg、cdnjs 上写明确切版本号的库文件（如 `three@0.160.0`）。它每次内容都一样，由评测代码下载一次、缓存在 `~/.reward/cdn/` 后交给页面；没写版本号（如 `@latest`）的照样拦截。累计等待最多 60 秒 |
 
 - **检查只测量，不下结论**：输出的是事实和数值，判定由另一次模型调用完成。
 - **检查本身出错**：Python 检查报 Traceback、浏览器起不来时，报错原样交回取证 Agent，它在下一轮自己改写这个检查。
@@ -244,7 +244,7 @@ print(render(result))                                         # Markdown 回复
 
 ## 配置
 
-`config` 是一个 dict。命令行按这个顺序找配置文件（JSON）：`--config` 指定的文件 → `$FAST_REWARD_CONFIG` → `~/.fast_reward/config.json`（目录可用 `$FAST_REWARD_HOME` 改）→ 内置 `DEFAULT_CONFIG`（和 `config.example.json` 一样）。代码里调用时直接传 dict，可以用 `load_config(path)` 读文件并解析模型。
+`config` 是一个 dict。命令行按这个顺序找配置文件（JSON）：`--config` 指定的文件 → `$REWARD_CONFIG` → `~/.reward/config.json`（目录可用 `$REWARD_HOME` 改）→ 内置 `DEFAULT_CONFIG`（和 `config.example.json` 一样）。代码里调用时直接传 dict，可以用 `load_config(path)` 读文件并解析模型。
 
 ### 一份完整的例子
 
@@ -294,7 +294,7 @@ print(render(result))                                         # Markdown 回复
 | `provider` | 否 | 取证 DeepAgent 的模型提供方，默认 `OpenAI`；普通 JSON 模型调用仍使用 OpenAI 兼容接口 |
 
 - **`"session"`**：从 JiuwenSwarm 最近的会话记录读出模型名，再从 `~/.jiuwenswarm/config/config.yaml` 读地址和密钥；其中 `${变量名}`（可写 `${变量名:-默认值}`）先从环境变量取，再从 `~/.jiuwenswarm/config/.env` 取，都没有就报错。不在 JiuwenSwarm 环境里（没有会话记录或 config.yaml）会直接报错，要写完整配置。`{"model": "session", "timeout": 600}` 可以覆盖个别字段。
-- **看图试探**：没写 `vision` 时，评网页或交付图片前，判定、看图判定、取证三个角色各自试探一次（同一个模型只试一次），结果按接口地址和模型名缓存在 `~/.fast_reward/vision.json`。换了模型能力（比如同名模型升级）要删掉这个缓存。答案不清楚或调用出错时再试一次；仍不清楚，本次不发截图、不缓存，回复开头提示，下次再试；配置里写 `"vision": true` 可跳过试探。看图判定看不了图时，画面维度整项不计分，不能用源码代判外观。
+- **看图试探**：没写 `vision` 时，评网页或交付图片前，判定、看图判定、取证三个角色各自试探一次（同一个模型只试一次），结果按接口地址和模型名缓存在 `~/.reward/vision.json`。换了模型能力（比如同名模型升级）要删掉这个缓存。答案不清楚或调用出错时再试一次；仍不清楚，本次不发截图、不缓存，回复开头提示，下次再试；配置里写 `"vision": true` 可跳过试探。看图判定看不了图时，画面维度整项不计分，不能用源码代判外观。
 - **JiuwenSwarm 里**：`reward_engine.fast` 下的配置会合并进来；模型默认跟随对话的模型，`art_judge` 可以只写 `models.defaults` 里的模型名。
 
 ## 代码结构
@@ -318,22 +318,22 @@ print(render(result))                                         # Markdown 回复
 | `config.py` | 配置 |
 | `rewardpack.py` | RewardPack 批量评测 |
 
-测试：`tests/unit_tests/agent_evolving/fast_reward/`。模型调用用脚本替身，临时目录、Python 检查和离线浏览器真跑。
+测试：`tests/unit_tests/agent_evolving/reward/`。模型调用用脚本替身，临时目录、Python 检查和离线浏览器真跑。
 
 
 ## 和 JiuwenSwarm 的配合
 
 入口是 `/reward`，工具在 JiuwenSwarm 的 `agents/harness/common/tools/reward_tool.py`。`mode=fast` 时它先调本包评分，再把结果 JSON 交给 `fast_attribution` 归因、给建议；回复 = 本包的 Markdown + 归因模块的 Markdown。任务（用户原话）、最终回复、本轮写的文件，由工具用 `fast_attribution.locate_task_output` 从会话记录里取出；用户在 `/reward` 后面写的意见作为 `user_note` 传进来（`process_signal` 目前还没接）。本包自己不读会话记录。取证 Agent 用当前对话的模型（`evidence_model` 传会话的 `ModelPoolEntry`）。
 
-- 评分标准存在会话目录的 `fast_reward_rubric.json`，之后每轮沿用（用户意见和过程信号加进去的子项留下）。`/reward 重新出题` 时，`reward_tool` 先调 `archive_rubric` 把旧标准改名存档为 `.1.json`、`.2.json`……，再把会话里最近一次的结果作为 `previous_result` 传进来，本包就会在旧标准之上重新出一套。配置 `reward_engine.fast.reuse_rubric: false` 可关闭沿用。
+- 评分标准存在会话目录的 `reward_rubric.json`，之后每轮沿用（用户意见和过程信号加进去的子项留下）。`/reward 重新出题` 时，`reward_tool` 先调 `archive_rubric` 把旧标准改名存档为 `.1.json`、`.2.json`……，再把会话里最近一次的结果作为 `previous_result` 传进来，本包就会在旧标准之上重新出一套。配置 `reward_engine.fast.reuse_rubric: false` 可关闭沿用。
 - `reward_engine.fast` 里可以写本包的配置项；`art_judge` 写模型列表里的模型名即可。
 - 结果写到 `<会话>/reward_production/<run_id>/reward_result.json`（本包）和 `attribution.json`（归因）。
-- 进度写到 `<会话>/fast_reward/<开始毫秒>.json`，网页进度卡片读取。
+- 进度写到 `<会话>/reward/<开始毫秒>.json`，网页进度卡片读取。
 
 ## 批量评测：RewardPack
 
 ```bash
-python -m openjiuwen.agent_evolving.fast_reward.rewardpack --pack /path/to/rewardpack_top10 --out results/ --limit 4
+python -m openjiuwen.agent_evolving.reward.rewardpack --pack /path/to/rewardpack_top10 --out results/ --limit 4
 ```
 
 - 每个候选用它当时能看到和产出的东西来评：任务原文、交付物文本、最终回复，以及任务的输入材料（WorkBuddy 的 workspace 输入、Claw-Eval 的 fixtures）。**不看标准答案，也不看官方评分器。**

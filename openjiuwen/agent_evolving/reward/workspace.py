@@ -33,7 +33,7 @@ def make_workspace(products=(), texts=None, reference_texts=None):
     for source in sources:
         if not source.is_file() and not source.is_dir():
             raise FileNotFoundError(f"artifact does not exist or is not a file/directory: {source}")
-    root = Path(tempfile.mkdtemp(prefix="fast_reward_"))
+    root = Path(tempfile.mkdtemp(prefix="reward_"))
     for source in sources:
         if source.is_dir() and any(source.glob("*.htm*")):
             copy_work_folder(source, root)

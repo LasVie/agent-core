@@ -11,7 +11,7 @@ import pytest
 
 from openjiuwen.agent_evolving.attribution.model import DiagnosticSignal, SignalSource, TaskParseResult
 from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode
-from openjiuwen.agent_evolving.attribution.reward.fast_reward_adapter import final_reply, review_task, to_reward_payload
+from openjiuwen.agent_evolving.attribution.reward.reward_adapter import final_reply, review_task, to_reward_payload
 from openjiuwen.agent_evolving.attribution.run import NodeBackedRuntime, run_attribution, run_diagnosis
 from openjiuwen.agent_evolving.attribution.snapshot import slice_nodes_by_range
 from openjiuwen.agent_evolving.attribution.task_parse import delivery_round, last_writes, run_task_parse

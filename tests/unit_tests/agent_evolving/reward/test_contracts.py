@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from openjiuwen.agent_evolving.fast_reward import checks, evidence_agent, pipeline, prompts
+from openjiuwen.agent_evolving.reward import checks, evidence_agent, pipeline, prompts
 
 
 PACKAGE = Path(pipeline.__file__).parent

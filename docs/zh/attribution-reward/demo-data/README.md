@@ -32,7 +32,7 @@ python3 import_demo.py web_1a152586c02_saturday.tar.gz --runtime <你的任务�
 脚本会：
 
 1. 把上面每一块拷到新 `.runtime` 下的同一位置；
-2. 轨迹、聊天记录、诊断结果里写的是原机器的绝对路径（`/Users/lytton/work/reinforement_learning/jiuwenswarm-attribution-guangliang`），统一替换成新任务根目录（`--runtime` 的上一级），这样 Fast Reward 能在新位置读到交付文件；轨迹库里的内容是 zlib 压缩的，会逐条解压、替换、再压缩；
+2. 轨迹、聊天记录、诊断结果里写的是原机器的绝对路径（`/Users/lytton/work/reinforement_learning/jiuwenswarm-attribution-guangliang`），统一替换成新任务根目录（`--runtime` 的上一级），这样 Reward 能在新位置读到交付文件；轨迹库里的内容是 zlib 压缩的，会逐条解压、替换、再压缩；
 3. 重建 Team 工作区里指向成员目录的两个软链接；
 4. 会话已存在时不覆盖，要覆盖加 `--force`。
 
@@ -48,8 +48,8 @@ python3 import_demo.py web_1a152586c02_saturday.tar.gz --runtime <你的任务�
 
 | 框选 | 预期 |
 |---|---|
-| 全部轨迹 | 评最后交付的那一轮（15:56:09 起）：`schedule-v2.md`、`wechat-message-v2.md` 和 15:57:39 的最终回复；早期的 `schedule.md`、`wechat-message.md` 不评。过程信号里有用户的路径抱怨；交给 Fast Reward 的任务带「当前有效的需求清单」，「给出绝对路径」标为用户纠正过 |
-| 只框中间：leader 12:08–12:43、schedule-planner 12:43:40–12:44:53、message-writer 12:43:35–12:44:06 | 「消息 0 · 文件 0」：框里的 `schedule.md` 后来被 `schedule-v2.md` 取代；不跑 Fast Reward，只看过程，不出产物改进 |
+| 全部轨迹 | 评最后交付的那一轮（15:56:09 起）：`schedule-v2.md`、`wechat-message-v2.md` 和 15:57:39 的最终回复；早期的 `schedule.md`、`wechat-message.md` 不评。过程信号里有用户的路径抱怨；交给 Reward 的任务带「当前有效的需求清单」，「给出绝对路径」标为用户纠正过 |
+| 只框中间：leader 12:08–12:43、schedule-planner 12:43:40–12:44:53、message-writer 12:43:35–12:44:06 | 「消息 0 · 文件 0」：框里的 `schedule.md` 后来被 `schedule-v2.md` 取代；不跑 Reward，只看过程，不出产物改进 |
 | 只框中间：leader 12:42:55–15:56:12、两个成员 12:43–12:45 | 同上；12:45 的第一轮团队完成回复已被 15:57 的重做取代，不算交付物 |
 | 只框成员在最后一轮的部分：message-writer 15:57:00–15:57:22 | 只看过程：最后一轮里没有框到 leader，不评交付物 |
 | 只框到最后一轮的开头：leader 12:43–15:56:18 | 只看过程：leader 在 15:56:15 只建了 Skill 目录，交付的那一步不在框选里 |

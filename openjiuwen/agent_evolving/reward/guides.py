@@ -1,7 +1,7 @@
 """Domain knowledge ("metric guides") for writing criteria and planning checks: Markdown files whose first line may
 be "keywords: a, b, c". Before each run the guides are scanned: one with keywords is used when one of them occurs in
 the Task; for those without keywords, one short model call picks the ones that fit. Guides are read from the bundled
-metrics/ folder (picture books, games, personal assistants), from ~/.fast_reward/metrics/ (or $FAST_REWARD_HOME/metrics/) and from config "metric_guides" (files or folders)."""
+metrics/ folder (picture books, games, personal assistants), from ~/.reward/metrics/ (or $REWARD_HOME/metrics/) and from config "metric_guides" (files or folders)."""
 
 import json
 import os
@@ -13,7 +13,7 @@ GUIDE_LIMIT = 8000   # characters of guide text given to a model
 
 
 def user_folder():
-    return Path(os.environ.get("FAST_REWARD_HOME", "~/.fast_reward")).expanduser() / "metrics"
+    return Path(os.environ.get("REWARD_HOME", "~/.reward")).expanduser() / "metrics"
 
 def guide_files(extra=()):
     """The bundled guides, the user's folder and the files and folders named in `extra`, each once, in that order."""

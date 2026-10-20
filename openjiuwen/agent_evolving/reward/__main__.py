@@ -1,7 +1,7 @@
 """Score an agent's delivered work; print the Markdown reply and write the standard result JSON.
 
-  python -m openjiuwen.agent_evolving.fast_reward --task task.md --artifact index.html
-  python -m openjiuwen.agent_evolving.fast_reward --task task.md --artifact report.md table.xlsx \\
+  python -m openjiuwen.agent_evolving.reward --task task.md --artifact index.html
+  python -m openjiuwen.agent_evolving.reward --task task.md --artifact report.md table.xlsx \\
       --txt-response reply.md --user-note "第 2 页多一只手" --rubric rubric.json --out reward_result.json
 
 --evidence adds every check's output under "evidence" in the JSON.
@@ -20,7 +20,7 @@ from .result import render
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="python -m openjiuwen.agent_evolving.fast_reward", description=__doc__,
+    parser = argparse.ArgumentParser(prog="python -m openjiuwen.agent_evolving.reward", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--task", required=True, help="task text or a file containing it")
     parser.add_argument("--artifact", nargs="+", default=[],
@@ -36,7 +36,7 @@ def main(argv=None):
     parser.add_argument("--user-note", help="the user's remarks on the work (text or a file); they become checks")
     parser.add_argument("--process-signal", help="environment errors and the user's feedback across turns (text or a "
                                                  "file); they become checks")
-    parser.add_argument("--config", help="JSON config; default $FAST_REWARD_CONFIG, else ~/.fast_reward/config.json, "
+    parser.add_argument("--config", help="JSON config; default $REWARD_CONFIG, else ~/.reward/config.json, "
                                          "else built-in defaults")
     parser.add_argument("--evidence", action="store_true", help="include every check's output in the JSON")
     parser.add_argument("--out", default="reward_result.json")

@@ -6,7 +6,7 @@ deliverable files' text, the final reply and the task's input files as inputs
 round share one criteria set, so they are judged alike.
 
 Usage:
-  python -m openjiuwen.agent_evolving.fast_reward.rewardpack --pack /path/to/rewardpack_top10 --out results/
+  python -m openjiuwen.agent_evolving.reward.rewardpack --pack /path/to/rewardpack_top10 --out results/
       [--rounds featured|all] [--limit N] [--concurrency 3] [--config config.json]
 Results: results/results.jsonl (one line per candidate, resumable), results/criteria/ and results/summary.json.
 """
@@ -176,7 +176,7 @@ async def main_async(args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="python -m openjiuwen.agent_evolving.fast_reward.rewardpack", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(prog="python -m openjiuwen.agent_evolving.reward.rewardpack", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--pack", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--rounds", choices=("featured", "all"), default="featured")

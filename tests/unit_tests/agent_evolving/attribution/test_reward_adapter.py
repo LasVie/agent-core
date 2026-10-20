@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Fast Reward as the Reward stage of the attribution pipeline."""
+"""The Reward package as the Reward stage of the attribution pipeline."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pytest
 from openjiuwen.agent_evolving.attribution import run as run_module
 from openjiuwen.agent_evolving.attribution.model import DiagnosticSignal, SignalSource, TaskParseResult
 from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode
-from openjiuwen.agent_evolving.attribution.reward import fast_reward_adapter as adapter
+from openjiuwen.agent_evolving.attribution.reward import reward_adapter as adapter
 from openjiuwen.agent_evolving.attribution.run import run_diagnosis
 
 LEADER = "team-member:s:t:team-leader"
@@ -152,18 +152,18 @@ def _keyword(signals: list[DiagnosticSignal]) -> Any:
     return fake
 
 
-async def test_fast_reward_diagnosis_keeps_failed_tool_calls(monkeypatch: Any, tmp_path: Any) -> None:
+async def test_reward_diagnosis_keeps_failed_tool_calls(monkeypatch: Any, tmp_path: Any) -> None:
     seen: dict[str, Any] = {}
 
     async def fake_reward(task: str, artifacts: list[str], config: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         seen.update(task=task, artifacts=artifacts, config=config, **kwargs)
         return _fast_result()
 
-    from openjiuwen.agent_evolving.fast_reward import pipeline
+    from openjiuwen.agent_evolving.reward import pipeline
 
     monkeypatch.delenv("ATTRIBUTION_REWARD", raising=False)
     monkeypatch.setattr(pipeline, "reward", fake_reward)
-    monkeypatch.setattr(adapter, "fast_reward_config", lambda model: {"producer": {}, "judge": {}})
+    monkeypatch.setattr(adapter, "reward_config", lambda model: {"producer": {}, "judge": {}})
     monkeypatch.setattr(run_module, "build_reward_agent", lambda **kwargs: pytest.fail("the Reward agent ran"))
     nodes = _nodes()
     failed = TrajectoryNode(
@@ -209,15 +209,15 @@ async def test_fast_reward_diagnosis_keeps_failed_tool_calls(monkeypatch: Any, t
     # the failed tool call and the user's follow-up still reach attribution
     assert [s.signal_id for s in result.signals[-2:]] == [tool_error.signal_id, complaint.signal_id]
     assert result.run_meta["process_signals_kept"] == 2
-    assert result.run_meta["reward"]["engine"] == "fast_reward"
+    assert result.run_meta["reward"]["engine"] == "reward"
     assert result.reward_payload["schema_version"] == "attribution.reward.v1"
     assert [e.stage for e in events if getattr(e, "stage", "") == "reward"]
 
 
-async def test_progress_streams_what_fast_reward_does_now(monkeypatch: Any, tmp_path: Any) -> None:
+async def test_progress_streams_what_reward_does_now(monkeypatch: Any, tmp_path: Any) -> None:
     import asyncio
 
-    from openjiuwen.agent_evolving.fast_reward import pipeline, progress
+    from openjiuwen.agent_evolving.reward import pipeline, progress
 
     async def fake_reward(task: str, artifacts: list[str], config: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         steps = progress.current()
@@ -233,7 +233,7 @@ async def test_progress_streams_what_fast_reward_does_now(monkeypatch: Any, tmp_
 
     monkeypatch.delenv("ATTRIBUTION_REWARD", raising=False)
     monkeypatch.setattr(pipeline, "reward", fake_reward)
-    monkeypatch.setattr(adapter, "fast_reward_config", lambda model: {})
+    monkeypatch.setattr(adapter, "reward_config", lambda model: {})
     monkeypatch.setattr(run_module, "run_keyword_diagnosis", _keyword([]))
     events: list[Any] = []
     await run_diagnosis(
@@ -256,15 +256,15 @@ async def test_progress_streams_what_fast_reward_does_now(monkeypatch: Any, tmp_
     assert not isinstance(progress.current(), adapter._ProgressLines)  # the run's progress slot is restored
 
 
-async def test_a_failed_fast_reward_falls_back_to_the_process_signals(monkeypatch: Any, tmp_path: Any) -> None:
+async def test_a_failed_reward_falls_back_to_the_process_signals(monkeypatch: Any, tmp_path: Any) -> None:
     async def broken(*args: Any, **kwargs: Any) -> dict[str, Any]:
         raise ConnectionError("model unreachable")
 
-    from openjiuwen.agent_evolving.fast_reward import pipeline
+    from openjiuwen.agent_evolving.reward import pipeline
 
     monkeypatch.delenv("ATTRIBUTION_REWARD", raising=False)
     monkeypatch.setattr(pipeline, "reward", broken)
-    monkeypatch.setattr(adapter, "fast_reward_config", lambda model: {})
+    monkeypatch.setattr(adapter, "reward_config", lambda model: {})
     signal = DiagnosticSignal.create("错误", source=SignalSource.KEYWORD_TOOL, node_ids=[f"{LEADER}:1"])
     monkeypatch.setattr(run_module, "run_keyword_diagnosis", _keyword([signal]))
     result = await run_diagnosis(
@@ -277,14 +277,14 @@ async def test_a_failed_fast_reward_falls_back_to_the_process_signals(monkeypatc
     )
     assert result.signal_mode == "rule_jev" and result.signals == [signal]
     assert result.run_meta["reward"] == {
-        "engine": "fast_reward",
+        "engine": "reward",
         "failed": "ConnectionError",
         "error": "model unreachable",
     }
 
 
-def test_fast_reward_is_the_default_and_the_reward_agent_stays_one_switch_away(monkeypatch: Any) -> None:
+def test_reward_is_the_default_and_the_reward_agent_stays_one_switch_away(monkeypatch: Any) -> None:
     monkeypatch.setenv("ATTRIBUTION_REWARD", "agent")
-    assert adapter.fast_reward_enabled() is False
+    assert adapter.reward_enabled() is False
     monkeypatch.delenv("ATTRIBUTION_REWARD")
-    assert adapter.fast_reward_enabled() is True
+    assert adapter.reward_enabled() is True

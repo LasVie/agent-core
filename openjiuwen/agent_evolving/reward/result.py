@@ -1,6 +1,6 @@
 """The standard result JSON (meta, total, categories, sub_category_items) and the Markdown reply rendered from it.
 
-    {"schema_version": "fast_reward/3",
+    {"schema_version": "reward/3",
      "meta": {...},                                    # when, what was evaluated, with which models
      "total": {"score", "summary"},                   # 0-100 and the overall verdict (model-written)
      "categories": [{"category_id", "category_name", "rubric", "comment", "score", "issues"}],
@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .scoring import FLOOR_FAIL_CAP, FLOOR_WEIGHT, claim_gains
 
-SCHEMA_VERSION = "fast_reward/3"
+SCHEMA_VERSION = "reward/3"
 
 ITEM_SCORE = {"met": 100, "partial": 50, "unmet": 0, "unknown": None}
 

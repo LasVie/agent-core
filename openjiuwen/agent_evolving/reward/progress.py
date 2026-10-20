@@ -24,9 +24,9 @@ class Progress:
 
     @classmethod
     def for_session(cls, mode):
-        """<session>/fast_reward/<start ms>.json in the latest JiuwenSwarm session, when there is one."""
+        """<session>/reward/<start ms>.json in the latest JiuwenSwarm session, when there is one."""
         try:
-            folder = latest_session_history().parent / "fast_reward"
+            folder = latest_session_history().parent / "reward"
             folder.mkdir(exist_ok=True)
             return cls(folder / f"{int(time.time() * 1000)}.json", mode)
         except OSError:
@@ -68,7 +68,7 @@ class Progress:
 
 # The run's progress file lives in a context variable, so concurrent runs in one server process (one per
 # session) each write their own file.
-_current = contextvars.ContextVar("fast_reward_progress", default=Progress())
+_current = contextvars.ContextVar("reward_progress", default=Progress())
 
 
 def current():

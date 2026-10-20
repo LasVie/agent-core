@@ -1,4 +1,4 @@
-"""Fast Reward pipeline: models scripted, real workspace, real python checks and a real offline browser."""
+"""Reward pipeline: models scripted, real workspace, real python checks and a real offline browser."""
 
 import asyncio
 import json
@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from openjiuwen.agent_evolving.fast_reward import checks, evidence_agent, guides, models, pipeline, scoring, workspace
-from openjiuwen.agent_evolving.fast_reward import progress as progress_mod
-from openjiuwen.agent_evolving.fast_reward import result as result_mod
-from openjiuwen.agent_evolving.fast_reward import __main__ as cli
+from openjiuwen.agent_evolving.reward import checks, evidence_agent, guides, models, pipeline, scoring, workspace
+from openjiuwen.agent_evolving.reward import progress as progress_mod
+from openjiuwen.agent_evolving.reward import result as result_mod
+from openjiuwen.agent_evolving.reward import __main__ as cli
 
 GAME = """<button id="go">Go</button><p id="score">0</p><script>
 var score = 0; var best = Number(localStorage.getItem('best') || 0);
@@ -114,7 +114,7 @@ def test_the_result_is_standard_json_and_the_reply_is_rendered_from_it():
             "models": {"producer": "m1", "judge": "m1"}}
     results[0]["claims"][1]["source"] = "feedback"
     result = result_mod.build("统计当天工单", results, 70, "整体合格，取舍说明不足。", meta)
-    assert result["schema_version"] == "fast_reward/3" and result["total"] == {
+    assert result["schema_version"] == "reward/3" and result["total"] == {
         "score": 70, "summary": "整体合格，取舍说明不足。"}
     scope, look = result["categories"]
     assert scope == {"category_id": "scope", "category_name": "统计范围", "rubric": "只统计当天并说明取舍",
@@ -178,7 +178,7 @@ def test_progress_file_moves_through_the_stages(tmp_path, monkeypatch):
     (session / "history.jsonl").write_text("")
     monkeypatch.setenv("JIUWENSWARM_HOME", str(tmp_path))
     progress = progress_mod.Progress.for_session("text")
-    files = list((session / "fast_reward").glob("*.json"))
+    files = list((session / "reward").glob("*.json"))
     assert len(files) == 1 and progress.path == files[0]
 
     def read():
@@ -303,7 +303,7 @@ def scripted_evidence_unless_asked(request, monkeypatch):
 @pytest.fixture(autouse=True)
 def isolated_guides(tmp_path, monkeypatch):
     """Only the bundled guides, whatever lives in the user's folder."""
-    monkeypatch.setenv("FAST_REWARD_HOME", str(tmp_path / "fast_reward_home"))
+    monkeypatch.setenv("REWARD_HOME", str(tmp_path / "reward_home"))
 
 
 def dispatcher(answers, seen):
@@ -456,7 +456,7 @@ async def test_metric_guides_are_scanned_and_the_fitting_ones_used(tmp_path, mon
     (home / "metrics").mkdir(parents=True)
     (home / "metrics/game_feel.md").write_text("# Game feel guide\nControls, feedback, progression.")
     (home / "metrics/sql.md").write_text("keywords: sql, database\n# SQL guide")
-    monkeypatch.setenv("FAST_REWARD_HOME", str(home))
+    monkeypatch.setenv("REWARD_HOME", str(home))
     chosen, undecided = guides.by_keywords("帮我做一本小朋友绘本", {})
     assert [n for n, _ in chosen] == ["picture_book"] and [n for n, _ in undecided] == ["game_feel"]
     assert [n for n, _ in guides.by_keywords("做一个跳跳猫小游戏", {})[0]] == ["game"]      # bundled, by keyword
@@ -478,7 +478,7 @@ async def test_metric_guides_are_scanned_and_the_fitting_ones_used(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_the_chosen_guide_reaches_the_criteria_writer_and_the_reply(tmp_path, monkeypatch):
-    monkeypatch.setenv("FAST_REWARD_HOME", str(tmp_path / "none"))
+    monkeypatch.setenv("REWARD_HOME", str(tmp_path / "none"))
     seen = []
     install(monkeypatch, [
         ("You write evaluation criteria", {"criteria": [PAGE_CRITERIA["criteria"][0]]}),
@@ -537,7 +537,7 @@ async def test_python_checks_measure_the_data(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_there_is_no_shell_and_python_checks_cannot_leave_their_folder(tmp_path):
-    from openjiuwen.agent_evolving.fast_reward import checks
+    from openjiuwen.agent_evolving.reward import checks
     root = tmp_path / "work"
     root.mkdir()
     (root / "data.csv").write_text("a,b\n1,2\n")
@@ -698,19 +698,19 @@ def test_cli_passes_the_product_paths_and_the_text_reply(tmp_path, monkeypatch):
                      "--process-signal", "TypeError: x is undefined"])
     assert seen == [(["index.html", "a.md"], "done", "猫太丑", "TypeError: x is undefined")]
     written = json.loads((tmp_path / "r.json").read_text())
-    assert written["schema_version"] == "fast_reward/3" and written["meta"]["artifacts"] == [str(page), str(doc)]
+    assert written["schema_version"] == "reward/3" and written["meta"]["artifacts"] == [str(page), str(doc)]
     for gone in (["--trace", "t.json"], ["--reference", "in"], ["--response", "done"], ["--product", "x"]):
         with pytest.raises(SystemExit):
             cli.main(base + gone)  # no trace, reference or plain response option any more
 
 
 def test_config_file_or_defaults(tmp_path, monkeypatch):
-    from openjiuwen.agent_evolving.fast_reward import config as config_mod
-    monkeypatch.delenv("FAST_REWARD_CONFIG", raising=False)
-    monkeypatch.setenv("FAST_REWARD_HOME", str(tmp_path))
+    from openjiuwen.agent_evolving.reward import config as config_mod
+    monkeypatch.delenv("REWARD_CONFIG", raising=False)
+    monkeypatch.setenv("REWARD_HOME", str(tmp_path))
     fixed = {"producer": {"model": "m", "base_url": "u", "api_key": "k"}, "criteria_budget": 2}
     (tmp_path / "config.json").write_text(json.dumps(fixed))
-    assert config_mod.load_config() == fixed                                   # ~/.fast_reward/config.json
+    assert config_mod.load_config() == fixed                                   # ~/.reward/config.json
     with pytest.raises(FileNotFoundError):
         config_mod.load_config(tmp_path / "missing.json")                      # a named file must exist
     (tmp_path / "config.json").unlink()

@@ -296,7 +296,7 @@ def save_rubric(path, criteria):
                                      ensure_ascii=False, indent=2), encoding="utf-8")
 
 def archive_rubric(path):
-    """For callers: move a kept rubric aside (fast_reward_rubric.1.json, .2.json, ...) so the next reward() writes a
+    """For callers: move a kept rubric aside (reward_rubric.1.json, .2.json, ...) so the next reward() writes a
     new one; returns the archive path, or None when there was nothing to move."""
     path = Path(path)
     if not path.exists():

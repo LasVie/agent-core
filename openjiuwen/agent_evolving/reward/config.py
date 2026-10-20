@@ -1,6 +1,6 @@
 """Run configuration: models, time limits, rubric budget, guides and evidence output.
 
-Looked up in this order: an explicit path, $FAST_REWARD_CONFIG, ~/.fast_reward/config.json (or $FAST_REWARD_HOME),
+Looked up in this order: an explicit path, $REWARD_CONFIG, ~/.reward/config.json (or $REWARD_HOME),
 else DEFAULT_CONFIG. "session" model entries are resolved to the model the JiuwenSwarm session runs on.
 """
 
@@ -18,8 +18,8 @@ DEFAULT_CONFIG = {
 
 
 def config_path(path=None):
-    home = Path(os.environ.get("FAST_REWARD_HOME") or Path.home() / ".fast_reward")
-    return Path(path or os.environ.get("FAST_REWARD_CONFIG") or home / "config.json")
+    home = Path(os.environ.get("REWARD_HOME") or Path.home() / ".reward")
+    return Path(path or os.environ.get("REWARD_CONFIG") or home / "config.json")
 
 
 def load_config(path=None):
@@ -27,7 +27,7 @@ def load_config(path=None):
     file = config_path(path)
     if file.is_file():
         config = json.loads(file.read_text(encoding="utf-8"))
-    elif path or os.environ.get("FAST_REWARD_CONFIG"):
+    elif path or os.environ.get("REWARD_CONFIG"):
         raise FileNotFoundError(f"config file not found: {file}")
     else:
         config = DEFAULT_CONFIG

@@ -1,8 +1,8 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Fast Reward as the Reward stage: its result converted to ``attribution.reward.v1``.
+"""The Reward package as the Reward stage: its result converted to ``attribution.reward.v1``.
 
-Fast Reward (:mod:`openjiuwen.agent_evolving.fast_reward`) writes checkable criteria from the user's own
+The Reward package (:mod:`openjiuwen.agent_evolving.reward`) writes checkable criteria from the user's own
 request (what was asked, plus what the best work of the kind does), gathers evidence by running the
 deliverable, judges every claim and computes the scores in code.  This module feeds it the stage-one
 result and turns its claims into reward dimensions, so the rest of the pipeline (signals, attribution,
@@ -10,7 +10,7 @@ the host's display) is unchanged.
 
 The tier of each dimension comes from the claim's status, never from a score: a met claim is perfect
 (attribution skips it); a requirement partly met is fair and one not met is weak; a proactive challenge
-not (fully) met is fair (room to improve, not a defect).  The dimension score is Fast Reward's own claim
+not (fully) met is fair (room to improve, not a defect).  The dimension score is Reward's own claim
 score (met 100, partial 50, unmet 0), shown only.  A claim the evidence could not settle ("unknown") is no
 dimension; the overall comment counts it.
 """
@@ -28,7 +28,7 @@ from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode
 
 #: ``ATTRIBUTION_REWARD=agent`` switches the Reward stage back to the Reward deep agent.
 REWARD_ENGINE_ENV = "ATTRIBUTION_REWARD"
-#: Seconds Fast Reward may take for one diagnosis (``FAST_REWARD_DEADLINE`` overrides).
+#: Seconds Reward may take for one diagnosis (``REWARD_DEADLINE`` overrides).
 DEFAULT_DEADLINE_SECONDS = 600
 
 _REQUIREMENT_TIER = {"met": "perfect", "partial": "fair", "unmet": "weak"}
@@ -86,23 +86,23 @@ def _labels(language: str) -> dict[str, str]:
     return _LABELS["en" if str(language).lower().startswith("en") else "zh"]
 
 
-def fast_reward_enabled() -> bool:
-    """Fast Reward is the Reward stage unless ``ATTRIBUTION_REWARD=agent``."""
-    return os.environ.get(REWARD_ENGINE_ENV, "fast").strip().lower() != "agent"
+def reward_enabled() -> bool:
+    """The Reward package scores the Reward stage unless ``ATTRIBUTION_REWARD=agent``."""
+    return os.environ.get(REWARD_ENGINE_ENV, "reward").strip().lower() != "agent"
 
 
 def route_from_model(model: Any) -> dict[str, Any]:
     """An OpenAI-compatible route (``model``, ``base_url``, ``api_key``) read from a core ``Model``.
 
     Raises:
-        ValueError: The model carries no name or endpoint (e.g. a model group); set ``FAST_REWARD_CONFIG``.
+        ValueError: The model carries no name or endpoint (e.g. a model group); set ``REWARD_CONFIG``.
     """
     client = getattr(model, "model_client_config", None)
     request = getattr(model, "model_config", None)
     name = str(getattr(request, "model_name", "") or "")
     base_url = str(getattr(client, "api_base", "") or "")
     if not name or not base_url:
-        raise ValueError("the diagnosis model has no model name or endpoint; set FAST_REWARD_CONFIG to a config file")
+        raise ValueError("the diagnosis model has no model name or endpoint; set REWARD_CONFIG to a config file")
     route: dict[str, Any] = {
         "model": name,
         "base_url": base_url,
@@ -116,17 +116,17 @@ def route_from_model(model: Any) -> dict[str, Any]:
     return route
 
 
-def fast_reward_config(model: Any) -> dict[str, Any]:
-    """The Fast Reward config: ``$FAST_REWARD_CONFIG`` or ``~/.fast_reward/config.json`` when present,
+def reward_config(model: Any) -> dict[str, Any]:
+    """The Reward config: ``$REWARD_CONFIG`` or ``~/.reward/config.json`` when present,
     else every model role on the diagnosis model."""
-    from openjiuwen.agent_evolving.fast_reward.config import config_path, load_config
+    from openjiuwen.agent_evolving.reward.config import config_path, load_config
 
-    if os.environ.get("FAST_REWARD_CONFIG") or config_path().is_file():
+    if os.environ.get("REWARD_CONFIG") or config_path().is_file():
         config = dict(load_config())
     else:
         route = route_from_model(model)
         config = {"producer": route, "judge": route, "evidence_model": route, "criteria_budget": 3}
-    config.setdefault("deadline_seconds", float(os.environ.get("FAST_REWARD_DEADLINE") or DEFAULT_DEADLINE_SECONDS))
+    config.setdefault("deadline_seconds", float(os.environ.get("REWARD_DEADLINE") or DEFAULT_DEADLINE_SECONDS))
     return config
 
 
@@ -161,7 +161,7 @@ def final_reply(task_parse: TaskParseResult, nodes_by_subagent: Mapping[str, Seq
 
 
 def review_task(task_parse: TaskParseResult, user_note: str, language: str) -> str:
-    """The task Fast Reward writes its claims from: the reviewer's note, the current requirements, the user's words.
+    """The task Reward writes its claims from: the reviewer's note, the current requirements, the user's words.
 
     The note given when starting the diagnosis comes first and wins any conflict; the requirement list (later
     changes applied, overridden demands dropped) is what every floor claim must cover, with the points the
@@ -189,9 +189,9 @@ def review_task(task_parse: TaskParseResult, user_note: str, language: str) -> s
 
 
 class _ProgressLines:
-    """Fast Reward's progress as status lines: what it does now, a bar and the time used.
+    """Reward's progress as status lines: what it does now, a bar and the time used.
 
-    Installed as Fast Reward's progress object (its ``stage``/``tick``/``counted`` calls) and as its log
+    Installed as Reward's progress object (its ``stage``/``tick``/``counted`` calls) and as its log
     (evidence checks are counted from it); every step the user would care about becomes one line.
     """
 
@@ -259,7 +259,7 @@ class _ProgressLines:
 
 
 def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[str, Any]:
-    """A Fast Reward result as an ``attribution.reward.v1`` payload.
+    """A Reward result as an ``attribution.reward.v1`` payload.
 
     Each dimension also carries ``tier`` (from the claim's status); ``run_diagnosis`` applies it to the
     signal instead of the score band.  Dimensions come in reading order: requirements not met, challenges
@@ -271,7 +271,7 @@ def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[s
     labels = _labels(language)
     total = (result.get("total") or {}).get("score")
     if total is None:
-        raise ValueError("Fast Reward found no evidence to score the work")
+        raise ValueError("Reward found no evidence to score the work")
     dimensions = []
     unknown = 0
     counts = {"floor": 0, "floor_met": 0, "challenge": 0, "challenge_done": 0}
@@ -300,7 +300,7 @@ def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[s
             }
         )
     if not dimensions:
-        raise ValueError("Fast Reward settled no claim")
+        raise ValueError("Reward settled no claim")
     dimensions.sort(
         key=lambda d: (
             _TIER_ORDER[d["tier"]],
@@ -332,7 +332,7 @@ def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[s
     }
 
 
-async def run_fast_reward(
+async def run_reward(
     *,
     task_parse: TaskParseResult,
     nodes_by_subagent: Mapping[str, Sequence[TrajectoryNode]],
@@ -343,7 +343,7 @@ async def run_fast_reward(
     model_name: str = "",
     status_counter: list[int] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Score the stage-one deliverables with Fast Reward.
+    """Score the stage-one deliverables with Reward.
 
     Returns:
         The ``attribution.reward.v1`` payload and run meta for ``run_meta["reward"]``.
@@ -353,13 +353,13 @@ async def run_fast_reward(
             failed Reward run.
     """
     from openjiuwen.agent_evolving.attribution.agent import emit_single_llm_event
-    from openjiuwen.agent_evolving.fast_reward import pipeline, progress
+    from openjiuwen.agent_evolving.reward import pipeline, progress
 
     counter = status_counter if status_counter is not None else [0]
     task = review_task(task_parse, user_attribution, language)
     artifacts = existing_paths(task_parse.file_artifacts)
     reply = final_reply(task_parse, nodes_by_subagent)
-    config = fast_reward_config(model)
+    config = reward_config(model)
     started = time.time_ns()
 
     def say(line: str) -> None:
@@ -374,7 +374,7 @@ async def run_fast_reward(
         )
 
     lines = _ProgressLines(say, language)
-    token = progress._current.set(lines)  # noqa: SLF001 - Fast Reward's own per-run progress slot
+    token = progress._current.set(lines)  # noqa: SLF001 - Reward's own per-run progress slot
     try:
         result = await pipeline.reward(
             task, artifacts, config, txt_response=reply, user_note=user_attribution or "", log=lines.log
@@ -395,7 +395,7 @@ async def run_fast_reward(
         progress._current.reset(token)  # noqa: SLF001
     lines.line(100, _labels(language)["finished"].format(score=payload["overall"]["total_score"]))
     meta = {
-        "engine": "fast_reward",
+        "engine": "reward",
         "artifacts": artifacts,
         "reply_chars": len(reply),
         "task_from_user": bool(task_parse.user_request),
@@ -409,12 +409,12 @@ async def run_fast_reward(
 
 __all__ = [
     "REWARD_ENGINE_ENV",
-    "fast_reward_config",
-    "fast_reward_enabled",
+    "reward_config",
+    "reward_enabled",
     "existing_paths",
     "review_task",
     "final_reply",
     "route_from_model",
-    "run_fast_reward",
+    "run_reward",
     "to_reward_payload",
 ]
