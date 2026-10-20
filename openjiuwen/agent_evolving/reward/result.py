@@ -11,8 +11,10 @@ Scores are 0-100; null means no evidence, not zero. "status" is how far a sub-it
 partial (in part, 50), unmet (not, 0), unknown (no evidence either way, null). "issues" are the major visual
 weaknesses the art judge saw (looks only). "gain" is how many points the total would rise if the item were met;
 "type" is "floor" (asked for by the Task) or "proactive_challenge" (what the best work does unasked).
-"from_user_note" / "from_process_signal" mark the sub-items made from the user's note / the process signal. One result describes one evaluation: no earlier scores are kept here. Nothing here proposes
-changes: that is the job of whoever reads this result (e.g. fast_attribution)."""
+"from_user_note" / "from_process_signal" mark the sub-items made from the user's note / the process signal.
+One result describes one evaluation: no earlier scores are kept here. Nothing here proposes
+changes: that is the job of whoever reads this result (e.g. fast_attribution).
+"""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,7 +84,8 @@ def files_shown(files, most=4):
 
 def render(result, report_path=None):
     """The result as short Markdown for the reply: total and verdict, inputs, each category with its comment and
-    the items it did not meet."""
+    the items it did not meet.
+    """
     meta, total = result["meta"], result["total"]
     lines = [f"**总分 {shown(total['score'])}**"]
     if total.get("summary"):

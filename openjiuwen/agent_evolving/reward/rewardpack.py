@@ -176,7 +176,11 @@ async def main_async(args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="python -m openjiuwen.agent_evolving.reward.rewardpack", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        prog="python -m openjiuwen.agent_evolving.reward.rewardpack",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--pack", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--rounds", choices=("featured", "all"), default="featured")

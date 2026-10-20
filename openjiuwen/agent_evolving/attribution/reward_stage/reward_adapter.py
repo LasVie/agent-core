@@ -119,7 +119,8 @@ def route_from_model(model: Any) -> dict[str, Any]:
 
 def reward_config(model: Any) -> dict[str, Any]:
     """The Reward config: ``$REWARD_CONFIG`` or ``~/.reward/config.json`` when present,
-    else every model role on the diagnosis model."""
+    else every model role on the diagnosis model.
+    """
     from openjiuwen.agent_evolving.reward.config import config_path, load_config
 
     if os.environ.get("REWARD_CONFIG") or config_path().is_file():

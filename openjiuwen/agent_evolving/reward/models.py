@@ -1,5 +1,6 @@
 """Model access: a streamed JSON client with per-call quotas, the answer language, the session's model, and
-whether a model can see images."""
+whether a model can see images.
+"""
 
 import asyncio
 import json
@@ -13,6 +14,7 @@ from .session import latest_session_history, sessions_root
 SESSION_EXTRA = {"deepseek": {"thinking": {"type": "enabled"}, "reasoning_effort": "low"},
                  "qwen": {"enable_thinking": False}}
 
+
 def session_model():
     """Name of the model the latest JiuwenSwarm session ran on (its last context.usage record)."""
     name = None
@@ -23,6 +25,7 @@ def session_model():
     if not name:
         raise ValueError("the latest JiuwenSwarm session has no model record yet")
     return name
+
 
 def jiuwenswarm_models(text):
     """The model_client_config entries of config.yaml's models.defaults (PyYAML if present, else a plain scan)."""
@@ -43,6 +46,7 @@ def jiuwenswarm_models(text):
         clients.append(fields)
     return clients
 
+
 def env_file_values(path):
     """KEY=VALUE lines of a .env file (comments and blank lines skipped, surrounding quotes removed)."""
     values = {}
@@ -54,9 +58,11 @@ def env_file_values(path):
                 values[key.strip()] = value.strip().strip("'\"")
     return values
 
+
 def expand(value, env_file):
     """config.yaml values like ${BAILIAN_KEY}: filled from the process environment, else from JiuwenSwarm's .env.
-    A variable set in neither is an error, so a placeholder is never sent as a key."""
+    A variable set in neither is an error, so a placeholder is never sent as a key.
+    """
     if not isinstance(value, str) or "${" not in value:
         return value
     values = {**env_file_values(env_file), **os.environ}
@@ -71,9 +77,11 @@ def expand(value, env_file):
 
     return re.sub(r"\$\{([^}]+)\}", fill, value)
 
+
 def model_config(value):
     """A model config dict. "session" (or {"model": "session", ...overrides}) means: the model the JiuwenSwarm
-    session runs on, with its address and key from ~/.jiuwenswarm/config/config.yaml."""
+    session runs on, with its address and key from ~/.jiuwenswarm/config/config.yaml.
+    """
     overrides = dict(value) if isinstance(value, dict) else {}
     if value != "session" and overrides.get("model") != "session":
         return value
@@ -89,6 +97,7 @@ def model_config(value):
     return {"model": name, "base_url": expand(client["api_base"], env_file),
             "api_key": expand(client["api_key"], env_file), "extra_body": extra, **overrides}
 
+
 def resolve_models(config):
     config = dict(config)
     for role in ("producer", "judge", "art_judge", "evidence_model"):
@@ -96,16 +105,29 @@ def resolve_models(config):
             config[role] = model_config(config[role])
     return config
 
-VISION_PROBE = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAAgACADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDz+iiivmD9yCiiigAooooAKKKKAP/Z"  # a 32x32 red square
+VISION_PROBE = (  # a 32x32 red square
+    '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYn'
+    'KSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo'
+    'KCgoKCgoKCj/wAARCAAgACADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUF'
+    'BAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVW'
+    'V1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi'
+    '4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAEC'
+    'AxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVm'
+    'Z2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq'
+    '8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDz+iiivmD9yCiiigAooooAKKKKAP/Z'
+)
+
 
 def vision_cache_path():
     """Where probe results are kept: $REWARD_HOME/vision.json, default ~/.reward/vision.json."""
     return Path(os.environ.get("REWARD_HOME") or Path.home() / ".reward") / "vision.json"
 
+
 async def can_see(model, log=lambda message: None, notes=None):
     """Whether the model reads images: the config's "vision" if set, else a cached probe (name a color). An unclear
     answer or a failed call is tried once more; if it stays unclear, no pictures are sent this run and a warning
-    says so (nothing is cached, so the next run asks again)."""
+    says so (nothing is cached, so the next run asks again).
+    """
     if getattr(model, "vision", None) is not None:
         return bool(model.vision)
     path = vision_cache_path()
@@ -124,7 +146,9 @@ async def can_see(model, log=lambda message: None, notes=None):
                                       [("image", VISION_PROBE)])
         except Exception as error:  # noqa: BLE001 - an API that rejects images cannot see them
             problem = str(error)
-            if re.search(r"image|vision|multimodal", problem, re.I) and re.search(r"not support|unsupported", problem, re.I):
+            if re.search(r"image|vision|multimodal", problem, re.I) and re.search(
+                r"not support|unsupported", problem, re.I,
+            ):
                 cache[key] = False
                 break
             continue
@@ -146,9 +170,11 @@ async def can_see(model, log=lambda message: None, notes=None):
 
 ANSWER_LANGUAGE = ContextVar("reward_answer_language", default=None)
 
+
 def items(found, *keys):
     """The list a model reply holds under the first of `keys` it has; a reply that is itself a list (some models
-    drop the wrapping object) is taken as that list."""
+    drop the wrapping object) is taken as that list.
+    """
     if isinstance(found, list):
         return found
     if isinstance(found, dict):
@@ -157,16 +183,20 @@ def items(found, *keys):
                 return found[key]
     return []
 
+
 def is_chinese(text):
     return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
 
+
 def set_language(task):
     ANSWER_LANGUAGE.set("Chinese (简体中文)" if re.search(r"[\u4e00-\u9fff]", task or "") else "English")
+
 
 def resolve(value):
     if isinstance(value, str) and value.startswith("env:"):
         return os.environ.get(value[4:], "")
     return value
+
 
 class Model:
     """One JSON-answering model, streamed so a slow but working call is told apart from a stuck one.

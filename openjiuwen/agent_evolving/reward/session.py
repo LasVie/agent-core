@@ -1,5 +1,6 @@
 """Where JiuwenSwarm keeps its sessions: used to find the session's model ("session" in the config) and where the
-progress card file goes. Reward reads no trajectory."""
+progress card file goes. Reward reads no trajectory.
+"""
 
 import os
 from pathlib import Path

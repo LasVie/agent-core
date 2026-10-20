@@ -511,7 +511,8 @@ def _node_has_tool_calls(node: TrajectoryNode) -> bool:
 
 def user_request_of(nodes_by_subagent: Mapping[str, list[TrajectoryNode]]) -> list[tuple[str, str]]:
     """``(node_id, text)`` of the user's own messages: those the slicer kept from the whole session
-    (:class:`~openjiuwen.agent_evolving.attribution.snapshot.SlicedNodes`), else those in the given nodes."""
+    (:class:`~openjiuwen.agent_evolving.attribution.snapshot.SlicedNodes`), else those in the given nodes.
+    """
     nodes = getattr(nodes_by_subagent, "user_requests", None)
     if nodes is None:
         nodes = user_request_nodes(nodes_by_subagent)

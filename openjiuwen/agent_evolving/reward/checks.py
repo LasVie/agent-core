@@ -1,6 +1,7 @@
 """Evidence tools and the checks that use them: read, python (guarded) and browser.
 
-The evidence agent chooses checks; they run in the scratch workspace and only measure."""
+The evidence agent chooses checks; they run in the scratch workspace and only measure.
+"""
 
 import asyncio
 import base64
@@ -33,9 +34,11 @@ PYTHON_SECONDS = 60
 
 CHECK_OUTPUT = 6000      # characters kept from one check's output
 
+
 def cdn_file(url):
     """The bytes of a pinned CDN file: from the cache ($REWARD_HOME/cdn, default ~/.reward/cdn), else
-    downloaded once into it. None when it cannot be had (the page then sees a failed request, as offline)."""
+    downloaded once into it. None when it cannot be had (the page then sees a failed request, as offline).
+    """
     import hashlib
     import urllib.request
 
@@ -56,7 +59,8 @@ def cdn_file(url):
 async def run_experiment(product, experiment):
     """Run one experiment on the Product, offline. By default the page is served from a local http origin;
     "via": "file" opens it from disk with file://, as a user who double-clicks it would. Raises if it cannot
-    start."""
+    start.
+    """
     from playwright.async_api import async_playwright
 
     path = await asyncio.to_thread(Path(product).resolve)
@@ -97,7 +101,9 @@ async def run_experiment(product, experiment):
             if response is not None and not response.ok:  # the check failed, not the work
                 raise RuntimeError(f"the page did not load: HTTP {response.status} for {page_url}")
             await page.wait_for_timeout(500)
-            shots.append(("loaded", base64.b64encode(await page.screenshot(type="jpeg", quality=80, scale="css")).decode()))
+            shots.append(
+                ("loaded", base64.b64encode(await page.screenshot(type="jpeg", quality=80, scale="css")).decode())
+            )
             waited = 0
             for index, action in enumerate(experiment.get("actions") or []):
                 result = {"index": index, "action": action}
@@ -113,7 +119,9 @@ async def run_experiment(product, experiment):
                         await page.mouse.click(box["x"] + box["width"] * action.get("x", 0.5),
                                                box["y"] + box["height"] * action.get("y", 0.5))
                     elif kind == "drag" or kind == "wheel":   # rotate or zoom a 3D view, drag a piece
-                        box = await page.locator(action.get("selector") or "canvas, body").first.bounding_box(timeout=3000)
+                        box = await page.locator(action.get("selector") or "canvas, body").first.bounding_box(
+                            timeout=3000,
+                        )
                         from_x, from_y = action.get("from") or [0.5, 0.5]
                         await page.mouse.move(
                             box["x"] + box["width"] * float(from_x),
@@ -172,13 +180,16 @@ async def run_experiment(product, experiment):
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
+
 def natural(path):
     """Sort key that puts page2 before page10."""
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", str(path))]
 
+
 async def image_views(paths, max_images=8, width=1280):
     """[(label, base64 jpeg)] for delivered picture files (pages of a book, posters), each shown whole on a light
-    background, so a work made of images can be judged by eye like a page."""
+    background, so a work made of images can be judged by eye like a page.
+    """
     from playwright.async_api import async_playwright
 
     shots = []
@@ -198,6 +209,7 @@ async def image_views(paths, max_images=8, width=1280):
             await browser.close()
     return shots
 
+
 def available_tools(root, config):  # noqa: ARG001 - config kept for callers
     tools = ["read", "python"]
     if any(p.suffix.lower() in (".html", ".htm") for p in root.rglob("*") if INPUTS_DIR not in p.parts):
@@ -211,7 +223,8 @@ def available_tools(root, config):  # noqa: ARG001 - config kept for callers
 
 # Runs before a python check's own code (python -I -c GUARD script): an audit hook that refuses, for the rest of the
 # process, starting programs, network connections, native code (ctypes), changing files outside the work's scratch
-# copy (cwd) and the script's own folder, and reading files outside those and the Python installation. It stops a check from doing harm by mistake or by an
+# copy (cwd) and the script's own folder, and reading files outside those and the Python installation.
+# It stops a check from doing harm by mistake or by an
 # obvious attempt; it is not an operating-system sandbox (see the README).
 GUARD = r"""
 import os, sys
@@ -262,6 +275,7 @@ def check_environment():
                PYTHONDONTWRITEBYTECODE="1")
     return env
 
+
 async def run_process(arguments, cwd, seconds, temp=None):
     env = {**check_environment(), **({"TMPDIR": str(temp), "TEMP": str(temp), "TMP": str(temp)} if temp else {})}
     process = await asyncio.create_subprocess_exec(*arguments, cwd=cwd, env=env,
@@ -281,9 +295,11 @@ async def run_process(arguments, cwd, seconds, temp=None):
             "stdout": clip(out.decode("utf-8", "replace"), CHECK_OUTPUT),
             "stderr": clip(err.decode("utf-8", "replace"), CHECK_OUTPUT // 2)}
 
+
 def whole_lines(numbered):
     """Numbered lines, as many whole lines as fit in CHECK_OUTPUT: never a line cut in half, so the reader knows
-    exactly which lines it has seen."""
+    exactly which lines it has seen.
+    """
     out, size = [], 0
     for number, line in numbered:
         row = f"{number}: {line}"

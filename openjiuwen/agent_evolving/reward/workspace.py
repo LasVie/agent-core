@@ -11,9 +11,11 @@ from .files import extract_text
 
 INPUTS_DIR = "_inputs"   # used only when a batch caller explicitly supplies reference texts
 
+
 def copy_work_folder(source, root):
     """A folder whose work is its top-level page(s): copy the top-level files and what those pages link to, not
-    sibling folders such as other versions of the same work (v2/, baseline_v3/) kept in the same project folder."""
+    sibling folders such as other versions of the same work (v2/, baseline_v3/) kept in the same project folder.
+    """
     for item in source.iterdir():
         if item.is_file():
             shutil.copy2(item, root / item.name)
@@ -24,10 +26,12 @@ def copy_work_folder(source, root):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(asset, target)
 
+
 def make_workspace(products=(), texts=None, reference_texts=None):
     """A scratch copy of the work: products (files or directories) at the top. texts / reference_texts
     ({name: text}) are written as files (the latter under _inputs/), for batch runs on work that exists only as
-    text."""
+    text.
+    """
     sources = list(map(Path, products))
     for source in sources:
         if not source.is_file() and not source.is_dir():
@@ -56,16 +60,19 @@ def make_workspace(products=(), texts=None, reference_texts=None):
         target.write_text(body, encoding="utf-8")
     return root
 
+
 def safe_name(name):
     """A relative path that stays inside the workspace."""
     parts = [p for p in re.split(r"[\\\\/]+", str(name)) if p not in ("", ".", "..")]
     return Path(*[re.sub(r'[<>:"|?*]', "_", p) for p in parts]) if parts else Path("unnamed")
+
 
 def inside(root, relative):
     target = (root / str(relative)).resolve()
     if not str(target).startswith(str(root.resolve()) + os.sep) and target != root.resolve():
         raise ValueError(f"path leaves the workspace: {relative}")
     return target
+
 
 def workspace_files(root):
     """({deliverable name: text}, {input name: text}) of a workspace."""
@@ -84,6 +91,7 @@ def workspace_files(root):
 
 LINK = re.compile(r"""(?:src|href|poster|data-src)\s*=\s*["']([^"'#?]+)|url\(\s*["']?([^"')#?]+)""", re.I)
 CSS_IMPORT = re.compile(r"""@import\s*["']([^"'#?]+)""", re.I)
+
 
 def linked_files(page, max_files=200, max_bytes=200_000_000):
     """Local HTML/CSS dependencies under the page's folder, including linked stylesheets' assets.

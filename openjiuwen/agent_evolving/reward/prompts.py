@@ -1,6 +1,7 @@
 """Every prompt the pipeline sends, in one place.
 
-Each prompt asks for one JSON object; code parses it, models never report a score."""
+Each prompt asks for one JSON object; code parses it, models never report a score.
+"""
 
 CRITERIA_PROMPT = """You write evaluation criteria for an agent's work from its Task alone; you do not see the work.
 Write criteria:

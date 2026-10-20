@@ -12,7 +12,8 @@ the workspace and the tools, and gathers evidence for all of them:
 Full results stay on disk; the context grows only by what the agent asked to see. The agent stops by replying
 without a tool call, or at the round / time limit. Code then hands each criterion its own checks for judging.
 For a text-only reply, that reply is itself the work to inspect; a tool check is optional. An agent failure,
-or no check of a file-based deliverable, raises EvidenceError with the cause."""
+or no check of a file-based deliverable, raises EvidenceError with the cause.
+"""
 
 import asyncio
 import json
@@ -44,7 +45,8 @@ TOOL_BY_FIELD = (("actions", "browser"), ("page", "browser"), ("code", "python")
 
 def with_tool(check):
     """The check with its "tool" filled in from its fields when the model left it out (a "page" or "actions" means
-    browser, "code" python, "path" read)."""
+    browser, "code" python, "path" read).
+    """
     if check.get("tool"):
         return check
     tool = next((name for field, name in TOOL_BY_FIELD if check.get(field)), None)
@@ -57,7 +59,8 @@ class EvidenceError(RuntimeError):
 
 def pool_entry(route):
     """A Reward model route ({"model", "base_url", "api_key", "extra_body"?, "timeout"?}) as the agent-core
-    model entry DeepAgent takes; an entry given as such (e.g. by JiuwenSwarm) is used as it is."""
+    model entry DeepAgent takes; an entry given as such (e.g. by JiuwenSwarm) is used as it is.
+    """
     from openjiuwen.agent_teams.models.pool import ModelPoolEntry
 
     if isinstance(route, ModelPoolEntry):
@@ -68,7 +71,8 @@ def pool_entry(route):
                               metadata=dict(getattr(route, "metadata", None) or {}))
     return ModelPoolEntry(model_name=route["model"], api_key=resolve(route["api_key"]),
                           api_base_url=resolve(route["base_url"]), api_provider=route.get("provider", "OpenAI"),
-                          metadata={"client": {"timeout": float(route.get("timeout", 360)), "max_retries": 2},   # a stream cut mid-way is retried
+                          # A stream cut mid-way is retried.
+                          metadata={"client": {"timeout": float(route.get("timeout", 360)), "max_retries": 2},
                                     "request": dict(route.get("extra_body") or {})})
 
 
@@ -104,7 +108,8 @@ class EvidenceRun:
 
     def stalled(self, new):
         """Count run_checks calls that ran no new check (every check a repeat, or an empty or malformed list);
-        read_evidence is not counted. After IDLE_HINT the agent is told to stop, after IDLE_STOP the run is stopped."""
+        read_evidence is not counted. After IDLE_HINT the agent is told to stop, after IDLE_STOP the run is stopped.
+        """
         self.idle = 0 if new else self.idle + 1
         if self.idle >= IDLE_STOP:
             self.log(f"evidence agent stopped: {self.idle} tool calls in a row without a new check")
@@ -186,7 +191,8 @@ class EvidenceRun:
 
 def shown(facts):
     """What the agent sees of a check: no echo of its own code or browser actions (it wrote them), so the outcome
-    (each step's ok, probe value or error) is not cut off by the summary limit."""
+    (each step's ok, probe value or error) is not cut off by the summary limit.
+    """
     facts = {k: v for k, v in facts.items() if k != "code"}
     if isinstance(facts.get("actions"), list):
         facts["actions"] = [{k: v for k, v in a.items() if k != "action"} if isinstance(a, dict) else a
@@ -196,7 +202,8 @@ def shown(facts):
 
 def readable(check, serves, facts, labelled):
     """A saved check result as plain lines: the check, then each fact with multi-line values kept as lines, so
-    read_evidence can search and page through it."""
+    read_evidence can search and page through it.
+    """
     lines = [f"check: {json.dumps(check, ensure_ascii=False)}", f"criteria: {', '.join(serves)}",
              f"screenshots: {', '.join(label for label, _ in labelled) or '-'}"]
     for key, value in facts.items():
@@ -322,6 +329,7 @@ async def gather(criteria, ctx, route, log, rounds=ROUNDS, seconds=SECONDS):
             session = create_agent_session(session_id=run_id, card=agent.card)
             inputs = {"query": json.dumps(seed, ensure_ascii=False)}
             await session.pre_run(inputs=inputs)
+
             async def drain():
                 found = None
                 async with aclosing(agent.stream(inputs, session=session)) as outputs:

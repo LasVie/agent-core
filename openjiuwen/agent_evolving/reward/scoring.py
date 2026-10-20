@@ -10,8 +10,10 @@ FLOOR_WEIGHT = 0.5     # the rest goes to (proactive) challenge claims; floor me
 
 FLOOR_FAIL_CAP = 25    # any floor claim unmet caps the criterion here
 
+
 def is_floor(claim):
     return claim.get("level", "floor") == "floor"
+
 
 def score(criterion, statuses):
     """0-100 from claim statuses, computed in code.
@@ -39,10 +41,12 @@ def score(criterion, statuses):
         value = min(value, FLOOR_FAIL_CAP)
     return value
 
+
 def total(results):
     """0-100: the mean of the scored criteria; None when none could be scored."""
     scored = [r["score"] for r in results if r["score"] is not None]
     return round(sum(scored) / len(scored)) if scored else None
+
 
 def to_result(criterion, verdict, evidence):
     rows = {row.get("index"): row for row in items(verdict, "claims") if isinstance(row, dict)}
@@ -59,9 +63,11 @@ def to_result(criterion, verdict, evidence):
             "summary": summary if isinstance(summary, str) else "",
             "claims": claims, "evidence": evidence}
 
+
 def claim_gains(results):
     """{"<criterion id>#<index>": points the total would rise} for each claim not met (unknown claims included: what
-    showing it met would add)."""
+    showing it met would add).
+    """
     scored = [r for r in results if r["score"] is not None]
     gains = {}
     for r in scored:
