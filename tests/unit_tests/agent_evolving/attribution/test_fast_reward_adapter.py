@@ -81,8 +81,8 @@ def test_claims_become_dimensions_with_tiers_and_unknowns_are_counted() -> None:
     }
     assert [(d["requirement"], d["score"], d["tier"]) for d in payload["dimensions"]] == [  # what to fix first
         ("[要求] 外婆到达在 5 点以后", 0, "weak"),
-        ("[要求] 购物清单标出顺路时段", 50, "fair"),
-        ("[挑战] 预判师傅超时的应对", 0, "fair"),
+        ("[要求] 购物清单标出顺路时段", 75, "fair"),  # each score in its tier's band, as the frontend colours it
+        ("[挑战] 预判师傅超时的应对", 75, "fair"),
         ("[要求] 每段时间都排得开", 100, "perfect"),
     ]
     assert payload["dimensions"][0]["comment"] == "16:55 到，早于 5 点"
@@ -203,9 +203,9 @@ async def test_fast_reward_diagnosis_keeps_failed_tool_calls(monkeypatch: Any, t
     assert seen["artifacts"] == [str(tmp_path / "schedule.md")]  # a missing file is left out
     assert seen["txt_response"] == "最终答复" and seen["user_note"] == "外婆的时间要核对"
     assert result.signal_mode == "reward" and result.reward_overall.total_score == 72
-    # tiers follow each claim's status, not a score band (a partial requirement scores 50 yet is fair)
+    # tiers follow each claim's status, and each score sits in its tier's band (>= 90 / >= 75 / else)
     assert [s.tier for s in result.signals] == ["weak", "fair", "fair", "perfect", "uncertain", "uncertain"]
-    assert [s.score for s in result.signals[:4]] == [0, 50, 0, 100]
+    assert [s.score for s in result.signals[:4]] == [0, 75, 75, 100]
     # the failed tool call and the user's follow-up still reach attribution
     assert [s.signal_id for s in result.signals[-2:]] == [tool_error.signal_id, complaint.signal_id]
     assert result.run_meta["process_signals_kept"] == 2

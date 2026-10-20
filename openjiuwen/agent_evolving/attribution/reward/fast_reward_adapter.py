@@ -33,7 +33,10 @@ DEFAULT_DEADLINE_SECONDS = 600
 
 _REQUIREMENT_TIER = {"met": "perfect", "partial": "fair", "unmet": "weak"}
 _CHALLENGE_TIER = {"met": "perfect", "partial": "fair", "unmet": "fair"}
-_CLAIM_SCORE = {"met": 100, "partial": 50, "unmet": 0}
+# A claim's score is shown beside its tier, and the frontend colours a dimension by score band
+# (>= 90 perfect, >= 75 fair, else weak): each score sits in the band of the claim's tier.
+_REQUIREMENT_SCORE = {"met": 100, "partial": 75, "unmet": 0}
+_CHALLENGE_SCORE = {"met": 100, "partial": 80, "unmet": 75}
 _TIER_ORDER = {"weak": 0, "fair": 1, "perfect": 2}
 _LABELS = {
     "zh": {
@@ -291,7 +294,7 @@ def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[s
                 "category": str(item.get("category_name") or item.get("category_id") or "-"),
                 "requirement": f"[{labels['challenge' if challenge else 'floor']}] {item.get('rubric', '')}{mark}",
                 "comment": str(item.get("comment") or item.get("rubric") or "-"),
-                "score": _CLAIM_SCORE[status],
+                "score": (_CHALLENGE_SCORE if challenge else _REQUIREMENT_SCORE)[status],
                 "tier": tier,
                 "related_signal_ids": [],
             }

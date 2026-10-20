@@ -264,8 +264,6 @@ async def run_diagnosis(
     run_meta: dict[str, Any] = {"keyword": keyword_meta}
     if task_parse.user_feedback is not None and keyword_meta.get("mode") == "rule":
         signals, run_meta["user_messages_not_feedback"] = _keep_user_feedback(signals, task_parse.user_feedback)
-    if not signals:
-        signals = [_no_problem_signal(language)]
     has_artifacts = bool(task_parse.message_artifacts or task_parse.file_artifacts)
     if not has_artifacts:
         run_meta["reward"] = {"skipped": "no artifacts"}
@@ -366,21 +364,6 @@ def _keep_user_feedback(signals: list[DiagnosticSignal], feedback: list[str]) ->
     texts = {text[:SIGNAL_TEXT_LIMIT] for text in feedback}
     kept = [signal for signal in signals if signal.source != SignalSource.KEYWORD_USER or signal.text in texts]
     return kept, len(signals) - len(kept)
-
-
-_NO_PROBLEM_TEXT = {
-    "zh": "未发现过程问题：选中范围内没有失败的工具调用，用户也没有追加消息。",
-    "en": "No process problem found: no failed tool call and no follow-up message from the user in the selection.",
-}
-
-
-def _no_problem_signal(language: str) -> DiagnosticSignal:
-    """A ``perfect`` signal standing for "nothing found", so an empty run ends as no problem, not as an error.
-
-    Attribution skips perfect signals, so the run completes with no root cause.
-    """
-    text = _NO_PROBLEM_TEXT["en" if str(language).lower().startswith("en") else "zh"]
-    return DiagnosticSignal.create(text, source=SignalSource.KEYWORD_TOOL, tier="perfect")
 
 
 def _reward_diagnosis(

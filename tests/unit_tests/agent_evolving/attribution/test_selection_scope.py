@@ -219,18 +219,15 @@ def test_no_reply_is_made_up_once_the_round_is_decided() -> None:
     assert final_reply(parse, _session()) == ""
 
 
-async def test_no_signal_is_no_problem() -> None:
+async def test_no_signal_is_left_to_the_host() -> None:
     parse = TaskParseResult(task_description="排周六", message_artifacts=[], file_artifacts=[], file_candidates=[])
     nodes = {LEADER: [_node(LEADER, 2, 20, content="团队已组建")]}
     result = await run_diagnosis(
         run_id="r", language="zh", nodes_by_subagent=nodes, user_attribution="", task_parse=parse
     )
-    assert [signal.tier for signal in result.signals] == ["perfect"]
-    assert result.signals[0].text.startswith("未发现过程问题")
-    outcome = await run_attribution(
-        model=object(), nodes_by_subagent=nodes, signals=result.signals, task_description="排周六"
-    )
-    assert outcome.status == "success" and outcome.skipped_signal_ids == [result.signals[0].signal_id]
+    assert result.signals == []  # JiuwenSwarm ends such a run as "nothing to attribute", attribution skipped
+    outcome = await run_attribution(model=object(), nodes_by_subagent=nodes, signals=[], task_description="排周六")
+    assert outcome.status == "success" and outcome.completed
 
 
 async def _invoke(tool: Any, **inputs: Any) -> dict[str, Any]:
