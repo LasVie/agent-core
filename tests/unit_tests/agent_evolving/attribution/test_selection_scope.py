@@ -152,6 +152,29 @@ async def test_only_the_leader_at_work_in_the_round_counts() -> None:
     assert (await run_task_parse(sliced, "zh", _Llm(round_id=f"{LEADER}:4"))).delivery_round_selected is False
 
 
+async def test_the_leader_starting_the_round_is_not_the_delivery() -> None:
+    nodes = _session()
+    nodes[LEADER].append(_node(LEADER, 11, 42, calls=[{"name": "create_task", "arguments": "{}"}]))
+    nodes[LEADER].sort(key=lambda node: node.start_ts_ns)
+    sliced = slice_nodes_by_range(nodes, [(LEADER, 38, 54)])  # the leader dispatching, not handing over
+    parse = await run_task_parse(sliced, "zh", _Llm())
+    assert parse.delivery_round_selected is False and parse.file_artifacts == []
+
+
+async def test_a_single_agent_writing_its_deliverable_hands_it_over() -> None:
+    main = "main"
+    nodes = {
+        main: [
+            _node(main, 1, 10, "user", "写 report.md", kind="main_agent"),
+            _node(main, 2, 20, calls=_write("/w/report.md"), kind="main_agent"),
+            _node(main, 3, 30, content="report.md 写好了" + LONG, kind="main_agent"),
+        ]
+    }
+    sliced = slice_nodes_by_range(nodes, [(main, 15, 25)])  # the write, not the reply
+    parse = await run_task_parse(sliced, "zh", _Llm(files=["/w/report.md"]))
+    assert parse.delivery_round_selected is True and parse.file_artifacts == ["/w/report.md"]
+
+
 async def test_a_member_in_the_delivery_round_is_a_look_at_the_process() -> None:
     sliced = slice_nodes_by_range(_session(), [(MEMBER, 40, 60), (LEADER, 0, 36)])
     parse = await run_task_parse(sliced, "zh", _Llm())

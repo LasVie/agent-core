@@ -928,12 +928,19 @@ def _requirements(calls: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
     return items
 
 
+def _sends_file(node: TrajectoryNode) -> bool:
+    return any(
+        str(call.get("name") or call.get("function", {}).get("name") or "") == _R0_TOOL for call in node.tool_calls
+    )
+
+
 @dataclass(frozen=True)
 class DeliveryRound:
     """The round in which the task's result was last delivered: from a user message to the next one.
 
-    Only this round's deliverables are reviewed, and only when the selection holds the leader (or the main
-    agent) at work in it -- the user's own message does not count: the leader hands the result to the user.
+    Only this round's deliverables are reviewed, and only when the selection holds the step in which the
+    leader (or the main agent) handed them over: its last reply, sending a file, or writing a deliverable
+    itself.  Selecting the start of the round, or only team members, is a look at the process.
     """
 
     start: TrajectoryNode
@@ -944,12 +951,28 @@ class DeliveryRound:
     def holds(self, node: TrajectoryNode) -> bool:
         return node.start_ts_ns >= self.start.start_ts_ns and (self.end_ns is None or node.start_ts_ns < self.end_ns)
 
-    def lead_selected(self, nodes_by_subagent: Mapping[str, list[TrajectoryNode]]) -> bool:
-        return any(
-            node.kind in _LEAD_KINDS and node.role != "user" and self.holds(node)
-            for nodes in nodes_by_subagent.values()
-            for node in nodes
-        )
+    def delivery_nodes(self, reported: Sequence[str] = ()) -> set[str]:
+        """The leader's steps that hand the result over in this round.
+
+        Its last reply, any call sending a file to the user, and its own last write of a reported
+        deliverable file (a single agent writes its files itself).
+        """
+        steps = {node_id for node_id, _ in self.reply()}
+        for nodes in self.whole.values():
+            for node in nodes:
+                if node.kind in _LEAD_KINDS and self.holds(node) and _sends_file(node):
+                    steps.add(node.node_id)
+        lead = {node.node_id for nodes in self.whole.values() for node in nodes if node.kind in _LEAD_KINDS}
+        written = last_writes(self.whole, self.workspace)
+        steps.update(written[path] for path in self.files(list(reported)) if written.get(path) in lead)
+        return steps
+
+    def lead_selected(
+        self, nodes_by_subagent: Mapping[str, list[TrajectoryNode]], reported: Sequence[str] = ()
+    ) -> bool:
+        """Whether the selection holds a step in which the leader handed the result over (see ``delivery_nodes``)."""
+        steps = self.delivery_nodes(reported)
+        return any(node.node_id in steps for nodes in nodes_by_subagent.values() for node in nodes)
 
     def replies(self) -> list[TrajectoryNode]:
         rows = [
@@ -1137,7 +1160,7 @@ async def run_task_parse(
         else:
             delivery = delivery_round(whole, workspace, named_round)
             round_start = delivery.start.node_id if delivery else None
-            round_selected = delivery is not None and delivery.lead_selected(nodes_by_subagent)
+            round_selected = delivery is not None and delivery.lead_selected(nodes_by_subagent, file_artifacts)
             if round_selected:
                 message_artifacts = delivery.reply()
                 file_artifacts = delivery.files(file_artifacts)
