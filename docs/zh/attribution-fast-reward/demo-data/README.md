@@ -48,10 +48,11 @@ python3 import_demo.py web_1a152586c02_saturday.tar.gz --runtime <你的任务�
 
 | 框选 | 预期 |
 |---|---|
-| 全部轨迹 | 评最终版：`schedule-v2.md`、`wechat-message-v2.md` 和 15:57:39 的最终回复；早期的 `schedule.md`、`wechat-message.md` 不评。过程信号里有用户的路径抱怨 |
+| 全部轨迹 | 评最后交付的那一轮（15:56:09 起）：`schedule-v2.md`、`wechat-message-v2.md` 和 15:57:39 的最终回复；早期的 `schedule.md`、`wechat-message.md` 不评。过程信号里有用户的路径抱怨；交给 Fast Reward 的任务带「当前有效的需求清单」，「给出绝对路径」标为用户纠正过 |
 | 只框中间：leader 12:08–12:43、schedule-planner 12:43:40–12:44:53、message-writer 12:43:35–12:44:06 | 「消息 0 · 文件 0」：框里的 `schedule.md` 后来被 `schedule-v2.md` 取代；不跑 Fast Reward，只看过程，不出产物改进 |
 | 只框中间：leader 12:42:55–15:56:12、两个成员 12:43–12:45 | 同上；12:45 的第一轮团队完成回复已被 15:57 的重做取代，不算交付物 |
-| 框到最后一轮的一部分：message-writer 15:57:00–15:57:22，其余随意 | 只评 `wechat-message-v2.md`，Fast Reward 的任务后面附「本次评估范围」，其他交付物标为不在范围内 |
+| 只框成员在最后一轮的部分：message-writer 15:57:00–15:57:22 | 只看过程：最后一轮里没有框到 leader，不评交付物 |
+| 框到 leader 在最后一轮的部分：leader 15:56:30–15:57:40 | 评最终交付：v2 完成回复、`schedule-v2.md`、`wechat-message-v2.md`（以任务解析报的文件为准） |
 
 打包时已有的诊断结果也在包里，导入后在前端的诊断记录里能直接看到，不必重跑。
 
