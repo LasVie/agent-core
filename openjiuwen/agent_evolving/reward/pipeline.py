@@ -418,7 +418,9 @@ async def score_workspace(task, root, config, txt_response="", criteria=None, lo
     deliverable, inputs = workspace_files(root)
     tools = checks.available_tools(root, config)
     # work used in a browser is judged by using it, as its user would: its source is shown to no one
-    readable = {n: t for n, t in deliverable.items() if "browser" not in tools or not n.lower().endswith(checks.PAGE_CODE)}
+    readable = {
+        n: t for n, t in deliverable.items() if "browser" not in tools or not n.lower().endswith(checks.PAGE_CODE)
+    }
     evidence = text_evidence(task, readable, response, inputs)
     if readable != deliverable:
         evidence["deliverable"] = (bundle(readable) + "\n" if readable else "") + "(page source is not shown: " \
