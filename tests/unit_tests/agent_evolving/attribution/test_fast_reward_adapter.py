@@ -196,7 +196,10 @@ async def test_fast_reward_diagnosis_keeps_failed_tool_calls(monkeypatch: Any, t
         model=object(),
         status_sink=SimpleNamespace(report=events.append),
     )
-    assert seen["task"] == "帮我安排周六：外婆 5 点以后有空"  # the user's words, not the summary
+    # the reviewer's note on top, then the user's words (not the summary)
+    assert seen["task"].startswith("## 用户补充（最高优先级") and seen["task"].endswith(
+        "帮我安排周六：外婆 5 点以后有空"
+    )
     assert seen["artifacts"] == [str(tmp_path / "schedule.md")]  # a missing file is left out
     assert seen["txt_response"] == "最终答复" and seen["user_note"] == "外婆的时间要核对"
     assert result.signal_mode == "reward" and result.reward_overall.total_score == 72

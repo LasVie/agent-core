@@ -39,7 +39,8 @@ item is largest or smallest, an expected answer): say what must hold ("the avera
 count") and let the checks compute it, since a wrong value in a claim makes the judge score against a wrong answer.
 A value the work may choose (a start time, a route, an order, a quantity) is never the claim: write the constraint
 the choice must satisfy ("arrives before the start, counting the drive"), so any choice that satisfies it is met.
-When the Task ends with a review scope, write claims only about the deliverables in that scope. Each claim is one short sentence of at most 20 words and checks one property; never join two (write "the totals
+When the Task has a current requirement list, every item on it gets a floor claim, and a reviewer's note above it
+wins any conflict with the rest. Each claim is one short sentence of at most 20 words and checks one property; never join two (write "the totals
 match the source" and "the table is sorted by date" as two claims, not one).
 When the input has an "Earlier evaluation" section, the work has been improved since then: keep its floor claims
 with the same meaning (the Task has not changed); never repeat a challenge claim the work met; keep an unmet one

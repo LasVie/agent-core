@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""A selection that leaves the final deliverables out is a look at the process, not at the result."""
+"""Deliverables are reviewed only when the selection holds the leader in the round that last delivered them."""
 
 from __future__ import annotations
 
@@ -11,16 +11,17 @@ import pytest
 
 from openjiuwen.agent_evolving.attribution.model import DiagnosticSignal, SignalSource, TaskParseResult
 from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode
-from openjiuwen.agent_evolving.attribution.reward.fast_reward_adapter import final_reply, review_scope
+from openjiuwen.agent_evolving.attribution.reward.fast_reward_adapter import final_reply, review_task, to_reward_payload
 from openjiuwen.agent_evolving.attribution.run import NodeBackedRuntime, run_attribution, run_diagnosis
 from openjiuwen.agent_evolving.attribution.snapshot import slice_nodes_by_range
-from openjiuwen.agent_evolving.attribution.task_parse import build_after_selection_block, last_writes, run_task_parse
+from openjiuwen.agent_evolving.attribution.task_parse import delivery_round, last_writes, run_task_parse
 from openjiuwen.agent_evolving.attribution.tools import build_attribution_tools
 
 pytestmark = pytest.mark.asyncio
 
 LEADER = "team-member:s:t:team-leader"
 MEMBER = "team-member:s:t:writer"
+LONG = "，时间表、购物清单和给外婆的消息都已经整理好，路上的时间也都算进去了，请查看文件"
 
 
 def _node(
@@ -45,6 +46,11 @@ def _node(
     )
 
 
+def _said(seq: int, ts: int, text: str) -> TrajectoryNode:
+    envelope = json.dumps({"type": "user input", "content": text}, ensure_ascii=False)
+    return _node(LEADER, seq, ts, "user", f"你收到一条消息：\n{envelope}")
+
+
 def _write(path: str) -> list[dict[str, Any]]:
     return [{"name": "write_file", "arguments": json.dumps({"file_path": path, "content": "x"})}]
 
@@ -54,87 +60,163 @@ def _send(path: str) -> list[dict[str, Any]]:
 
 
 def _session() -> dict[str, list[TrajectoryNode]]:
-    request = json.dumps({"type": "user input", "content": "排周六，写 schedule.md 和给外婆的消息"}, ensure_ascii=False)
+    """Four rounds: a first version, a question about the path, a team redo, and a thank-you."""
     return {
         LEADER: [
-            _node(LEADER, 1, 10, "user", f"你收到一条消息：\n{request}"),
-            _node(LEADER, 2, 20, content="团队已组建"),
-            _node(LEADER, 3, 40, calls=_write("/w/schedule.md")),
-            _node(LEADER, 4, 48, content="初稿已写好"),
-            _node(LEADER, 5, 80, calls=_write("/w/schedule.md")),  # rewritten after the selection
-            _node(LEADER, 6, 85, calls=_send("/w/message.md")),  # sending is not writing
-            _node(LEADER, 7, 90, content="都做好了：schedule.md 与 message.md"),
+            _said(1, 10, "排周六，写 schedule.md"),
+            _node(LEADER, 2, 20, calls=_write("/w/schedule.md")),
+            _node(LEADER, 3, 25, content="schedule.md 写好了" + LONG),
+            _said(4, 30, "没有路径我怎么知道去哪里看文件"),
+            _node(LEADER, 5, 35, content="路径是 /w/schedule.md"),
+            _said(6, 40, "用 agent team 重新做一份"),
+            _node(LEADER, 7, 55, calls=_send("/w/schedule-v2.md")),
+            _node(LEADER, 8, 60, content="重做好了：schedule-v2.md" + LONG),
+            _said(9, 70, "谢谢"),
+            _node(LEADER, 10, 72, content="不客气"),
         ],
         MEMBER: [
-            _node(MEMBER, 1, 30, "user", "请写给外婆的消息", kind="team_member"),
-            _node(MEMBER, 2, 45, calls=_write("/w/message.md"), kind="team_member"),
-            _node(MEMBER, 3, 46, content="消息已写好，交给 leader", kind="team_member"),
+            _node(MEMBER, 1, 45, "user", "请重做时间表", kind="team_member"),
+            _node(MEMBER, 2, 50, calls=_write("/w/schedule-v2.md"), kind="team_member"),
+            _node(MEMBER, 3, 52, calls=_write("/w/test.js"), kind="team_member"),
+            _node(MEMBER, 4, 53, content="写好了，交给 leader", kind="team_member"),
         ],
     }
 
 
 class _Llm:
+    def __init__(self, round_id: str | None = None, files: list[str] | None = None, **extra: Any) -> None:
+        self._round = round_id
+        self._files = files if files is not None else ["/w/schedule.md", "/w/schedule-v2.md"]
+        self._extra = extra
+        self.digest = ""
+
     async def invoke(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any) -> Any:
-        del messages, tools, kwargs
-        return {
-            "tool_calls": [
-                {"name": "report_task_description", "arguments": json.dumps({"task": "排周六"})},
-                {
-                    "name": "report_message_artifacts",
-                    "arguments": json.dumps({"node_ids": [f"{MEMBER}:3", f"{LEADER}:4"]}),
-                },
-                {
-                    "name": "report_file_artifacts",
-                    "arguments": json.dumps({"paths": ["/w/schedule.md", "/w/message.md"]}),
-                },
-            ]
-        }
+        del tools, kwargs
+        self.digest = messages[1]["content"]
+        calls = [
+            {"name": "report_task_description", "arguments": json.dumps({"task": "排周六"})},
+            {"name": "report_message_artifacts", "arguments": json.dumps({"node_ids": [f"{LEADER}:3"]})},
+            {"name": "report_file_artifacts", "arguments": json.dumps({"paths": self._files})},
+        ]
+        if self._round is not None:
+            calls.append({"name": "report_delivery_round", "arguments": json.dumps({"node_id": self._round})})
+        for name, arguments in self._extra.items():
+            calls.append({"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)})
+        return {"tool_calls": calls}
 
 
-def test_last_writes_skip_sending_a_file() -> None:
-    assert last_writes(_session()) == {"/w/schedule.md": f"{LEADER}:5", "/w/message.md": f"{MEMBER}:2"}
+def test_last_writes_follow_time_across_subjects_and_skip_sending() -> None:
+    assert last_writes(_session()) == {
+        "/w/schedule.md": f"{LEADER}:2",
+        "/w/schedule-v2.md": f"{MEMBER}:2",  # sending it at 55 is not a write
+        "/w/test.js": f"{MEMBER}:3",
+    }
 
 
-def test_last_writes_follow_time_across_subjects() -> None:
-    nodes = _session()
-    nodes[MEMBER].append(_node(MEMBER, 4, 95, calls=_write("/w/schedule.md"), kind="team_member"))
-    assert last_writes(nodes)["/w/schedule.md"] == f"{MEMBER}:4"  # the member rewrote it after the leader
-
-
-async def test_task_parse_keeps_only_deliverables_whose_final_version_is_selected() -> None:
-    sliced = slice_nodes_by_range(_session(), [(LEADER, 10, 50), (MEMBER, 30, 50)])
-    result = await run_task_parse(sliced, "zh", _Llm())
-    assert result.file_artifacts == ["/w/message.md"]  # its last write (by the member) is selected
-    assert result.deliverables_outside_selection == ["/w/schedule.md"]  # rewritten at 80, outside
-    assert result.message_artifacts == [(f"{LEADER}:4", "初稿已写好")]  # a member's message is team-internal
-    assert result.selection_partial is True
-    assert result.run_meta["messages_dropped"] == 1
-    assert result.run_meta["files_outside_selection"] == 1
-
-
-async def test_task_parse_on_the_whole_session_keeps_everything() -> None:
+def test_the_delivery_round_skips_a_closing_thank_you() -> None:
     whole = _session()
-    sliced = slice_nodes_by_range(whole, [(LEADER, 0, 100), (MEMBER, 0, 100)])
-    result = await run_task_parse(sliced, "zh", _Llm())
-    assert result.file_artifacts == ["/w/schedule.md", "/w/message.md"]
-    assert result.deliverables_outside_selection == [] and result.selection_partial is False
+    assert delivery_round(whole).start.node_id == f"{LEADER}:6"  # "谢谢" wrote nothing and got "不客气"
+    assert delivery_round(whole, named=f"{LEADER}:4").start.node_id == f"{LEADER}:6"  # a file sent decides
+    assert delivery_round(whole, named=f"{LEADER}:9").start.node_id == f"{LEADER}:6"  # it delivered nothing
+    assert delivery_round({LEADER: [_node(LEADER, 1, 10, content="hi")]}) is None  # no user message
 
 
-def test_review_scope_names_what_is_reviewed() -> None:
+async def test_the_leader_in_the_delivery_round_reviews_its_final_deliverables() -> None:
+    sliced = slice_nodes_by_range(_session(), [(LEADER, 38, 58)])  # the leader in the redo, not its last reply
+    parse = await run_task_parse(sliced, "zh", _Llm())
+    assert parse.delivery_round == f"{LEADER}:6" and parse.delivery_round_selected is True
+    assert parse.message_artifacts == [(f"{LEADER}:8", "重做好了：schedule-v2.md" + LONG)]  # the round's last reply
+    assert parse.file_artifacts == ["/w/schedule-v2.md"]  # schedule.md is the first round's version
+    assert "/w/schedule-v2.md" in [path for path, _, _ in parse.file_candidates]  # from the whole session
+
+
+def test_a_named_round_wins_over_a_later_side_question() -> None:
+    whole = _session()
+    whole[LEADER][-2:] = [
+        _said(9, 70, "顺便问下电影院在哪"),
+        _node(LEADER, 10, 72, content="城东万达影城" + LONG + LONG),
+    ]
+    assert delivery_round(whole).start.node_id == f"{LEADER}:6"  # the redo still sent a file
+    whole[LEADER] = [node for node in whole[LEADER] if node.node_id != f"{LEADER}:7"]
+    whole[MEMBER] = whole[MEMBER][:1]  # now no round after the first wrote or sent a file
+    assert delivery_round(whole).start.node_id == f"{LEADER}:1"
+    whole[LEADER][1:2] = []  # nor did the first: the rule takes the last long reply, the side question
+    assert delivery_round(whole).start.node_id == f"{LEADER}:9"
+    assert delivery_round(whole, named=f"{LEADER}:6").start.node_id == f"{LEADER}:6"  # the model knows better
+
+
+async def test_only_the_leader_at_work_in_the_round_counts() -> None:
+    sliced = slice_nodes_by_range(_session(), [(LEADER, 36, 41)])  # the redo request and nothing more
+    assert (await run_task_parse(sliced, "zh", _Llm())).delivery_round_selected is False  # only the user's message
+    sliced = slice_nodes_by_range(_session(), [(LEADER, 30, 36)])  # the leader answering the path question
+    assert (await run_task_parse(sliced, "zh", _Llm(round_id=f"{LEADER}:4"))).delivery_round_selected is False
+
+
+async def test_a_member_in_the_delivery_round_is_a_look_at_the_process() -> None:
+    sliced = slice_nodes_by_range(_session(), [(MEMBER, 40, 60), (LEADER, 0, 36)])
+    parse = await run_task_parse(sliced, "zh", _Llm())
+    assert parse.delivery_round_selected is False
+    assert parse.message_artifacts == [] and parse.file_artifacts == []
+
+
+async def test_the_model_names_the_round() -> None:
+    sliced = slice_nodes_by_range(_session(), [(LEADER, 0, 26)])  # only the first round
+    parse = await run_task_parse(sliced, "zh", _Llm(round_id=f"{LEADER}:1"))  # a file sent later decides
+    assert parse.run_meta["delivery_round_named"] == f"{LEADER}:1"
+    assert parse.delivery_round_selected is False and parse.file_artifacts == []
+    whole = slice_nodes_by_range(_session(), [(LEADER, 0, 100), (MEMBER, 0, 100)])
+    parse = await run_task_parse(whole, "zh", _Llm(round_id=f"{LEADER}:6"))
+    assert parse.delivery_round_selected is True and parse.file_artifacts == ["/w/schedule-v2.md"]
+
+
+async def test_requirements_are_parsed() -> None:
+    whole = slice_nodes_by_range(_session(), [(LEADER, 0, 100)])
+    items = [{"text": "写 schedule.md", "corrected": False}, {"text": "回复里给出文件的绝对路径", "corrected": True}]
+    parse = await run_task_parse(whole, "zh", _Llm(report_requirements={"items": items + ["写 schedule.md"]}))
+    assert parse.requirements == items  # deduplicated; a bare string counts as an uncorrected item
+    assert parse.run_meta["requirements"] == 2
+
+
+def test_review_task_puts_the_note_first_and_corrections_at_the_top_of_the_list() -> None:
     parse = TaskParseResult(
         task_description="排周六",
         message_artifacts=[],
-        file_artifacts=["/w/message.md"],
+        file_artifacts=[],
         file_candidates=[],
-        deliverables_outside_selection=["/w/schedule.md"],
-        selection_partial=True,
+        user_request="排周六，写 schedule.md\n\n没有路径我怎么知道去哪里看文件",
+        requirements=[{"text": "写 schedule.md", "corrected": False}, {"text": "给出绝对路径", "corrected": True}],
     )
-    assert final_reply(parse, _session()) == ""  # no fallback to a progress message in a partial selection
-    scope = review_scope(parse, ["/w/message.md"], "", "zh")
-    assert "message.md" in scope.splitlines()[0]
-    assert "不评估回复" in scope and "schedule.md" in scope.splitlines()[-1]
-    whole = TaskParseResult(task_description="排周六", message_artifacts=[], file_artifacts=[], file_candidates=[])
-    assert review_scope(whole, ["/w/a.md"], "回复", "zh") == ""  # the whole session needs no scope
+    task = review_task(parse, "外婆其实 5 点半才有空", "zh")
+    sections = task.split("\n\n")
+    assert sections[0].startswith("## 用户补充（最高优先级") and sections[0].endswith("外婆其实 5 点半才有空")
+    assert sections[1].splitlines()[1:] == ["1. 给出绝对路径（用户纠正过）", "2. 写 schedule.md"]
+    assert sections[2].startswith("## 用户原话")
+    bare = TaskParseResult(task_description="排周六", message_artifacts=[], file_artifacts=[], file_candidates=[])
+    assert review_task(bare, "", "zh") == "排周六"  # nothing to add: the task as before
+
+
+def test_the_reviewers_note_comes_first_within_a_tier() -> None:
+    item = {"category_id": "plan", "category_name": "日程", "type": "floor", "status": "unmet"}
+    payload = to_reward_payload(
+        {
+            "total": {"score": 40, "summary": "-"},
+            "sub_category_items": [
+                {**item, "rubric": "购物顺路"},
+                {**item, "rubric": "外婆 5 点半后到", "from_user_note": True},
+            ],
+        }
+    )
+    assert [d["requirement"] for d in payload["dimensions"]] == [
+        "[要求] 外婆 5 点半后到（用户补充）",
+        "[要求] 购物顺路",
+    ]
+
+
+def test_no_reply_is_made_up_once_the_round_is_decided() -> None:
+    parse = TaskParseResult(
+        task_description="排周六", message_artifacts=[], file_artifacts=[], file_candidates=[], delivery_round="x"
+    )
+    assert final_reply(parse, _session()) == ""
 
 
 async def test_no_signal_is_no_problem() -> None:
@@ -169,165 +251,23 @@ async def test_no_artifact_improvement_when_no_deliverable_was_reviewed() -> Non
     assert (await _invoke(tools["check_attribution_complete"]))["all_done"] is True
 
 
-def test_outside_block_lists_what_the_selection_leaves_out_after_it_began() -> None:
-    sliced = slice_nodes_by_range(_session(), [(LEADER, 10, 50), (MEMBER, 40, 50)])
-    block = build_after_selection_block(sliced)
-    assert block.startswith("## 框选之外的后续进展")
-    lines = [line.split("] ", 1)[1] for line in block.splitlines()[1:]]  # drop the clock
-    assert lines == [
-        "写文件: /w/schedule.md",  # leader:5 at 80; sending message.md at 85 is not a write
-        "给用户的回复: 都做好了：schedule.md 与 message.md",
-    ]  # the member's dispatch at 30 is left out too, but it is neither the user's message nor a reply
-    whole = slice_nodes_by_range(_session(), [(LEADER, 0, 100), (MEMBER, 0, 100)])
-    assert build_after_selection_block(whole) == ""  # nothing left out
-    assert build_after_selection_block(_session()) == ""  # a plain dict knows no session
-
-
-def test_outside_block_covers_gaps_between_windows() -> None:
-    nodes = _session()
-    nodes[LEADER].append(_node(LEADER, 10, 60, content="第一轮做完了"))  # between the two windows
-    nodes[LEADER].sort(key=lambda node: node.start_ts_ns)
-    sliced = slice_nodes_by_range(nodes, [(LEADER, 10, 50), (MEMBER, 70, 100)])
-    block = build_after_selection_block(sliced)
-    assert "给用户的回复: 第一轮做完了" in block  # before the latest end, yet outside the selection
-
-
-class _FeedbackLlm:
-    def __init__(self, feedback_ids: list[str] | None) -> None:
-        self._ids = feedback_ids
-        self.digest = ""
-
-    async def invoke(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any) -> Any:
-        del tools, kwargs
-        self.digest = messages[1]["content"]
-        calls = [{"name": "report_task_description", "arguments": json.dumps({"task": "排周六"})}]
-        if self._ids is not None:
-            calls.append({"name": "report_user_feedback", "arguments": json.dumps({"node_ids": self._ids})})
-        return {"tool_calls": calls}
-
-
-def _with_follow_ups() -> dict[str, list[TrajectoryNode]]:
-    nodes = _session()
-
-    def said(seq: int, ts: int, text: str) -> TrajectoryNode:
-        envelope = json.dumps({"type": "user input", "content": text}, ensure_ascii=False)
-        return _node(LEADER, seq, ts, "user", f"你收到一条消息：\n{envelope}")
-
-    nodes[LEADER] += [said(8, 92, "没有路径我怎么知道去哪里看文件"), said(9, 94, "用 agent team 重新做一份")]
-    nodes[LEADER].sort(key=lambda node: node.start_ts_ns)
-    return nodes
-
-
 async def test_only_feedback_follow_ups_stay_process_signals() -> None:
-    sliced = slice_nodes_by_range(_with_follow_ups(), [(LEADER, 0, 100)])
-    llm = _FeedbackLlm([f"{LEADER}:8"])
-    parse = await run_task_parse(sliced, "zh", llm)
+    sliced = slice_nodes_by_range(_session(), [(LEADER, 0, 100)])
+    parse = await run_task_parse(sliced, "zh", _Llm(report_user_feedback={"node_ids": [f"{LEADER}:4"]}))
     assert parse.user_feedback == ["没有路径我怎么知道去哪里看文件"]
-    assert "report_user_feedback" not in llm.digest  # the tool is offered, not described in the digest
     result = await run_diagnosis(
         run_id="r", language="zh", nodes_by_subagent=sliced, user_attribution="", task_parse=parse
     )
     user_signals = [signal.text for signal in result.signals if signal.source == SignalSource.KEYWORD_USER]
-    assert user_signals == ["没有路径我怎么知道去哪里看文件"]  # the new request is not a complaint
-    assert result.run_meta["user_messages_not_feedback"] == 1
+    assert user_signals == ["没有路径我怎么知道去哪里看文件"]  # the redo request and the thanks are not complaints
+    assert result.run_meta["user_messages_not_feedback"] == 2
 
 
 async def test_unjudged_follow_ups_all_stay() -> None:
-    sliced = slice_nodes_by_range(_with_follow_ups(), [(LEADER, 0, 100)])
-    parse = await run_task_parse(sliced, "zh", _FeedbackLlm(None))
+    sliced = slice_nodes_by_range(_session(), [(LEADER, 0, 100)])
+    parse = await run_task_parse(sliced, "zh", _Llm())
     assert parse.user_feedback is None
     result = await run_diagnosis(
         run_id="r", language="zh", nodes_by_subagent=sliced, user_attribution="", task_parse=parse
     )
-    assert sum(signal.source == SignalSource.KEYWORD_USER for signal in result.signals) == 2
-
-
-class _FinalLlm:
-    def __init__(self, final_id: str | None, reported: list[str]) -> None:
-        self._final = final_id
-        self._reported = reported
-        self.digest = ""
-
-    async def invoke(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any) -> Any:
-        del tools, kwargs
-        self.digest = messages[1]["content"]
-        calls = [
-            {"name": "report_task_description", "arguments": json.dumps({"task": "排周六"})},
-            {"name": "report_message_artifacts", "arguments": json.dumps({"node_ids": self._reported})},
-        ]
-        if self._final is not None:
-            calls.append({"name": "report_final_reply", "arguments": json.dumps({"node_id": self._final})})
-        return {"tool_calls": calls}
-
-
-def _redone() -> dict[str, list[TrajectoryNode]]:
-    nodes = _with_follow_ups()  # replies at 48 and 90, then the user writes at 92 and 94
-    nodes[LEADER].append(_node(LEADER, 11, 99, content="用 agent team 重做好了：schedule-v2.md"))
-    return nodes
-
-
-async def test_a_reply_named_final_outside_the_selection_leaves_no_reply_to_review() -> None:
-    sliced = slice_nodes_by_range(_redone(), [(LEADER, 0, 91)])
-    llm = _FinalLlm(f"{LEADER}:11", [f"{LEADER}:7"])
-    parse = await run_task_parse(sliced, "zh", llm)
-    assert parse.message_artifacts == []  # the selection's reply at 90 was redone at 99
-    assert parse.run_meta["final_reply"] == f"{LEADER}:11"
-    assert "## 整个会话里给用户的回复" in llm.digest
-    assert f"{LEADER}:11 [00:00:00]（框选外）: 用 agent team 重做好了" in llm.digest
-    assert f"{LEADER}:7 [00:00:00]（框选内）" in llm.digest
-
-
-async def test_a_reply_named_final_inside_the_selection_is_reviewed() -> None:
-    sliced = slice_nodes_by_range(_redone(), [(LEADER, 0, 100)])
-    parse = await run_task_parse(sliced, "zh", _FinalLlm(f"{LEADER}:11", []))
-    assert parse.message_artifacts == [(f"{LEADER}:11", "用 agent team 重做好了：schedule-v2.md")]
-
-
-async def test_without_a_named_final_reply_a_redone_reply_is_dropped() -> None:
-    sliced = slice_nodes_by_range(_redone(), [(LEADER, 0, 91)])
-    parse = await run_task_parse(sliced, "zh", _FinalLlm(None, [f"{LEADER}:7", f"{LEADER}:4"]))
-    assert parse.message_artifacts == []  # the user asked again at 92 and got another reply at 99
-    whole = slice_nodes_by_range(_session(), [(LEADER, 0, 100)])
-    kept = await run_task_parse(whole, "zh", _FinalLlm(None, [f"{LEADER}:7"]))
-    assert [node_id for node_id, _ in kept.message_artifacts] == [f"{LEADER}:7"]  # nothing came after it
-
-
-class _FilesLlm:
-    def __init__(self, final: list[str] | None, reported: list[str]) -> None:
-        self._final = final
-        self._reported = reported
-        self.digest = ""
-
-    async def invoke(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any) -> Any:
-        del tools, kwargs
-        self.digest = messages[1]["content"]
-        calls = [
-            {"name": "report_task_description", "arguments": json.dumps({"task": "排周六"})},
-            {"name": "report_file_artifacts", "arguments": json.dumps({"paths": self._reported})},
-        ]
-        if self._final is not None:
-            calls.append({"name": "report_final_files", "arguments": json.dumps({"paths": self._final})})
-        return {"tool_calls": calls}
-
-
-def _renamed() -> dict[str, list[TrajectoryNode]]:
-    nodes = _redone()  # the user asks again at 92 and 94
-    nodes[MEMBER].append(_node(MEMBER, 4, 98, calls=_write("/w/schedule-v2.md"), kind="team_member"))
-    return nodes
-
-
-async def test_a_file_replaced_under_another_name_is_not_reviewed() -> None:
-    sliced = slice_nodes_by_range(_renamed(), [(MEMBER, 0, 50), (LEADER, 0, 50)])
-    llm = _FilesLlm(["/w/schedule-v2.md", "/w/message.md"], ["/w/message.md"])
-    parse = await run_task_parse(sliced, "zh", llm)
-    assert parse.file_artifacts == ["/w/message.md"]  # named final and last written inside
-    assert parse.deliverables_outside_selection == ["/w/schedule-v2.md"]
-    assert "## 整个会话里写过的文件" in llm.digest
-    assert "/w/schedule-v2.md [00:00:00]（最后一次写入在框选外）" in llm.digest
-
-
-async def test_without_named_final_files_a_file_followed_by_a_redo_is_dropped() -> None:
-    sliced = slice_nodes_by_range(_renamed(), [(MEMBER, 0, 50), (LEADER, 0, 50)])
-    parse = await run_task_parse(sliced, "zh", _FilesLlm(None, ["/w/message.md"]))
-    assert parse.file_artifacts == []  # the user asked again at 92 and schedule-v2.md was written at 98
-    assert parse.deliverables_outside_selection == ["/w/message.md"]
+    assert sum(signal.source == SignalSource.KEYWORD_USER for signal in result.signals) == 3

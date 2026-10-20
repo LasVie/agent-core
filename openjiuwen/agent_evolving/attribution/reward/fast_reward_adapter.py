@@ -50,11 +50,11 @@ _LABELS = {
         "judged": "判定：{done}/{total} 个维度已判定",
         "finished": "完成：总分 {score}",
         "elapsed": "已用 {minutes}分{seconds:02d}秒",
-        "scope": "本次评估范围：只评估框选中保留了最终版本的交付物（{files}）。",
-        "scope_no_files": "本次评估范围：框选中没有交付文件的最终版本，不评估文件。",
-        "scope_reply": "回复：评估给用户的这条回复。",
-        "scope_no_reply": "回复：框选中没有给用户的回复，不评估回复写了什么。",
-        "scope_outside": "不在范围内（最终版本在框选之外）：{files}，不对它们下判断。",
+        "task_note": "## 用户补充（最高优先级；与下面冲突时以此为准）",
+        "task_list": "## 当前有效的需求清单（每一条都要有对应的要求项；标「用户纠正过」的优先）",
+        "task_corrected": "（用户纠正过）",
+        "task_words": "## 用户原话（按时间顺序，用来核对细节；与清单不一致时以清单为准）",
+        "note_mark": "（用户补充）",
     },
     "en": {
         "floor": "Requirement",
@@ -70,11 +70,11 @@ _LABELS = {
         "judged": "Judging: {done}/{total} criteria judged",
         "finished": "Done: total {score}",
         "elapsed": "{minutes}m{seconds:02d}s",
-        "scope": "Review scope: only the deliverables whose final version is in the selection ({files}).",
-        "scope_no_files": "Review scope: no deliverable file has its final version in the selection; none is reviewed.",
-        "scope_reply": "Reply: the reply to the user is reviewed.",
-        "scope_no_reply": "Reply: the selection holds no reply to the user; what the reply says is not reviewed.",
-        "scope_outside": "Out of scope (final version outside the selection): {files}; nothing is judged about them.",
+        "task_note": "## The reviewer's note (highest priority; wins any conflict with what follows)",
+        "task_list": "## Current requirements (each needs a requirement claim; points the user corrected first)",
+        "task_corrected": " (corrected by the user)",
+        "task_words": "## The user's own words (in order, to check details; the list wins where they differ)",
+        "note_mark": " (reviewer's note)",
     },
 }
 
@@ -138,11 +138,11 @@ def final_reply(task_parse: TaskParseResult, nodes_by_subagent: Mapping[str, Seq
     Messages a team member sent inside the team are skipped while a message to the user exists.  When task
     parsing reported no message artifact, the last assistant message without a tool call from the main agent
     or the leader is the reply (an empty reply would make every claim about the reply unmet) -- unless the
-    selection covers only part of the session: there the latest message may be progress, not the answer.
+    delivery round was decided (``delivery_round``): then the reply is the one task parsing took from it.
     """
     nodes = {node.node_id: node for rows in nodes_by_subagent.values() for node in rows}
     candidates = [(node_id, text) for node_id, text in task_parse.message_artifacts if text]
-    if not candidates and task_parse.selection_partial:
+    if not candidates and task_parse.delivery_round is not None:
         return ""
     if not candidates:
         candidates = [
@@ -157,22 +157,32 @@ def final_reply(task_parse: TaskParseResult, nodes_by_subagent: Mapping[str, Seq
     return max(pool, key=lambda item: getattr(nodes.get(item[0]), "start_ts_ns", 0))[1]
 
 
-def review_scope(task_parse: TaskParseResult, artifacts: Sequence[str], reply: str, language: str) -> str:
-    """What this review covers, appended to the task when the selection leaves deliverables out; else ``""``.
+def review_task(task_parse: TaskParseResult, user_note: str, language: str) -> str:
+    """The task Fast Reward writes its claims from: the reviewer's note, the current requirements, the user's words.
 
-    Without it the criteria would ask for every deliverable the user named, and those whose final
-    version lies outside the selection would come out unmet.
+    The note given when starting the diagnosis comes first and wins any conflict; the requirement list (later
+    changes applied, overridden demands dropped) is what every floor claim must cover, with the points the
+    user corrected first; the user's own words follow to check details against.  Without a note and a list
+    the task is the user's words as before.
     """
-    outside = task_parse.deliverables_outside_selection
-    if not outside and not (task_parse.selection_partial and not reply):
-        return ""
+    words = task_parse.user_request or task_parse.task_description
+    requirements = list(task_parse.requirements or ())
+    note = (user_note or "").strip()
+    if not note and not requirements:
+        return words
     labels = _labels(language)
-    names = ", ".join(Path(path).name for path in artifacts)
-    lines = [labels["scope"].format(files=names) if artifacts else labels["scope_no_files"]]
-    lines.append(labels["scope_reply"] if reply else labels["scope_no_reply"])
-    if outside:
-        lines.append(labels["scope_outside"].format(files=", ".join(Path(path).name for path in outside)))
-    return "\n".join(lines)
+    sections = []
+    if note:
+        sections.append(f"{labels['task_note']}\n{note}")
+    if requirements:
+        ordered = sorted(requirements, key=lambda item: not item.get("corrected"))
+        lines = [
+            f"{index}. {item['text']}{labels['task_corrected'] if item.get('corrected') else ''}"
+            for index, item in enumerate(ordered, 1)
+        ]
+        sections.append(labels["task_list"] + "\n" + "\n".join(lines))
+    sections.append(f"{labels['task_words']}\n{words}")
+    return "\n\n".join(sections)
 
 
 class _ProgressLines:
@@ -275,10 +285,11 @@ def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[s
         else:
             counts["floor"] += 1
             counts["floor_met"] += tier == "perfect"
+        mark = labels["note_mark"] if item.get("from_user_note") else ""
         dimensions.append(
             {
                 "category": str(item.get("category_name") or item.get("category_id") or "-"),
-                "requirement": f"[{labels['challenge' if challenge else 'floor']}] {item.get('rubric', '')}",
+                "requirement": f"[{labels['challenge' if challenge else 'floor']}] {item.get('rubric', '')}{mark}",
                 "comment": str(item.get("comment") or item.get("rubric") or "-"),
                 "score": _CLAIM_SCORE[status],
                 "tier": tier,
@@ -287,7 +298,13 @@ def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[s
         )
     if not dimensions:
         raise ValueError("Fast Reward settled no claim")
-    dimensions.sort(key=lambda d: (_TIER_ORDER[d["tier"]], d["requirement"].startswith(f"[{labels['challenge']}]")))
+    dimensions.sort(
+        key=lambda d: (
+            _TIER_ORDER[d["tier"]],
+            d["requirement"].startswith(f"[{labels['challenge']}]"),
+            not d["requirement"].endswith(labels["note_mark"]),  # the reviewer's note first within a tier
+        )
+    )
     comment = (
         f"{labels['counts'].format(**counts)}。"
         if labels is _LABELS["zh"]
@@ -336,12 +353,9 @@ async def run_fast_reward(
     from openjiuwen.agent_evolving.fast_reward import pipeline, progress
 
     counter = status_counter if status_counter is not None else [0]
-    task = task_parse.user_request or task_parse.task_description
+    task = review_task(task_parse, user_attribution, language)
     artifacts = existing_paths(task_parse.file_artifacts)
     reply = final_reply(task_parse, nodes_by_subagent)
-    scope = review_scope(task_parse, artifacts, reply, language)
-    if scope:
-        task = f"{task}\n\n{scope}"
     config = fast_reward_config(model)
     started = time.time_ns()
 
@@ -382,7 +396,8 @@ async def run_fast_reward(
         "artifacts": artifacts,
         "reply_chars": len(reply),
         "task_from_user": bool(task_parse.user_request),
-        "scope": scope,
+        "requirements": len(task_parse.requirements or ()),
+        "delivery_round": task_parse.delivery_round,
         "claims": len(result.get("sub_category_items") or ()),
         "warnings": list((result.get("meta") or {}).get("warnings") or ()),
     }
@@ -394,7 +409,7 @@ __all__ = [
     "fast_reward_config",
     "fast_reward_enabled",
     "existing_paths",
-    "review_scope",
+    "review_task",
     "final_reply",
     "route_from_model",
     "run_fast_reward",

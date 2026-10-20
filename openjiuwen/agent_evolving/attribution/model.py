@@ -216,13 +216,16 @@ class TaskParseResult:
     run_meta: dict[str, Any] = field(default_factory=dict)
     user_request: str = ""
     """The user's own messages, verbatim and in order: the task as the user stated it."""
-    deliverables_outside_selection: list[str] = field(default_factory=list)
-    """Deliverable files whose final version was written after or outside the selection: not reviewed."""
-    selection_partial: bool = False
-    """Whether the selection leaves out part of the session (some subject or some nodes)."""
     user_feedback: list[str] | None = None
     """The user's follow-up messages judged to be feedback on the work (a correction, a complaint, asking for
     something left out); ``None`` when task parsing did not judge them."""
+    requirements: list[dict[str, Any]] = field(default_factory=list)
+    """The current requirement list from all the user's messages: ``[{"text", "corrected"}]``, later changes
+    applied; empty when task parsing reported none."""
+    delivery_round: str | None = None
+    """The user message starting the round in which the result was last delivered (``None``: unknown)."""
+    delivery_round_selected: bool | None = None
+    """Whether the selection holds the leader (main agent) in that round: only then are deliverables reviewed."""
 
 
 @dataclass(frozen=True)

@@ -82,8 +82,9 @@ def test_slicing_a_window_without_the_start_still_carries_the_users_request() ->
     assert [user_request_text(n) for n in sliced.user_requests] == [
         "帮我安排周六：外婆 5 点以后有空",
         "文件路径在哪里？",
-    ]  # later requests are left out
-    assert user_request_of(sliced) == [
+        "再做一个别的",
+    ]  # the whole session: later messages tell which round last delivered the result
+    assert user_request_of(sliced)[:2] == [
         (f"{LEADER}:2", "帮我安排周六：外婆 5 点以后有空"),
         (f"{LEADER}:5", "文件路径在哪里？"),
     ]
@@ -118,6 +119,6 @@ async def test_task_parse_returns_the_users_words_beside_the_description() -> No
     result = await run_task_parse(sliced, "zh", llm)
     assert isinstance(result, TaskParseResult)
     assert result.task_description == "安排周六"
-    assert result.user_request == "帮我安排周六：外婆 5 点以后有空\n\n文件路径在哪里？"
-    assert result.run_meta["user_requests"] == 2
+    assert result.user_request == "帮我安排周六：外婆 5 点以后有空\n\n文件路径在哪里？\n\n再做一个别的"
+    assert result.run_meta["user_requests"] == 3
     assert "## 用户本人发出的消息" in llm.messages[1]["content"]
