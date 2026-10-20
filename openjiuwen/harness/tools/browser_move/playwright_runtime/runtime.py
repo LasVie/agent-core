@@ -2606,6 +2606,9 @@ class BrowserRuntimeRail(AgentRail):
         tool_calls = list(getattr(response, "tool_calls", None) or [])
         session = getattr(ctx, "session", None)
         state = session.get_state(_BROWSER_PHASE_STATE_KEY) if session is not None else None
+        if isinstance(state, dict):
+            self._record_model_usage(state, getattr(response, "usage_metadata", None), tool_calls)
+            session.update_state({_BROWSER_PHASE_STATE_KEY: state})
         if (
             tool_calls
             and isinstance(state, dict)
@@ -2817,6 +2820,22 @@ class BrowserRuntimeRail(AgentRail):
             "progress_state": self._load_progress_state(session).to_dict() if session is not None else {},
         }
 
+    @staticmethod
+    def _record_model_usage(state: Dict[str, Any], usage: Any, tool_calls: list[Any]) -> None:
+        """Count this browser task's own model calls, tokens and requested tool calls."""
+        totals = state.setdefault("model_usage", {})
+        totals["model_calls"] = int(totals.get("model_calls") or 0) + 1
+        totals["tool_calls"] = int(totals.get("tool_calls") or 0) + len(tool_calls)
+        by_name = totals.setdefault("tool_calls_by_name", {})
+        for call in tool_calls:
+            name = str(getattr(call, "name", "") or "")[:80]
+            if name and (name in by_name or len(by_name) < 32):
+                by_name[name] = int(by_name.get(name) or 0) + 1
+        for field_name in ("input_tokens", "output_tokens", "cache_tokens", "total_cost"):
+            value = getattr(usage, field_name, None) if usage is not None else None
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                totals[field_name] = round((totals.get(field_name) or 0) + value, 6)
+
     @classmethod
     def _terminal_records(cls, state: Dict[str, Any]) -> Dict[str, Any]:
         source, rows, complete = cls._best_evidence_rows(state)
@@ -2866,6 +2885,7 @@ class BrowserRuntimeRail(AgentRail):
             "requested_result_count": int(state.get("requested_result_count") or 0),
             "observed_result_count": int(state.get("observed_result_count") or 0),
             **cls._terminal_records(state),
+            **({"model_usage": dict(state["model_usage"])} if state.get("model_usage") else {}),
             "terminal_reason": state.get("terminal_reason"),
             "retryable": retryable,
             "recommended_recovery": cls._recommended_recovery(state, missing),
