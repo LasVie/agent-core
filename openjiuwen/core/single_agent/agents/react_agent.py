@@ -1952,6 +1952,21 @@ class ReActAgent(BaseAgent):
         finish_reason = str(getattr(message, "finish_reason", "") or "").strip().lower()
         usage = getattr(message, "usage_metadata", None)
         code = int(getattr(usage, "code", 0) or 0)
+        content = getattr(message, "content", "")
+        no_answer = not getattr(message, "tool_calls", None) and not (isinstance(content, str) and content.strip())
+        if finish_reason in {"length", "max_tokens"} and no_answer:
+            # A reasoning model can spend its whole output budget thinking and stop
+            # before any answer or tool call. Treating that as the final answer
+            # would end the turn with an empty "successful" result.
+            output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+            raise_error(
+                StatusCode.MODEL_CALL_FAILED,
+                error_msg=(
+                    f"model hit its output limit (finish_reason={finish_reason}, output_tokens={output_tokens}) "
+                    "before producing an answer or a tool call"
+                ),
+                details={"finish_reason": finish_reason, "output_tokens": output_tokens},
+            )
         if finish_reason not in {"error", "failed"} and code == 0:
             return
         error_message = str(getattr(usage, "err_msg", "") or getattr(message, "content", "") or "")
