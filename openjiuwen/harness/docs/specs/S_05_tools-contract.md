@@ -6,8 +6,8 @@
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/tools/`（130 文件）、`openjiuwen/harness/schema/task.py`、`openjiuwen/core/foundation/tool/base.py`（`Tool.render_for_llm`） |
-| 最近一次修订日期 | 2026-10-14 |
-| 关联 feature | `F_04_tool-result-llm-rendering.md`、`F_06_browser-external-tools.md`、`F_08_browser-row-evidence.md` |
+| 最近一次修订日期 | 2026-10-20 |
+| 关联 feature | `F_04_tool-result-llm-rendering.md`、`F_06_browser-external-tools.md`、`F_08_browser-row-evidence.md`、`F_09_browser-model-usage.md` |
 
 ## 范围 / 边界
 
@@ -152,6 +152,9 @@ i18n、工具生命周期。`tools/` 是 harness 最大的子模块（130 文件
     带齐所需字段时才满足（`_evidence_backed_count`）；没有任何来源报告行时沿用
     `observed_count`。终态 `browser_result` 附带最佳来源的 `records`、`records_source` 与
     `backed_result_count`；summary 引用而证据中不存在的链接列入 `unbacked_items`，不改变状态。
+16. **Browser 任务报告自身的模型用量**：Browser runtime 在 `after_model_call` 中累加
+    `model_usage`（模型调用数、工具调用数及按名称计数、输入/输出/缓存 token、费用），终态
+    `browser_result` 在有统计时附带该字段；统计不影响状态判定、预算或证据（`_record_model_usage`）。
 
 ## 接口契约
 
