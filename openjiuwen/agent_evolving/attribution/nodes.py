@@ -356,13 +356,13 @@ def _first_file_arg(tool_call: dict[str, Any]) -> str:
     return ""
 
 
-def _node_field_text(node: TrajectoryNode, field: str) -> str:
+def _node_field_text(node: TrajectoryNode, field_name: str) -> str:
     """Return the raw text of a windowable field (``content`` or ``tool_calls``).
 
     ``tool_calls`` is rendered exactly like the detail tier does (one JSON
     text via ``json.dumps``) so both tiers share the same source.
     """
-    if field == "tool_calls":
+    if field_name == "tool_calls":
         if not node.tool_calls:
             return ""
         import json
@@ -371,7 +371,7 @@ def _node_field_text(node: TrajectoryNode, field: str) -> str:
     return str(node.content) if node.content is not None else ""
 
 
-def render_node_field(node: TrajectoryNode, field: str, start: int, limit: int) -> dict[str, Any]:
+def render_node_field(node: TrajectoryNode, field_name: str, start: int, limit: int) -> dict[str, Any]:
     """Return one character window of a node field (cursor semantics).
 
     ``start`` and ``limit`` are character offsets into the raw field text;
@@ -381,7 +381,7 @@ def render_node_field(node: TrajectoryNode, field: str, start: int, limit: int) 
     ``start`` at or past the total length is not an error: it returns an
     empty window with ``has_more=false``.
     """
-    text = _node_field_text(node, field)
+    text = _node_field_text(node, field_name)
     total = len(text)
     if start >= total:
         return {"text": "", "start": start, "end": start, "total_chars": total, "has_more": False}

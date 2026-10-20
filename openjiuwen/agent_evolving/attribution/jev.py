@@ -24,6 +24,9 @@ DEFAULT_JEV_SETTINGS: dict[str, str] = {
     "JEV_THRESHOLD": "0.8",
 }
 
+#: Sentinel key accepted by a local kev deployment when no ``JEV_API_KEY`` is configured.
+_LOCAL_KEV_PLACEHOLDER_KEY = "local-kev-placeholder"
+
 
 def resolve_jev_settings() -> dict[str, str]:
     """Resolve ``JEV_*`` from the environment with in-repo defaults."""
@@ -51,7 +54,7 @@ class JevClient:
         resolved_model = model or settings["JEV_MODEL"]
         resolved_api_key = api_key or settings["JEV_API_KEY"]
         if not resolved_api_key:
-            resolved_api_key = "local-kev-placeholder"
+            resolved_api_key = _LOCAL_KEV_PLACEHOLDER_KEY
         self._client = JevSystemOneClient(
             api_key=resolved_api_key,
             api_base=resolved_base_url,

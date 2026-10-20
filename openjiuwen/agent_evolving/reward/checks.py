@@ -114,14 +114,21 @@ async def run_experiment(product, experiment):
                                                box["y"] + box["height"] * action.get("y", 0.5))
                     elif kind == "drag" or kind == "wheel":   # rotate or zoom a 3D view, drag a piece
                         box = await page.locator(action.get("selector") or "canvas, body").first.bounding_box(timeout=3000)
-                        at = lambda xy: (box["x"] + box["width"] * float(xy[0]), box["y"] + box["height"] * float(xy[1]))
-                        await page.mouse.move(*at(action.get("from") or [0.5, 0.5]))
+                        from_x, from_y = action.get("from") or [0.5, 0.5]
+                        await page.mouse.move(
+                            box["x"] + box["width"] * float(from_x),
+                            box["y"] + box["height"] * float(from_y),
+                        )
                         if kind == "wheel":
                             await page.mouse.wheel(0, float(action.get("dy", 300)))
                         else:
                             await page.mouse.down()
-                            await page.mouse.move(*at(action.get("to") or [0.7, 0.5]),
-                                                  steps=max(2, min(60, int(action.get("steps", 12)))))
+                            to_x, to_y = action.get("to") or [0.7, 0.5]
+                            await page.mouse.move(
+                                box["x"] + box["width"] * float(to_x),
+                                box["y"] + box["height"] * float(to_y),
+                                steps=max(2, min(60, int(action.get("steps", 12)))),
+                            )
                             await page.mouse.up()
                         await page.wait_for_timeout(300)
                     elif kind == "key":
@@ -135,9 +142,9 @@ async def run_experiment(product, experiment):
                     elif kind == "closeup":
                         box = await page.locator(action.get("selector") or "body").first.bounding_box(timeout=3000)
                         x, y, w, h = (list(action.get("region") or [0, 0, 1, 1]) + [0, 0, 1, 1])[:4]
-                        clip = {"x": box["x"] + box["width"] * x, "y": box["y"] + box["height"] * y,
-                                "width": max(1, box["width"] * w), "height": max(1, box["height"] * h)}
-                        data = await page.screenshot(type="jpeg", quality=90, clip=clip, scale="device")
+                        region = {"x": box["x"] + box["width"] * x, "y": box["y"] + box["height"] * y,
+                                  "width": max(1, box["width"] * w), "height": max(1, box["height"] * h)}
+                        data = await page.screenshot(type="jpeg", quality=90, clip=region, scale="device")
                         shots.append((f"close-up at action {index}", base64.b64encode(data).decode()))
                     elif kind == "scroll":   # to an element, or down by viewport heights (pages stacked in one page)
                         if action.get("selector"):

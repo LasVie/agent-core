@@ -41,10 +41,10 @@ def inputs_index(references):
             for name, text in references.items()]
 
 def text_evidence(task, deliverable, response, references):
-    total = sum(len(text) for text in references.values())
+    total_chars = sum(len(text) for text in references.values())
     if not references:
         shown = "(not provided)"
-    elif total <= INPUTS_INLINE:
+    elif total_chars <= INPUTS_INLINE:
         shown = bundle(references)
     else:   # too long to show: the Judge sees what the checks quoted from them, and this index
         shown = json.dumps({"note": "inputs too long to show in full; the checks quote what they found in them",
