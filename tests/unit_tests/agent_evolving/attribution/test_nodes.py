@@ -11,6 +11,7 @@ from openjiuwen.agent_evolving.attribution.nodes import (
     detect_language,
     is_error_node,
     render_node_detail,
+    render_node_field,
     render_overview,
     render_summary,
     search_keyword,
@@ -75,6 +76,62 @@ def test_render_node_detail_caps_fields_at_1000() -> None:
     assert detail["message_id"] == "m1"
     assert detail["start_ts_ns"] == 1000
     assert detail["subagent"]["id"] == "main"
+
+
+def test_render_node_detail_exposes_field_lengths() -> None:
+    nodes = [
+        _node(
+            0,
+            role="user",
+            content="b" * 5000,
+            tool_calls=[{"name": "write_file", "arguments": json.dumps({"content": "x" * 3000})}],
+        )
+    ]
+    detail = render_node_detail(nodes[0])
+    assert detail["field_lengths"]["content"] == 5000
+    assert detail["field_lengths"]["tool_calls"] == len(json.dumps(nodes[0].tool_calls, ensure_ascii=False))
+    short = render_node_detail(_node(1, role="user", content="hi"))
+    assert short["field_lengths"] == {"content": 2}
+
+
+def test_render_node_field_content_cursor_windows() -> None:
+    node = _node(0, role="assistant", content="abcdefghij")
+    first = render_node_field(node, "content", 0, 4)
+    assert first == {"text": "abcd", "start": 0, "end": 4, "total_chars": 10, "has_more": True}
+    second = render_node_field(node, "content", first["end"], 4)
+    assert second["text"] == "efgh"
+    assert second["has_more"] is True
+    last = render_node_field(node, "content", second["end"], 100)
+    assert last == {"text": "ij", "start": 8, "end": 10, "total_chars": 10, "has_more": False}
+
+
+def test_render_node_field_tool_calls_window() -> None:
+    tool_calls = [{"name": "write_file", "arguments": json.dumps({"content": "x" * 5000})}]
+    node = _node(0, role="assistant", tool_calls=tool_calls)
+    raw = json.dumps(tool_calls, ensure_ascii=False)
+    window = render_node_field(node, "tool_calls", 10, 20)
+    assert window["text"] == raw[10:30]
+    assert window["total_chars"] == len(raw)
+    assert window["has_more"] is True
+
+
+def test_render_node_field_graceful_boundary() -> None:
+    node = _node(0, role="assistant", content="abc")
+    assert render_node_field(node, "content", 3, 10) == {
+        "text": "",
+        "start": 3,
+        "end": 3,
+        "total_chars": 3,
+        "has_more": False,
+    }
+    assert render_node_field(node, "content", 100, 10)["has_more"] is False
+
+
+def test_render_node_field_empty_source() -> None:
+    node = _node(0, role="assistant")
+    window = render_node_field(node, "content", 0, 10)
+    assert window == {"text": "", "start": 0, "end": 0, "total_chars": 0, "has_more": False}
+    assert render_node_field(node, "tool_calls", 0, 10)["total_chars"] == 0
 
 
 def test_is_error_node_rules() -> None:

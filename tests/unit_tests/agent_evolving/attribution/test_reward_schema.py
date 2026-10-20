@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from openjiuwen.agent_evolving.attribution.model import DiagnosticSignal, SignalSource
-from openjiuwen.agent_evolving.attribution.reward.reward_schema import (
+from openjiuwen.agent_evolving.attribution.reward_stage.reward_schema import (
     RewardResult,
     RewardSchemaError,
     parse_reward_payload,

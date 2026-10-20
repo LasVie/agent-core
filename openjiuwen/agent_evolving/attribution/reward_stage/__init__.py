@@ -1,12 +1,15 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Reward building for the attribution pipeline (attribution.reward.v1).
+"""Reward stage integration for the attribution pipeline (attribution.reward.v1).
 
-This submodule is the attribution Rewward deep agent only; it is unrelated to
-``agent_evolving/evaluator`` metric evaluation.
+This package is the stage-two integration layer: the adapter that routes to
+the standalone Reward scoring engine (``openjiuwen.agent_evolving.reward``),
+the legacy Reward deep agent (``ATTRIBUTION_REWARD=agent`` fallback), and the
+shared ``attribution.reward.v1`` schema.  The engine itself is not duplicated
+here and is unrelated to ``agent_evolving/evaluator`` metric evaluation.
 """
 
-from openjiuwen.agent_evolving.attribution.reward.reward_agent import (
+from openjiuwen.agent_evolving.attribution.reward_stage.reward_agent import (
     RewardBuilder,
     RewardSink,
     RewardSubmitRail,
@@ -14,7 +17,7 @@ from openjiuwen.agent_evolving.attribution.reward.reward_agent import (
     build_reward_agent,
     load_reward_prompt,
 )
-from openjiuwen.agent_evolving.attribution.reward.reward_schema import (
+from openjiuwen.agent_evolving.attribution.reward_stage.reward_schema import (
     SCHEMA_VERSION,
     RewardResult,
     RewardSchemaError,

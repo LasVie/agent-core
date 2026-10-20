@@ -32,6 +32,9 @@ _MARKER_CAP_PER_CLASS = 5
 _ERROR_NODE_ID_CAP = 20
 _LANDMARK_COUNT = 3
 
+FIELD_WINDOW_LIMIT = 50_000
+_FIELD_WINDOW_FIELDS = frozenset({"content", "tool_calls"})
+
 _FILE_ARG_KEYS = frozenset(
     {
         "file_path",
@@ -353,8 +356,46 @@ def _first_file_arg(tool_call: dict[str, Any]) -> str:
     return ""
 
 
+def _node_field_text(node: TrajectoryNode, field: str) -> str:
+    """Return the raw text of a windowable field (``content`` or ``tool_calls``).
+
+    ``tool_calls`` is rendered exactly like the detail tier does (one JSON
+    text via ``json.dumps``) so both tiers share the same source.
+    """
+    if field == "tool_calls":
+        if not node.tool_calls:
+            return ""
+        import json
+
+        return json.dumps(node.tool_calls, ensure_ascii=False)
+    return str(node.content) if node.content is not None else ""
+
+
+def render_node_field(node: TrajectoryNode, field: str, start: int, limit: int) -> dict[str, Any]:
+    """Return one character window of a node field (cursor semantics).
+
+    ``start`` and ``limit`` are character offsets into the raw field text;
+    the window never exceeds ``limit`` characters.  ``end`` is the actual
+    stop offset and ``has_more`` says whether more text follows, so callers
+    continue by passing the returned ``end`` as the next ``start``.  A
+    ``start`` at or past the total length is not an error: it returns an
+    empty window with ``has_more=false``.
+    """
+    text = _node_field_text(node, field)
+    total = len(text)
+    if start >= total:
+        return {"text": "", "start": start, "end": start, "total_chars": total, "has_more": False}
+    end = min(start + limit, total)
+    return {"text": text[start:end], "start": start, "end": end, "total_chars": total, "has_more": end < total}
+
+
 def render_node_detail(node: TrajectoryNode) -> dict[str, Any]:
-    """Render the detail tier: every field capped at 1000 characters."""
+    """Render the detail tier: every field capped at 1000 characters.
+
+    ``field_lengths`` carries the raw character counts of the windowable
+    fields so the caller knows how much content a ``[truncated]`` field
+    still holds (and whether ``view_node_field`` is worth calling).
+    """
     result: dict[str, Any] = {
         "node_id": node.node_id,
         "role": node.role,
@@ -391,6 +432,12 @@ def render_node_detail(node: TrajectoryNode) -> dict[str, Any]:
             result["tool_calls"] = f"{rendered[:_DETAIL_FIELD_LIMIT]}[truncated]"
         else:
             result["tool_calls"] = node.tool_calls
+    field_lengths: dict[str, int] = {}
+    if node.content is not None:
+        field_lengths["content"] = len(str(node.content))
+    if node.tool_calls:
+        field_lengths["tool_calls"] = len(_node_field_text(node, "tool_calls"))
+    result["field_lengths"] = field_lengths
     return result
 
 
@@ -520,10 +567,12 @@ def _excerpt(text: str, start: int, end: int) -> str:
 
 
 __all__ = [
+    "FIELD_WINDOW_LIMIT",
     "TrajectoryNode",
     "detect_language",
     "is_error_node",
     "render_node_detail",
+    "render_node_field",
     "render_overview",
     "render_summary",
     "search_keyword",

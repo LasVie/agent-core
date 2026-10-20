@@ -12,7 +12,7 @@ import pytest
 from openjiuwen.agent_evolving.attribution import run as run_module
 from openjiuwen.agent_evolving.attribution.model import DiagnosticSignal, SignalSource, TaskParseResult
 from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode
-from openjiuwen.agent_evolving.attribution.reward import reward_adapter as adapter
+from openjiuwen.agent_evolving.attribution.reward_stage import reward_adapter as adapter
 from openjiuwen.agent_evolving.attribution.run import run_diagnosis
 
 LEADER = "team-member:s:t:team-leader"

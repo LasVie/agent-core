@@ -37,9 +37,9 @@ from openjiuwen.agent_evolving.attribution.model import (
     new_attr_id,
 )
 from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode, search_keyword
-from openjiuwen.agent_evolving.attribution.reward.reward_adapter import reward_enabled, run_reward
-from openjiuwen.agent_evolving.attribution.reward.reward_agent import build_reward_agent, load_reward_prompt
-from openjiuwen.agent_evolving.attribution.reward.reward_schema import RewardResult, reward_to_signals
+from openjiuwen.agent_evolving.attribution.reward_stage.reward_adapter import reward_enabled, run_reward
+from openjiuwen.agent_evolving.attribution.reward_stage.reward_agent import build_reward_agent, load_reward_prompt
+from openjiuwen.agent_evolving.attribution.reward_stage.reward_schema import RewardResult, reward_to_signals
 from openjiuwen.agent_evolving.attribution.task_parse import TaskParseLLM, run_task_parse
 from openjiuwen.agent_evolving.attribution.tools import (
     artifact_improvement_required,
@@ -102,6 +102,14 @@ class NodeBackedRuntime:
         from openjiuwen.agent_evolving.attribution.nodes import render_node_detail as render_detail
 
         return render_detail(node)
+
+    def render_node_field(self, node_id: str, field: str, start: int, limit: int) -> dict[str, Any]:
+        node = self._index.get(node_id)
+        if node is None:
+            return {"error": f"node not found: {node_id}"}
+        from openjiuwen.agent_evolving.attribution.nodes import render_node_field as render_field
+
+        return render_field(node, field, start, limit)
 
     def record_attribution(self, signal_id: str, entries: list[dict[str, Any]]) -> str:
         status = "updated" if signal_id in self.attributions else "recorded"
@@ -216,6 +224,39 @@ def build_reward_user_prompt(
     )
 
 
+def _rule_jev_result(
+    signals: list[DiagnosticSignal],
+    run_meta: dict[str, Any],
+    user_attribution: str,
+) -> DiagnosisResult:
+    """Assemble the Reward-skipped outcome.
+
+    When Reward did not consume the user note, the note degrades into an
+    ``uncertain``/``user`` diagnostic signal appended after the rule/Jev
+    signals so the attribution stage still receives it.  A blank note adds
+    nothing.
+    """
+    note = (user_attribution or "").strip()
+    if note:
+        run_meta["user_note_signal"] = True
+        signals = [
+            *signals,
+            DiagnosticSignal.create(
+                text=note,
+                source=SignalSource.USER,
+                tier="uncertain",
+                node_ids=[],
+                metadata={"kind": "user_note"},
+            ),
+        ]
+    return DiagnosisResult(
+        reward_overall=None,
+        signals=signals,
+        signal_mode="rule_jev",
+        run_meta=run_meta,
+    )
+
+
 async def run_diagnosis(
     *,
     run_id: str,
@@ -240,7 +281,9 @@ async def run_diagnosis(
 
     Reward success switches the signals to reward dimensions
     (``signal_mode="reward"``); a skip or failure falls back to the
-    rule/Jev signals (``signal_mode="rule_jev"``).
+    rule/Jev signals (``signal_mode="rule_jev"``).  On every fallback a
+    non-empty user note degrades into an ``uncertain``/``user`` signal so
+    the attribution stage still receives it as one of its inputs.
     """
     del run_id
     counter = status_counter if status_counter is not None else [0]
@@ -267,20 +310,10 @@ async def run_diagnosis(
     has_artifacts = bool(task_parse.message_artifacts or task_parse.file_artifacts)
     if not has_artifacts:
         run_meta["reward"] = {"skipped": "no artifacts"}
-        return DiagnosisResult(
-            reward_overall=None,
-            signals=signals,
-            signal_mode="rule_jev",
-            run_meta=run_meta,
-        )
+        return _rule_jev_result(signals, run_meta, user_attribution)
     if model is None:
         run_meta["reward"] = {"skipped": "no model injected"}
-        return DiagnosisResult(
-            reward_overall=None,
-            signals=signals,
-            signal_mode="rule_jev",
-            run_meta=run_meta,
-        )
+        return _rule_jev_result(signals, run_meta, user_attribution)
     if reward_enabled():
         try:
             payload, reward_meta = await run_reward(
@@ -297,12 +330,7 @@ async def run_diagnosis(
         except Exception as exc:  # noqa: BLE001 - fallback to rule/Jev signals, as for the Reward agent
             logger.warning("[attribution] Reward failed: %s", exc)
             run_meta["reward"] = {"engine": "reward", "failed": type(exc).__name__, "error": str(exc)[:200]}
-            return DiagnosisResult(
-                reward_overall=None,
-                signals=signals,
-                signal_mode="rule_jev",
-                run_meta=run_meta,
-            )
+            return _rule_jev_result(signals, run_meta, user_attribution)
         run_meta["reward"] = reward_meta
         return _reward_diagnosis(reward, signals, run_meta, tiers=[d["tier"] for d in payload["dimensions"]])
     sink = _MemoryRewardSink()
@@ -334,24 +362,14 @@ async def run_diagnosis(
         )
     except Exception as exc:  # noqa: BLE001 - fallback to rule/Jev signals
         run_meta["reward"] = {"failed": type(exc).__name__, "error": str(exc)[:200]}
-        return DiagnosisResult(
-            reward_overall=None,
-            signals=signals,
-            signal_mode="rule_jev",
-            run_meta=run_meta,
-        )
+        return _rule_jev_result(signals, run_meta, user_attribution)
     run_meta["reward"] = {
         "submitted": gate.submitted,
         "budget_exceeded": rail.exceeded,
         "tokens": rail.spent,
     }
     if not gate.submitted or sink.payload is None:
-        return DiagnosisResult(
-            reward_overall=None,
-            signals=signals,
-            signal_mode="rule_jev",
-            run_meta=run_meta,
-        )
+        return _rule_jev_result(signals, run_meta, user_attribution)
     reward = RewardResult.from_payload(sink.payload)
     return _reward_diagnosis(reward, signals, run_meta)
 
@@ -454,16 +472,16 @@ async def run_attribution(
     status_sink: StatusSink | None = None,
     model_name: str = "",
     status_counter: list[int] | None = None,
-    total_token_budget: int = 800_000,
-    max_iterations: int = 64,
+    total_token_budget: int = 3_000_000,
+    max_iterations: int = 80,
     max_context_messages: int = 100,
-    total_timeout_s: float | None = 900.0,
+    total_timeout_s: float | None = 600.0,
     session: Any = None,
 ) -> AttributionRunOutcome:
     """Run stage three with the one-shot wake (proposal §5.4).
 
     The host may pass its own runtime and session; otherwise a
-    :class:`NodeBackedRuntime` and a fresh agent session are used.  The 900s
+    :class:`NodeBackedRuntime` and a fresh agent session are used.  The 600s
     timeout covers both invoke rounds when ``total_timeout_s`` is set.
 
     ``tier == "perfect"`` signals never enter this stage: they are filtered

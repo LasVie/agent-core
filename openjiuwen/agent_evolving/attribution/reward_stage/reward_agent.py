@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from openjiuwen.agent_evolving.attribution.agent import ContextBudgetRail, LlmStatusRail
 from openjiuwen.agent_evolving.attribution.model import StatusSink
-from openjiuwen.agent_evolving.attribution.reward.reward_schema import (
+from openjiuwen.agent_evolving.attribution.reward_stage.reward_schema import (
     SCHEMA_VERSION,
     validate_reward_payload,
 )

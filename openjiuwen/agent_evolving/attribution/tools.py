@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""The nine attribution tools bound to one run's runtime.
+"""The ten attribution tools bound to one run's runtime.
 
 Search/render logic lives in core pure functions; these tools only route to
 the host runtime and keep the reporting contracts (atomicity, overwrite
@@ -14,7 +14,12 @@ from typing import Any
 
 from openjiuwen.agent_evolving.attribution.agent import AttributionAgentRuntime
 from openjiuwen.agent_evolving.attribution.model import AttributionEntry
-from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode, render_overview, render_summary
+from openjiuwen.agent_evolving.attribution.nodes import (
+    FIELD_WINDOW_LIMIT,
+    TrajectoryNode,
+    render_overview,
+    render_summary,
+)
 from openjiuwen.core.foundation.tool import Tool, ToolCard
 from openjiuwen.harness.tools.base_tool import ToolOutput
 
@@ -216,6 +221,70 @@ class ViewNodeDetailTool(_AttributionTool):
         return self.ok(result)
 
 
+class ViewNodeFieldTool(_AttributionTool):
+    """按字符窗口续读某节点某字段（游标式）。"""
+
+    tool_name = "view_node_field"
+    tool_id = "ViewNodeFieldTool"
+    description = (
+        "按字符窗口读取某节点某字段的一段内容（游标式）：field 仅限 content 或 tool_calls"
+        "（tool_calls 为 JSON 文本，切片处可能不完整，不影响阅读）；start 为字符起点（缺省 0）；"
+        "limit 为窗口上限（缺省 50000、最大 50000）；返回 {text, start, end, total_chars, "
+        "has_more}——续读时把上次的 end 作为下次的 start 照抄，直到 has_more=false；start 超出"
+        "字段总长时返回空 text 且 has_more=false（非错误）。仅当该节点内容对归因关键、且"
+        "view_node_detail 的 [truncated]/field_lengths 表明仍有剩余时才调用，避免浪费预算。/ "
+        "Read one character window of one node field (cursor-style): field is only content or "
+        "tool_calls (tool_calls is JSON text; the slice may be structurally incomplete, which is "
+        "fine for reading); start is the character offset (default 0); limit is the window cap "
+        "(default 50000, max 50000); returns {text, start, end, total_chars, has_more} — to "
+        "continue, copy the previous end as the next start until has_more=false; a start at or "
+        "past the field length returns empty text with has_more=false (not an error). Call only "
+        "when the node matters for attribution and view_node_detail's [truncated]/field_lengths "
+        "show remaining content; don't waste budget."
+    )
+    input_schema = _schema(
+        {
+            "node_id": _text_prop("目标节点 ID（照抄工具返回）", "Target node id (copy verbatim from tool output)"),
+            "field": _text_prop("字段名：content 或 tool_calls", "Field name: content or tool_calls"),
+            "start": {
+                "type": "integer",
+                "description": (
+                    "字符起点（0-based，缺省 0；续读照抄上次返回的 end）/ character offset "
+                    "(0-based, default 0; copy the previous end to continue)"
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": "窗口上限，缺省 50000、最大 50000 / window cap, default 50000, max 50000",
+            },
+        },
+        ["node_id", "field"],
+    )
+
+    async def invoke(self, inputs: dict[str, Any], **kwargs: Any) -> ToolOutput:  # type: ignore[override]
+        del kwargs
+        node_id = str(inputs.get("node_id") or "")
+        field = str(inputs.get("field") or "")
+        if split_node_id(node_id) is None:
+            return self.fail("node_id must be a valid node id")
+        if field not in ("content", "tool_calls"):
+            return self.fail("field must be one of: content, tool_calls")
+        start = inputs.get("start")
+        if start is not None and (not isinstance(start, int) or start < 0):
+            return self.fail("start must be a non-negative integer")
+        limit = inputs.get("limit")
+        if limit is not None and (not isinstance(limit, int) or limit < 1):
+            return self.fail("limit must be a positive integer")
+        effective_start = int(start) if start is not None else 0
+        effective_limit = int(limit) if limit is not None else FIELD_WINDOW_LIMIT
+        if effective_limit > FIELD_WINDOW_LIMIT:
+            return self.fail(f"limit must not exceed {FIELD_WINDOW_LIMIT}")
+        result = self._runtime.render_node_field(node_id, field, effective_start, effective_limit)
+        if "error" in result:
+            return self._node_missing(node_id)
+        return self.ok(result)
+
+
 class SubmitAttributionTool(_AttributionTool):
     """提交一条诊断信号的定位归因（整条原子提交）。"""
 
@@ -391,12 +460,12 @@ class SubmitArtifactImprovementTool(_AttributionTool):
         if not artifact_improvement_required(self._runtime):
             return self.ok(
                 {
-                    "error": (
-                        "本次没有评估交付物（框选中没有交付物的最终版本），不提交产物改进意见；把建议写进"
-                        "归因或技能改进。/ No deliverable was reviewed this run (the selection holds no final "
-                        "version of one): submit no artifact improvement; put advice in attributions or skill "
-                        "improvements."
-                    )
+                "error": (
+                    "本次没有评估交付物（框选中没有交付物的最终版本），不提交产物改进意见；把建议写进"
+                    "归因（如调用了 skill，也可写进技能改进）。/ No deliverable was reviewed this run (the "
+                    "selection holds no final version of one): submit no artifact improvement; put advice in "
+                    "attributions (or skill improvements if a skill was used)."
+                )
                 }
             )
         status = self._runtime.record_artifact_improvement(md_string)
@@ -410,8 +479,11 @@ class SubmitSkillImprovementTool(_AttributionTool):
     tool_id = "SubmitSkillImprovementTool"
     description = (
         "提交技能改进意见；仅当归因发现问题是某个 skill 导致、或可通过优化 skill 改善时才调用；"
+        "轨迹中没有任何 `skill_tool`/`list_skill` 工具调用、也未读取任何 skill.md 文件时禁止调用；"
         "同一 key 重复调用整条覆盖。/ Submit a skill improvement; only call when a skill caused "
-        "the problem or optimizing one would help; re-calls with the same key overwrite."
+        "the problem or optimizing one would help; never call when the trajectory has no "
+        "`skill_tool`/`list_skill` tool calls and no skill.md reads; re-calls with the same key "
+        "overwrite."
     )
     input_schema = _schema(
         {
@@ -472,6 +544,7 @@ _TOOLS: list[type[_AttributionTool]] = [
     ViewTrajectoryTool,
     ViewPartialTrajectoryTool,
     ViewNodeDetailTool,
+    ViewNodeFieldTool,
     SubmitAttributionTool,
     MarkSignalInvalidTool,
     SubmitArtifactImprovementTool,
@@ -481,7 +554,7 @@ _TOOLS: list[type[_AttributionTool]] = [
 
 
 def build_attribution_tools(runtime: AttributionAgentRuntime, signal_ids: list[str]) -> list[Tool]:
-    """Instantiate the nine tools bound to one run's runtime."""
+    """Instantiate the ten tools bound to one run's runtime."""
     return [tool_cls(runtime, list(signal_ids)) for tool_cls in _TOOLS]
 
 

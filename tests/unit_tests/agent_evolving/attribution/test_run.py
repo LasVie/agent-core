@@ -115,6 +115,187 @@ async def test_run_diagnosis_skips_reward_without_model() -> None:
     assert result.run_meta["reward"]["skipped"] == "no model injected"
 
 
+async def test_run_diagnosis_appends_user_note_signal_without_artifacts() -> None:
+    result = await run_diagnosis(
+        run_id="r1",
+        language="zh",
+        nodes_by_subagent=_nodes(),
+        user_attribution="用户补充说明",
+        task_parse=_task_parse(with_artifacts=False),
+        keyword_mode="rule",
+    )
+    assert result.signal_mode == "rule_jev"
+    assert result.run_meta["reward"]["skipped"] == "no artifacts"
+    assert result.run_meta["user_note_signal"] is True
+    user_signals = [signal for signal in result.signals if signal.source == SignalSource.USER]
+    assert len(user_signals) == 1
+    user_signal = user_signals[0]
+    assert user_signal.text == "用户补充说明"
+    assert user_signal.tier == "uncertain"
+    assert user_signal.node_ids == []
+    assert result.signals[-1] is user_signal
+
+
+async def test_run_diagnosis_appends_user_note_signal_without_model() -> None:
+    result = await run_diagnosis(
+        run_id="r1",
+        language="zh",
+        nodes_by_subagent=_nodes(),
+        user_attribution="无模型备注",
+        task_parse=_task_parse(with_artifacts=True),
+        keyword_mode="rule",
+        model=None,
+    )
+    assert result.signal_mode == "rule_jev"
+    user_signals = [signal for signal in result.signals if signal.source == SignalSource.USER]
+    assert len(user_signals) == 1
+    assert user_signals[0].text == "无模型备注"
+    assert user_signals[0].tier == "uncertain"
+
+
+async def test_run_diagnosis_skips_blank_user_note() -> None:
+    result = await run_diagnosis(
+        run_id="r1",
+        language="zh",
+        nodes_by_subagent=_nodes(),
+        user_attribution="   ",
+        task_parse=_task_parse(with_artifacts=False),
+        keyword_mode="rule",
+    )
+    assert not any(signal.source == SignalSource.USER for signal in result.signals)
+    assert "user_note_signal" not in result.run_meta
+
+
+async def test_run_diagnosis_reward_success_does_not_append_user_signal(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ATTRIBUTION_REWARD", "agent")  # the Reward deep agent path
+
+    async def fake_keyword(*args: Any, **kwargs: Any) -> tuple[list[DiagnosticSignal], dict[str, Any]]:
+        del args, kwargs
+        return [_signal()], {"mode": "rule"}
+
+    def fake_build_reward(**kwargs: Any) -> tuple[Any, _FakeRail, _FakeRewardGate]:
+        gate = _FakeRewardGate()
+        return _FakeRewardAgent(kwargs["reward_sink"], gate), _FakeRail(), gate
+
+    monkeypatch.setattr(run_module, "run_keyword_diagnosis", fake_keyword)
+    monkeypatch.setattr(run_module, "build_reward_agent", fake_build_reward)
+    result = await run_diagnosis(
+        run_id="r1",
+        language="zh",
+        nodes_by_subagent=_nodes(),
+        user_attribution="用户补充说明",
+        task_parse=_task_parse(with_artifacts=True),
+        keyword_mode="rule",
+        model=object(),
+        reward_card=object(),
+    )
+    assert result.signal_mode == "reward"
+    assert not any(signal.source == SignalSource.USER for signal in result.signals)
+    assert "user_note_signal" not in result.run_meta
+
+
+async def test_run_diagnosis_appends_user_signal_when_reward_not_submitted(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ATTRIBUTION_REWARD", "agent")  # the Reward deep agent path
+
+    async def fake_keyword(*args: Any, **kwargs: Any) -> tuple[list[DiagnosticSignal], dict[str, Any]]:
+        del args, kwargs
+        return [_signal()], {"mode": "rule"}
+
+    class _NoSubmitAgent:
+        def __init__(self, sink: Any, gate: _FakeRewardGate) -> None:
+            del sink, gate
+
+        async def invoke(self, prompt: str) -> dict[str, Any]:
+            del prompt
+            return {}
+
+    def fake_build_reward(**kwargs: Any) -> tuple[Any, _FakeRail, _FakeRewardGate]:
+        gate = _FakeRewardGate()
+        return _NoSubmitAgent(kwargs["reward_sink"], gate), _FakeRail(), gate
+
+    monkeypatch.setattr(run_module, "run_keyword_diagnosis", fake_keyword)
+    monkeypatch.setattr(run_module, "build_reward_agent", fake_build_reward)
+    result = await run_diagnosis(
+        run_id="r1",
+        language="zh",
+        nodes_by_subagent=_nodes(),
+        user_attribution="备注",
+        task_parse=_task_parse(with_artifacts=True),
+        keyword_mode="rule",
+        model=object(),
+        reward_card=object(),
+    )
+    assert result.signal_mode == "rule_jev"
+    assert result.run_meta["user_note_signal"] is True
+    assert result.signals[-1].source == SignalSource.USER
+    assert result.signals[-1].text == "备注"
+
+
+async def test_run_diagnosis_appends_user_signal_when_reward_package_fails(monkeypatch: Any) -> None:
+    async def fake_keyword(*args: Any, **kwargs: Any) -> tuple[list[DiagnosticSignal], dict[str, Any]]:
+        del args, kwargs
+        return [_signal()], {"mode": "rule"}
+
+    async def exploding_run_reward(**kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        del kwargs
+        raise RuntimeError("reward package broke")
+
+    monkeypatch.setattr(run_module, "run_keyword_diagnosis", fake_keyword)
+    monkeypatch.setattr(run_module, "run_reward", exploding_run_reward)
+    result = await run_diagnosis(
+        run_id="r1",
+        language="zh",
+        nodes_by_subagent=_nodes(),
+        user_attribution="备注",
+        task_parse=_task_parse(with_artifacts=True),
+        keyword_mode="rule",
+        model=object(),
+        reward_card=object(),
+    )
+    assert result.signal_mode == "rule_jev"
+    assert result.run_meta["reward"]["engine"] == "reward"
+    assert result.run_meta["user_note_signal"] is True
+    assert result.signals[-1].source == SignalSource.USER
+    assert result.signals[-1].text == "备注"
+
+
+async def test_run_diagnosis_appends_user_signal_when_reward_agent_fails(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ATTRIBUTION_REWARD", "agent")  # the Reward deep agent path
+
+    async def fake_keyword(*args: Any, **kwargs: Any) -> tuple[list[DiagnosticSignal], dict[str, Any]]:
+        del args, kwargs
+        return [_signal()], {"mode": "rule"}
+
+    class _ExplodingRewardAgent:
+        def __init__(self, sink: Any, gate: _FakeRewardGate) -> None:
+            del sink, gate
+
+        async def invoke(self, prompt: str) -> dict[str, Any]:
+            del prompt
+            raise RuntimeError("reward agent broke")
+
+    def fake_build_reward(**kwargs: Any) -> tuple[Any, _FakeRail, _FakeRewardGate]:
+        gate = _FakeRewardGate()
+        return _ExplodingRewardAgent(kwargs["reward_sink"], gate), _FakeRail(), gate
+
+    monkeypatch.setattr(run_module, "run_keyword_diagnosis", fake_keyword)
+    monkeypatch.setattr(run_module, "build_reward_agent", fake_build_reward)
+    result = await run_diagnosis(
+        run_id="r1",
+        language="zh",
+        nodes_by_subagent=_nodes(),
+        user_attribution="备注",
+        task_parse=_task_parse(with_artifacts=True),
+        keyword_mode="rule",
+        model=object(),
+        reward_card=object(),
+    )
+    assert result.signal_mode == "rule_jev"
+    assert result.run_meta["user_note_signal"] is True
+    assert result.signals[-1].source == SignalSource.USER
+    assert result.signals[-1].text == "备注"
+
+
 def _reward_payload() -> dict[str, Any]:
     return {
         "schema_version": "attribution.reward.v1",
@@ -277,7 +458,7 @@ async def test_prepare_reward_temp_dir_tolerates_failure(tmp_path: Any) -> None:
 
 
 async def test_build_reward_agent_wires_llm_status_rail(monkeypatch: Any) -> None:
-    from openjiuwen.agent_evolving.attribution.reward.reward_agent import build_reward_agent
+    from openjiuwen.agent_evolving.attribution.reward_stage.reward_agent import build_reward_agent
     from openjiuwen.harness import factory as harness_factory
 
     captured: dict[str, Any] = {}

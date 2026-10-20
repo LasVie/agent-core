@@ -4,7 +4,7 @@
 
 The pipeline is: task parsing (rule file extraction + one pseudo-agent LLM
 call), diagnosis (keyword rules or Jev + optional Reward building), and
-attribution (a deep agent with nine tools).  Everything here is pure data;
+attribution (a deep agent with ten tools).  Everything here is pure data;
 runtime wiring and persistence belong to the host.
 """
 
@@ -23,6 +23,7 @@ class SignalSource(str, Enum):
     KEYWORD_TOOL = "keyword_tool"
     KEYWORD_USER = "keyword_user"
     REWARD = "reward"
+    USER = "user"
 
 
 SIGNAL_TIERS = frozenset({"perfect", "fair", "weak", "uncertain"})

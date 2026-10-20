@@ -1,5 +1,5 @@
 # coding: utf-8
-"""Tests for the nine attribution tools against NodeBackedRuntime."""
+"""Tests for the ten attribution tools against NodeBackedRuntime."""
 
 from __future__ import annotations
 
@@ -93,6 +93,92 @@ async def test_view_node_detail() -> None:
     detail = await _invoke(_tool_map(runtime)["view_node_detail"], node_id="main:0")
     assert detail["node_id"] == "main:0"
     assert detail["role"] == "user"
+
+
+def _long_content_runtime() -> NodeBackedRuntime:
+    nodes = {
+        "main": [
+            TrajectoryNode(
+                node_id="main:0",
+                subagent_key="main",
+                display_name="main",
+                kind="main_agent",
+                role="assistant",
+                content="0123456789" * 100,
+                start_ts_ns=0,
+                end_ts_ns=50,
+            )
+        ]
+    }
+    return NodeBackedRuntime(nodes)
+
+
+async def test_view_node_field_content_and_cursor() -> None:
+    runtime = _long_content_runtime()
+    tool = _tool_map(runtime)["view_node_field"]
+    first = await _invoke(tool, node_id="main:0", field="content", start=0, limit=12)
+    assert first["text"] == "0123456789" * 1 + "01"
+    assert first["start"] == 0
+    assert first["end"] == 12
+    assert first["total_chars"] == 1000
+    assert first["has_more"] is True
+    second = await _invoke(tool, node_id="main:0", field="content", start=first["end"], limit=8)
+    assert second["text"] == "23456789"
+    assert second["start"] == 12
+    assert second["end"] == 20
+    assert second["has_more"] is True
+
+
+async def test_view_node_field_defaults_and_graceful_boundary() -> None:
+    runtime = _long_content_runtime()
+    tool = _tool_map(runtime)["view_node_field"]
+    window = await _invoke(tool, node_id="main:0", field="content")
+    assert window["start"] == 0
+    assert window["end"] == 1000
+    assert window["has_more"] is False
+    beyond = await _invoke(tool, node_id="main:0", field="content", start=1000, limit=100)
+    assert beyond == {"text": "", "start": 1000, "end": 1000, "total_chars": 1000, "has_more": False}
+
+
+async def test_view_node_field_tool_calls_slice() -> None:
+    nodes = {
+        "main": [
+            TrajectoryNode(
+                node_id="main:0",
+                subagent_key="main",
+                display_name="main",
+                kind="main_agent",
+                role="assistant",
+                tool_calls=[{"name": "write_file", "arguments": json.dumps({"content": "x" * 2000})}],
+                start_ts_ns=0,
+                end_ts_ns=50,
+            )
+        ]
+    }
+    tool = _tool_map(NodeBackedRuntime(nodes))["view_node_field"]
+    window = await _invoke(tool, node_id="main:0", field="tool_calls", start=0, limit=10)
+    raw = json.dumps(nodes["main"][0].tool_calls, ensure_ascii=False)
+    assert window["text"] == raw[:10]
+    assert window["total_chars"] == len(raw)
+    assert window["has_more"] is True
+
+
+async def test_view_node_field_invalid_params() -> None:
+    runtime = _long_content_runtime()
+    tool = _tool_map(runtime)["view_node_field"]
+    for inputs in (
+        {"node_id": "main:0", "field": "content", "start": -1},
+        {"node_id": "main:0", "field": "content", "limit": 0},
+        {"node_id": "main:0", "field": "content", "limit": 50_001},
+        {"node_id": "main:0", "field": "content", "start": 1.5},
+        {"node_id": "main:0", "field": "name"},
+        {"node_id": "bad", "field": "content"},
+    ):
+        output = await tool.invoke(inputs)
+        assert not output.success
+    missing = await tool.invoke({"node_id": "main:9", "field": "content"})
+    assert missing.success
+    assert "error" in json.loads(missing.data["content"])
 
 
 async def test_submit_attribution_atomic_and_overwrite() -> None:

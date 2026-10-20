@@ -5,7 +5,7 @@
 Stage one parses the selected trajectory into a task description and task
 artifacts; stage two diagnoses (keyword rules or Jev, plus an optional Reward
 deep agent); stage three attributes every diagnostic signal through a deep
-agent with nine tools.  Nothing here imports jiuwenswarm: all IO is injected.
+agent with ten tools.  Nothing here imports jiuwenswarm: all IO is injected.
 """
 
 from openjiuwen.agent_evolving.attribution.agent import (
@@ -44,6 +44,7 @@ from openjiuwen.agent_evolving.attribution.nodes import (
     detect_language,
     is_error_node,
     render_node_detail,
+    render_node_field,
     render_overview,
     render_summary,
     search_keyword,
@@ -124,6 +125,7 @@ __all__ = [
     "new_signal_id",
     "node_native_key",
     "render_node_detail",
+    "render_node_field",
     "render_overview",
     "render_partial_view",
     "render_signal_block",

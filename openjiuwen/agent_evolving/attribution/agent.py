@@ -2,7 +2,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Attribution agent: prompts, runtime protocol, context budget rail, factory.
 
-The agent locates the nodes causing each diagnostic signal with the nine
+The agent locates the nodes causing each diagnostic signal with the ten
 read-only/report tools and must call ``check_attribution_complete`` until
 ``all_done=true``.  Trajectory access and result recording are provided by
 the host through one :class:`AttributionAgentRuntime` per run.
@@ -30,8 +30,8 @@ if TYPE_CHECKING:
 
 _PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 
-_DEFAULT_CONTEXT_BUDGET_TOKENS = 800_000
-_DEFAULT_MAX_ITERATIONS = 64
+_DEFAULT_CONTEXT_BUDGET_TOKENS = 3_000_000
+_DEFAULT_MAX_ITERATIONS = 80
 _DEFAULT_MAX_CONTEXT_MESSAGES = 100
 _AGENT_CARD_ID = "attribution-agent"
 
@@ -295,6 +295,8 @@ class AttributionAgentRuntime(Protocol):
 
     def render_node_detail(self, node_id: str) -> dict[str, Any]: ...
 
+    def render_node_field(self, node_id: str, field: str, start: int, limit: int) -> dict[str, Any]: ...
+
     def record_attribution(self, signal_id: str, entries: list[dict[str, Any]]) -> str: ...
 
     def mark_signal_invalid(self, signal_id: str) -> str: ...
@@ -451,7 +453,7 @@ def build_attribution_agent(
 ) -> tuple["DeepAgent", ContextBudgetRail]:
     """Build the attribution agent and its budget rail.
 
-    Only the nine custom tools are registered; task loop, subagents, mcps and
+    Only the ten custom tools are registered; task loop, subagents, mcps and
     skills stay off.  The host reads ``rail.exceeded`` after ``invoke``.
     """
     from openjiuwen.agent_evolving.attribution.tools import build_attribution_tools
