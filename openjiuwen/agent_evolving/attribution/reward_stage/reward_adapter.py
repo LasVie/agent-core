@@ -17,6 +17,7 @@ dimension; the overall comment counts it.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from collections.abc import Mapping, Sequence
@@ -193,12 +194,18 @@ class _ProgressLines:
 
     Installed as Reward's progress object (its ``stage``/``tick``/``counted`` calls) and as its log
     (evidence checks are counted from it); every step the user would care about becomes one line.
+
+    The evidence step has no known number of checks, so its share of the bar follows the larger of the
+    time used against its time limit and a count of checks that slows down but never stops: each check
+    moves the bar a little, and it does not sit at one number while checks keep coming.
     """
 
-    def __init__(self, say: Any, language: str) -> None:
+    def __init__(self, say: Any, language: str, evidence_seconds: float = 300.0) -> None:
         self._say = say
         self._labels = _labels(language)
         self._started = time.monotonic()
+        self._evidence_seconds = max(1.0, float(evidence_seconds))
+        self._evidence_started = self._started
         self._percent = 0
         self._criteria = 0
         self._checks = 0
@@ -220,6 +227,7 @@ class _ProgressLines:
             self.line(3, self._labels["criteria"])
         elif stage == "evidence":
             self._criteria = total
+            self._evidence_started = time.monotonic()
             self.line(15, self._labels["evidence"].format(count=total))
         elif stage == "judging":
             if self._checks:
@@ -248,11 +256,11 @@ class _ProgressLines:
         if message.startswith("evidence ") and " for " in message:
             self._checks += 1
             tool = message.split("(", 1)[-1].split(")", 1)[0] if "(" in message else "-"
-            expected = max(6, 2 * self._criteria)
-            self.line(
-                15 + round(52 * min(1.0, self._checks / expected)),
-                self._labels["check"].format(count=self._checks, tool=tool),
-            )
+            by_time = (time.monotonic() - self._evidence_started) / self._evidence_seconds
+            by_checks = 1 - math.exp(-self._checks / max(6, 2 * self._criteria))
+            percent = 15 + round(52 * min(0.98, max(by_time, by_checks)))
+            percent = max(percent, min(self._percent + 1, 66))  # a new check always shows, up to 66%
+            self.line(percent, self._labels["check"].format(count=self._checks, tool=tool))
         elif " criteria: " in message and "; tools: " in message:
             count = message.split(" criteria: ", 1)[0].strip()
             self.line(12, self._labels["criteria_done"].format(count=count))
@@ -353,7 +361,7 @@ async def run_reward(
             failed Reward run.
     """
     from openjiuwen.agent_evolving.attribution.agent import emit_single_llm_event
-    from openjiuwen.agent_evolving.reward import pipeline, progress
+    from openjiuwen.agent_evolving.reward import evidence_agent, pipeline, progress
 
     counter = status_counter if status_counter is not None else [0]
     task = review_task(task_parse, user_attribution, language)
@@ -373,7 +381,10 @@ async def run_reward(
             preview=line,
         )
 
-    lines = _ProgressLines(say, language)
+    evidence_seconds = float(config.get("evidence_seconds", evidence_agent.SECONDS))
+    if config.get("deadline_seconds"):
+        evidence_seconds = min(evidence_seconds, float(config["deadline_seconds"]))
+    lines = _ProgressLines(say, language, evidence_seconds)
     token = progress._current.set(lines)  # noqa: SLF001 - Reward's own per-run progress slot
     try:
         result = await pipeline.reward(

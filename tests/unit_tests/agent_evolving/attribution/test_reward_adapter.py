@@ -256,6 +256,17 @@ async def test_progress_streams_what_reward_does_now(monkeypatch: Any, tmp_path:
     assert not isinstance(progress.current(), adapter._ProgressLines)  # the run's progress slot is restored
 
 
+def test_the_evidence_bar_keeps_moving_while_checks_come() -> None:
+    lines: list[str] = []
+    steps = adapter._ProgressLines(lines.append, "zh", evidence_seconds=300)
+    steps.stage("evidence", total=5)
+    for index in range(1, 19):  # more checks than two per criterion
+        steps.log(f"evidence c{index} (python) for plan")
+    percents = [int(line.split("% ")[0].split(" ")[-1]) for line in lines[1:]]
+    assert percents == sorted(set(percents))  # every check moves the bar
+    assert percents[-1] < 68  # judging starts at 68
+
+
 async def test_a_failed_reward_falls_back_to_the_process_signals(monkeypatch: Any, tmp_path: Any) -> None:
     async def broken(*args: Any, **kwargs: Any) -> dict[str, Any]:
         raise ConnectionError("model unreachable")
