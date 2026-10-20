@@ -126,7 +126,7 @@ def test_the_delivery_round_skips_a_closing_thank_you() -> None:
 
 
 async def test_the_leader_in_the_delivery_round_reviews_its_final_deliverables() -> None:
-    sliced = slice_nodes_by_range(_session(), [(LEADER, 38, 58)])  # the leader in the redo, not its last reply
+    sliced = slice_nodes_by_range(_session(), [(LEADER, 38, 62)])  # the redo up to its last reply
     parse = await run_task_parse(sliced, "zh", _Llm())
     assert parse.delivery_round == f"{LEADER}:6" and parse.delivery_round_selected is True
     assert parse.message_artifacts == [(f"{LEADER}:8", "重做好了：schedule-v2.md" + LONG)]  # the round's last reply
@@ -165,7 +165,13 @@ async def test_the_leader_starting_the_round_is_not_the_delivery() -> None:
     assert parse.delivery_round_selected is False and parse.file_artifacts == []
 
 
-async def test_a_single_agent_writing_its_deliverable_hands_it_over() -> None:
+async def test_sending_the_file_before_the_last_reply_is_not_the_hand_over() -> None:
+    sliced = slice_nodes_by_range(_session(), [(LEADER, 38, 58)])  # the file sent at 55, not the reply at 60
+    parse = await run_task_parse(sliced, "zh", _Llm())
+    assert parse.delivery_round_selected is False and parse.file_artifacts == []
+
+
+async def test_a_single_agent_hands_over_with_its_last_step() -> None:
     main = "main"
     nodes = {
         main: [
@@ -174,7 +180,11 @@ async def test_a_single_agent_writing_its_deliverable_hands_it_over() -> None:
             _node(main, 3, 30, content="report.md 写好了" + LONG, kind="main_agent"),
         ]
     }
-    sliced = slice_nodes_by_range(nodes, [(main, 15, 25)])  # the write, not the reply
+    sliced = slice_nodes_by_range(nodes, [(main, 15, 25)])  # the write, not the reply after it
+    parse = await run_task_parse(sliced, "zh", _Llm(files=["/w/report.md"]))
+    assert parse.delivery_round_selected is False
+    nodes[main] = nodes[main][:2]  # it wrote the file and stopped without a reply: the write is the last step
+    sliced = slice_nodes_by_range(nodes, [(main, 15, 25)])
     parse = await run_task_parse(sliced, "zh", _Llm(files=["/w/report.md"]))
     assert parse.delivery_round_selected is True and parse.file_artifacts == ["/w/report.md"]
 

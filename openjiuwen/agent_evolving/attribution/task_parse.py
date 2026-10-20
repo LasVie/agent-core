@@ -952,25 +952,30 @@ class DeliveryRound:
         return node.start_ts_ns >= self.start.start_ts_ns and (self.end_ns is None or node.start_ts_ns < self.end_ns)
 
     def delivery_nodes(self, reported: Sequence[str] = ()) -> set[str]:
-        """The leader's steps that hand the result over in this round.
+        """The leader's last step handing the result over in this round, as a one-item set (empty when none).
 
-        Its last reply, any call sending a file to the user, and its own last write of a reported
-        deliverable file (a single agent writes its files itself).
+        A hand-over step is its last reply, a call sending a file to the user, or its own last write of a
+        reported deliverable file (a single agent writes its files itself); only the latest of them counts,
+        so a selection ending before the final reply does not review the deliverables.
         """
         steps = {node_id for node_id, _ in self.reply()}
         for nodes in self.whole.values():
             for node in nodes:
                 if node.kind in _LEAD_KINDS and self.holds(node) and _sends_file(node):
                     steps.add(node.node_id)
-        lead = {node.node_id for nodes in self.whole.values() for node in nodes if node.kind in _LEAD_KINDS}
+        lead = {node.node_id: node for nodes in self.whole.values() for node in nodes if node.kind in _LEAD_KINDS}
         written = last_writes(self.whole, self.workspace)
         steps.update(written[path] for path in self.files(list(reported)) if written.get(path) in lead)
-        return steps
+        timed = [lead[node_id] for node_id in steps if node_id in lead]
+        if not timed:
+            return set()
+        last = max(timed, key=lambda node: (node.start_ts_ns, node.end_ts_ns))
+        return {last.node_id}
 
     def lead_selected(
         self, nodes_by_subagent: Mapping[str, list[TrajectoryNode]], reported: Sequence[str] = ()
     ) -> bool:
-        """Whether the selection holds a step in which the leader handed the result over (see ``delivery_nodes``)."""
+        """Whether the selection holds the leader's last hand-over step of this round (see ``delivery_nodes``)."""
         steps = self.delivery_nodes(reported)
         return any(node.node_id in steps for nodes in nodes_by_subagent.values() for node in nodes)
 
