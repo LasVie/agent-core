@@ -3,7 +3,6 @@
 import re
 from pathlib import Path
 
-
 FILE_LIMIT = 20000        # characters kept per deliverable or reference file
 
 EVIDENCE_LIMIT = 60000    # characters kept per evidence part (deliverable, references, log)

@@ -2,13 +2,12 @@
 
 import os
 import re
-from urllib.parse import unquote
 import shutil
 import tempfile
 from pathlib import Path
+from urllib.parse import unquote
 
 from .files import extract_text
-
 
 INPUTS_DIR = "_inputs"   # used only when a batch caller explicitly supplies reference texts
 

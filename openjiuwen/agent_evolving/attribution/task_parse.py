@@ -1087,7 +1087,7 @@ async def run_task_parse(
                 tools=TASK_PARSE_TOOLS,
             )
         except Exception as exc:  # noqa: BLE001 - a failed call counts as one attempt
-            from openjiuwen.agent_evolving.attribution.agent import emit_single_llm_event
+            from openjiuwen.agent_evolving.attribution.events import emit_single_llm_event
 
             emit_single_llm_event(
                 status_sink,
@@ -1103,7 +1103,7 @@ async def run_task_parse(
                 raise
             continue
         calls = _response_tool_calls(response)
-        from openjiuwen.agent_evolving.attribution.agent import emit_single_llm_event
+        from openjiuwen.agent_evolving.attribution.events import emit_single_llm_event
 
         emit_single_llm_event(
             status_sink,

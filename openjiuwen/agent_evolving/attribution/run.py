@@ -22,8 +22,8 @@ from openjiuwen.agent_evolving.attribution.agent import (
     build_attribution_agent,
     build_attribution_initial_prompt,
     build_wake_text,
-    emit_single_llm_event,
 )
+from openjiuwen.agent_evolving.attribution.events import emit_single_llm_event
 from openjiuwen.agent_evolving.attribution.keyword_detect import SIGNAL_TEXT_LIMIT, run_keyword_diagnosis
 from openjiuwen.agent_evolving.attribution.model import (
     AttributionRunOutcome,

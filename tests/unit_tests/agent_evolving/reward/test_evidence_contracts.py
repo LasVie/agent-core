@@ -207,6 +207,7 @@ async def test_cancelling_python_check_kills_and_waits_for_process(monkeypatch, 
 
 @pytest.mark.asyncio
 async def test_the_agent_is_steered_to_run_pages_not_to_read_them(tmp_path, monkeypatch):
+    pytest.importorskip("playwright")
     page = "\n".join(f"line {i}" for i in range(1, 501))
     (tmp_path / "game.html").write_text(page)
     (tmp_path / "notes.md").write_text("# Notes\nscore rules")

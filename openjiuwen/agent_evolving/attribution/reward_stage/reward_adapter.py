@@ -360,7 +360,7 @@ async def run_reward(
         Exception: Any failure (no route, no evidence, model errors); the caller falls back as for a
             failed Reward run.
     """
-    from openjiuwen.agent_evolving.attribution.agent import emit_single_llm_event
+    from openjiuwen.agent_evolving.attribution.events import emit_single_llm_event
     from openjiuwen.agent_evolving.reward import evidence_agent, pipeline, progress
 
     counter = status_counter if status_counter is not None else [0]

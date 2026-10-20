@@ -7,10 +7,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from openjiuwen.agent_evolving.attribution.model import TaskParseResult
 from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode, user_request_nodes, user_request_text
 from openjiuwen.agent_evolving.attribution.snapshot import SlicedNodes, slice_nodes_by_range
 from openjiuwen.agent_evolving.attribution.task_parse import build_task_parse_digest, run_task_parse, user_request_of
+
+pytestmark = pytest.mark.asyncio
 
 LEADER = "team-member:s:t:team-leader"
 MEMBER = "team-member:s:t:writer"

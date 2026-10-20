@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from openjiuwen.agent_evolving.reward import __main__ as cli
 from openjiuwen.agent_evolving.reward import checks, evidence_agent, guides, models, pipeline, scoring, workspace
 from openjiuwen.agent_evolving.reward import progress as progress_mod
 from openjiuwen.agent_evolving.reward import result as result_mod
-from openjiuwen.agent_evolving.reward import __main__ as cli
 
 GAME = """<button id="go">Go</button><p id="score">0</p><script>
 var score = 0; var best = Number(localStorage.getItem('best') || 0);
@@ -331,6 +331,7 @@ JUDGED = {"claims": [{"index": 0, "status": "met", "reason": "seen"},
 
 @pytest.mark.asyncio
 async def test_a_page_is_played_in_the_browser_and_judged_with_comments(tmp_path, monkeypatch):
+    pytest.importorskip("playwright")
     (tmp_path / "index.html").write_text(GAME)
     seen = []
     install(monkeypatch, [
@@ -364,6 +365,7 @@ async def test_a_page_is_played_in_the_browser_and_judged_with_comments(tmp_path
 
 @pytest.mark.asyncio
 async def test_a_browser_check_can_open_the_file_from_disk_like_a_double_click(tmp_path):
+    pytest.importorskip("playwright")
     (tmp_path / "index.html").write_text(GAME)
     probe = {"type": "probe", "script": "() => location.protocol"}
     from_disk, _ = await checks.run_experiment(tmp_path / "index.html", {"via": "file", "actions": [probe]})
@@ -374,6 +376,7 @@ async def test_a_browser_check_can_open_the_file_from_disk_like_a_double_click(t
 
 @pytest.mark.asyncio
 async def test_a_closeup_is_a_sharp_screenshot_of_part_of_an_element(tmp_path):
+    pytest.importorskip("playwright")
     (tmp_path / "index.html").write_text(GAME)
     result, shots = await checks.run_experiment(tmp_path / "index.html", {"actions": [
         {"type": "closeup", "selector": "body", "region": [0, 0, 0.5, 0.5]}]})
@@ -388,6 +391,7 @@ async def test_a_closeup_is_a_sharp_screenshot_of_part_of_an_element(tmp_path):
 
 @pytest.mark.asyncio
 async def test_drag_and_wheel_reach_the_page(tmp_path):
+    pytest.importorskip("playwright")
     (tmp_path / "view.html").write_text("""<canvas id=c width=400 height=300></canvas><script>
         const c = document.getElementById('c'); window.log = []; let down = false;
         c.onmousedown = () => { down = true; }; c.onmouseup = () => { down = false; window.log.push('drag'); };
@@ -403,6 +407,7 @@ async def test_drag_and_wheel_reach_the_page(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_library_pinned_on_a_cdn_loads_and_other_network_stays_blocked(tmp_path, monkeypatch):
+    pytest.importorskip("playwright")
     fetched = []
     monkeypatch.setattr(checks, "cdn_file", lambda url: fetched.append(url) or b"export const REVISION = '160';")
     (tmp_path / "game.html").write_text("""<script type="importmap">{"imports": {"three":
@@ -420,6 +425,7 @@ async def test_a_library_pinned_on_a_cdn_loads_and_other_network_stays_blocked(t
 
 @pytest.mark.asyncio
 async def test_a_page_with_a_chinese_file_name_loads_and_a_missing_page_is_a_failed_check(tmp_path):
+    pytest.importorskip("playwright")
     (tmp_path / "一键跳跳猫.html").write_text(GAME)
     result, _ = await checks.run_experiment(tmp_path / "一键跳跳猫.html", {"actions": [
         {"type": "probe", "script": "() => document.title"}]})
@@ -579,6 +585,7 @@ async def test_read_checks_quote_lines_and_cannot_leave_the_workspace(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_later_rounds_reuse_the_kept_rubric_and_keep_no_scores(tmp_path, monkeypatch):
+    pytest.importorskip("playwright")
     seen = []
     verdicts = iter([{"claims": [{"index": 0, "status": "met"}, {"index": 1, "status": "unmet"}]},
                      {"claims": [{"index": 0, "status": "met"}, {"index": 1, "status": "met"}]},
@@ -609,6 +616,7 @@ async def test_later_rounds_reuse_the_kept_rubric_and_keep_no_scores(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_looks_are_judged_by_eye_only_and_a_major_flaw_caps_them(tmp_path, monkeypatch):
+    pytest.importorskip("playwright")
     (tmp_path / "index.html").write_text(GAME)
     seen = []
     visual = {"id": "look", "scope": "terminal", "kind": "visual", "name": "画面", "goal": "好看",
@@ -655,6 +663,7 @@ async def test_slow_checks_stop_at_the_deadline_and_the_judge_still_runs(tmp_pat
 
 @pytest.mark.asyncio
 async def test_a_blind_judge_gets_no_screenshots_and_the_reply_warns(tmp_path, monkeypatch):
+    pytest.importorskip("playwright")
     (tmp_path / "index.html").write_text(GAME)
     seen = []
 
@@ -753,6 +762,7 @@ async def test_work_without_a_deliverable_file_is_scored_from_the_reply(tmp_path
 
 @pytest.mark.asyncio
 async def test_pages_stacked_in_one_long_page_are_reached_by_scrolling(tmp_path):
+    pytest.importorskip("playwright")
     page = tmp_path / "book.html"
     page.write_text("<body style='margin:0'>" + "".join(
         f"<section id='p{i}' style='height:100vh;background:hsl({i * 40},70%,50%)'>page {i}</section>" for i in range(1, 4))
@@ -773,6 +783,7 @@ def test_a_claim_naming_a_judge_is_reworded():
 
 @pytest.mark.asyncio
 async def test_a_work_made_of_pictures_is_seen_through_its_picture_files(tmp_path):
+    pytest.importorskip("playwright")
     import base64 as b64
     png = b64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
     for name in ("page10.png", "page2.png", "page1.png"):
@@ -785,6 +796,7 @@ async def test_a_work_made_of_pictures_is_seen_through_its_picture_files(tmp_pat
 
 @pytest.mark.asyncio
 async def test_default_screenshots_press_the_start_button_not_the_first_one(tmp_path):
+    pytest.importorskip("playwright")
     (tmp_path / "game.html").write_text("""<button id="sound">音效：开</button><button id="startBtn">开始游戏</button>
 <p id="state">menu</p><script>
 document.getElementById('sound').onclick = () => document.getElementById('state').textContent = 'sound';

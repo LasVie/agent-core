@@ -23,5 +23,6 @@ or from the command line: ``python -m openjiuwen.agent_evolving.reward --help``.
 from .config import DEFAULT_CONFIG, load_config
 from .pipeline import archive_rubric, reward, text_reward, write_criteria
 from .result import SCHEMA_VERSION, render
+
 __all__ = ["DEFAULT_CONFIG", "SCHEMA_VERSION", "archive_rubric", "load_config", "reward", "text_reward",
            "write_criteria", "render"]

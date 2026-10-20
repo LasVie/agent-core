@@ -10,13 +10,10 @@ from pathlib import Path
 
 from . import checks, evidence_agent, guides, models, progress
 from .files import FILE_LIMIT, bundle, clip
-from .prompts import (ART_JUDGE_PROMPT, BLIND_NOTE, CRITERIA_PROMPT, JUDGE_PROMPT, FEEDBACK_PROMPT,
-                      SUMMARY_PROMPT)
+from .prompts import ART_JUDGE_PROMPT, BLIND_NOTE, CRITERIA_PROMPT, FEEDBACK_PROMPT, JUDGE_PROMPT, SUMMARY_PROMPT
 from .result import build
 from .scoring import to_result, total
 from .workspace import make_workspace, workspace_files
-
-
 
 INPUTS_INLINE = 30000    # inputs longer than this in total are shown as an index; checks read them on demand
 

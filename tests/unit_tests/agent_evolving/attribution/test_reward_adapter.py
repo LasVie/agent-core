@@ -15,6 +15,8 @@ from openjiuwen.agent_evolving.attribution.nodes import TrajectoryNode
 from openjiuwen.agent_evolving.attribution.reward_stage import reward_adapter as adapter
 from openjiuwen.agent_evolving.attribution.run import run_diagnosis
 
+pytestmark = pytest.mark.asyncio
+
 LEADER = "team-member:s:t:team-leader"
 MEMBER = "team-member:s:t:writer"
 

@@ -10,7 +10,6 @@ from pathlib import Path
 
 from .session import latest_session_history, sessions_root
 
-
 SESSION_EXTRA = {"deepseek": {"thinking": {"type": "enabled"}, "reasoning_effort": "low"},
                  "qwen": {"enable_thinking": False}}
 
