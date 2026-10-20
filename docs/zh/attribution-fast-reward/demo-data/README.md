@@ -52,7 +52,8 @@ python3 import_demo.py web_1a152586c02_saturday.tar.gz --runtime <你的任务�
 | 只框中间：leader 12:08–12:43、schedule-planner 12:43:40–12:44:53、message-writer 12:43:35–12:44:06 | 「消息 0 · 文件 0」：框里的 `schedule.md` 后来被 `schedule-v2.md` 取代；不跑 Fast Reward，只看过程，不出产物改进 |
 | 只框中间：leader 12:42:55–15:56:12、两个成员 12:43–12:45 | 同上；12:45 的第一轮团队完成回复已被 15:57 的重做取代，不算交付物 |
 | 只框成员在最后一轮的部分：message-writer 15:57:00–15:57:22 | 只看过程：最后一轮里没有框到 leader，不评交付物 |
-| 框到 leader 在最后一轮的部分：leader 15:56:30–15:57:40 | 评最终交付：v2 完成回复、`schedule-v2.md`、`wechat-message-v2.md`（以任务解析报的文件为准） |
+| 只框到最后一轮的开头：leader 12:43–15:56:18 | 只看过程：leader 在 15:56:15 只建了 Skill 目录，交付的那一步不在框选里 |
+| 框到 leader 交付的那一步：leader 15:56:30–15:57:40（含 15:57:33 发文件、15:57:39 最终回复） | 评最终交付：v2 完成回复、`schedule-v2.md`、`wechat-message-v2.md`（以任务解析报的文件为准） |
 
 打包时已有的诊断结果也在包里，导入后在前端的诊断记录里能直接看到，不必重跑。
 
