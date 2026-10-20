@@ -350,3 +350,25 @@ def test_summary_links_without_evidence_are_flagged_but_status_is_kept(manager) 
         session.state, "1. https://www.bilibili.com/video/BV1 2. https://www.bilibili.com/video/BV2"
     )
     assert "unbacked_items" not in payload
+
+
+def test_browser_task_reports_its_own_model_usage(manager) -> None:
+    from openjiuwen.core.foundation.llm.schema.message import AssistantMessage, UsageMetadata
+    from openjiuwen.core.single_agent.rail.base import ModelCallInputs
+
+    ability_manager, _ = manager
+    rail, _ = _rail()
+    session = _FakeSession()
+    for tools, tokens in ((["ext_describe", "ext_run"], 1000), (["ext_run"], 400), ([], 300)):
+        response = AssistantMessage(
+            content="",
+            tool_calls=[ToolCall(id=f"{name}-{tokens}", type="function", name=name, arguments="{}") for name in tools],
+            usage_metadata=UsageMetadata(input_tokens=tokens, output_tokens=50, cache_tokens=10, total_cost=0.01),
+        )
+        _run(rail.after_model_call(_ctx(ability_manager, session, ModelCallInputs(messages=[], response=response))))
+
+    usage = BrowserRuntimeRail._authoritative_terminal_payload(session.state)["model_usage"]
+    assert usage["model_calls"] == 3 and usage["tool_calls"] == 3
+    assert usage["tool_calls_by_name"] == {"ext_describe": 1, "ext_run": 2}
+    assert (usage["input_tokens"], usage["output_tokens"], usage["cache_tokens"]) == (1700, 150, 30)
+    assert usage["total_cost"] == pytest.approx(0.03)
