@@ -330,7 +330,7 @@ result = await reward(task, artifacts, config, txt_response="", user_note="", pr
 | `evidence_model` | 模型配置或 agent-core `ModelPoolEntry` | 同 `producer` | 取证 DeepAgent 使用的模型 | 必须支持工具调用（function calling），否则报 `EvidenceError: ran no check`；支持图片时 Agent 能看到截图 |
 | `evidence_rounds` | int | 12 | 取证最多几轮模型调用 | 防止死循环的保险；达到上限后继续判定，不报错 |
 | `evidence_seconds` | int | 300 | 取证最长秒数 | 设置 `deadline_seconds` 时会被进一步缩短，为判定和总评留出时间 |
-| `deadline_seconds` | int | 不限 | 整次运行的总时限，出题、意见整理、判定和总评共用 | 仅当调用方外层有超时时设置，且应小于外层超时；JiuwenSwarm 传 720，余下时间留给归因 |
+| `deadline_seconds` | int | 不限 | 整次运行的总时限，出题、意见整理、判定和总评共用 | 仅当调用方外层有超时时设置，且应小于外层超时。JiuwenSwarm 的 `/reward` 传 720；归因诊断默认 600（`REWARD_DEADLINE` 可改），余下时间留给归因 |
 | `criteria_budget` | int | 3 | 交付物维度的上限（另有「质量」维度和必要时的「画面」维度） | 调大会增加判定耗时 |
 | `include_evidence` | bool | false | 结果 JSON 是否包含每个检查的完整输出 | 仅用于排查判定；打开后 JSON 体积很大；命令行为 `--evidence` |
 | `metric_guides` | 路径列表 | 无 | 额外的评测知识文件或目录 | 只写通用原则，见「评测知识」一节 |
@@ -365,17 +365,6 @@ result = await reward(task, artifacts, config, txt_response="", user_note="", pr
 - 结果写入 `<会话>/reward_production/<run_id>/reward_result.json`（本包）和 `attribution.json`（归因）。
 - 进度写入 `<会话>/reward/<开始毫秒>.json`，供网页进度卡片读取。
 
-## 批量评测：RewardPack
-
-```bash
-python -m openjiuwen.agent_evolving.reward.rewardpack --pack /path/to/rewardpack_top10 --out results/ --limit 4
-```
-
-- 每个候选只用它当时能看到和产出的内容来评：任务原文、交付物文本、最终回复，以及任务的输入材料（WorkBuddy 的 workspace 输入、Claw-Eval 的 fixtures）。不看标准答案，也不看官方评分器。
-- 同一任务同一轮的 A、B 两个候选共用一套标准，标准缓存在 `results/criteria/`。
-- 结果逐条追加到 `results/results.jsonl`，汇总在 `results/summary.json`。
-- `--rounds all` 运行全部 3 轮，`--concurrency` 控制并发数。
-
 ## 代码结构
 
 | 文件 | 内容 |
@@ -395,13 +384,13 @@ python -m openjiuwen.agent_evolving.reward.rewardpack --pack /path/to/rewardpack
 | `session.py` | 定位 JiuwenSwarm 会话目录（查找会话模型、写进度文件，不读轨迹） |
 | `progress.py` | 网页进度卡片读取的进度文件 |
 | `config.py` | 配置加载 |
-| `rewardpack.py` | RewardPack 批量评测 |
 
 测试位于 `tests/unit_tests/agent_evolving/reward/`：模型调用使用脚本替身，临时目录、Python 检查和离线浏览器真实运行。
 
 ## 局限
 
-- 取证受轮数和时间上限约束（默认 12 轮、300 秒，主要约束是时间），复杂交互中仍可能有子项判为无证据。每次浏览器检查都从重新加载的页面开始，到达某个状态需要重复前面的操作。
+- 取证受轮数和时间上限约束：默认最多 12 轮模型调用（`evidence_rounds`）、300 秒（`evidence_seconds`），实际起作用的通常是时间；设置了总时限 `deadline_seconds` 时，取证时间还会被缩短，为判定和总评留出余量（在归因诊断中总时限默认 600 秒，可用环境变量 `REWARD_DEADLINE` 修改）。复杂交互中仍可能有子项判为无证据。
+- 每次浏览器检查都启动新的浏览器并重新加载页面，不保留上一次检查的状态；要到达某个状态，需要在同一次检查中重复前面的操作。
 - `python` 检查只能使用标准库，不能运行其他程序或联网，不适用于需要登录或联网才能验证的内容。
 - 网页副本会复制 HTML/CSS 中显式引用的资源（包括 CSS 中的图片和嵌套样式），但不会推断 JavaScript 动态拼接的文件路径。依赖这类路径的作品需确认副本完整，不能把副本缺少资源当作原作品缺陷。资源超出复制上限时明确报错。
 - 主动挑战项和「质量」维度包含主观判断，同一作品两次评测可能相差几分；比较作品时建议多次运行。
