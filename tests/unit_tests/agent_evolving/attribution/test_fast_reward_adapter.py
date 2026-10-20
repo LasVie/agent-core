@@ -76,7 +76,7 @@ def _task_parse(tmp_path: Any) -> TaskParseResult:
 def test_claims_become_dimensions_with_tiers_and_unknowns_are_counted() -> None:
     payload = adapter.to_reward_payload(_fast_result(), "zh")
     assert payload["overall"] == {
-        "comment": "要求 1/3 满足 · 挑战 1/1 未做到。时间表可用，外婆到达时间与约束冲突 另有 1 项因证据不足未能判定。",
+        "comment": "要求 1/3 满足 · 挑战 0/1 做到。时间表可用，外婆到达时间与约束冲突 另有 1 项因证据不足未能判定。",
         "total_score": 72,
     }
     assert [(d["requirement"], d["score"], d["tier"]) for d in payload["dimensions"]] == [  # what to fix first

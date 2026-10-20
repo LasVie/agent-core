@@ -17,7 +17,8 @@ def score(criterion, statuses):
     """0-100 from claim statuses, computed in code.
 
     Floor and challenge claims each average met=1, partial=0.5, unmet=0 and are weighted
-    FLOOR_WEIGHT : 1 - FLOOR_WEIGHT. An unknown floor claim is left out; an unknown challenge claim counts 0.
+    FLOOR_WEIGHT : 1 - FLOOR_WEIGHT. An unknown claim, floor or challenge, is left out: a criterion whose
+    challenge claims are all unknown is scored on its floor claims alone.
     A criterion with no evidence for any claim is unscored (None): nothing was seen, so nothing is scored.
     A failed floor claim caps the score at FLOOR_FAIL_CAP.
     """
@@ -25,13 +26,13 @@ def score(criterion, statuses):
         return None
     floors = [is_floor(c) for c in criterion.get("claims") or []]
     floor = [VALUE[s] for s, f in zip(statuses, floors) if f and s != "unknown"]
-    challenge = [VALUE.get(s, 0.0) for s, f in zip(statuses, floors) if not f]
+    challenge = [VALUE[s] for s, f in zip(statuses, floors) if not f and s != "unknown"]
     floor_part = sum(floor) / len(floor) if floor else 0.0
     challenge_part = sum(challenge) / len(challenge) if challenge else 0.0
     if not floor:
         value = round(100 * challenge_part)  # a criterion with only challenge claims (or unknown floors)
-    elif not challenge and not any(not f for f in floors):
-        value = round(100 * floor_part)  # a criterion with only floor claims, e.g. a rubric of requirements only
+    elif not challenge:
+        value = round(100 * floor_part)  # only floor claims settled, e.g. a rubric of requirements only
     else:
         value = round(100 * (FLOOR_WEIGHT * floor_part + (1 - FLOOR_WEIGHT) * challenge_part))
     if any(s == "unmet" for s, f in zip(statuses, floors) if f):
@@ -59,8 +60,8 @@ def to_result(criterion, verdict, evidence):
             "claims": claims, "evidence": evidence}
 
 def claim_gains(results):
-    """{"<criterion id>#<index>": points the total would rise} for each claim not met (unknown claims included: an
-    unknown challenge claim counts 0 until it is shown)."""
+    """{"<criterion id>#<index>": points the total would rise} for each claim not met (unknown claims included: what
+    showing it met would add)."""
     scored = [r for r in results if r["score"] is not None]
     gains = {}
     for r in scored:

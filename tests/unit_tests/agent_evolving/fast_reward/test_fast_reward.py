@@ -91,7 +91,8 @@ def test_score_weights_floor_and_proactive_challenge_and_caps_a_failed_floor():
     assert scoring.score(criterion, ["met", "met", "partial", "partial"]) == 75     # floor met, challenge half
     assert scoring.score(criterion, ["met", "met", "partial", "unmet"]) == 62
     assert scoring.score(criterion, ["met", "unmet", "met", "met"]) == 25     # broken floor caps
-    assert scoring.score(criterion, ["met", "unknown", "met", "unknown"]) == 75     # unknown challenge = 0
+    assert scoring.score(criterion, ["met", "unknown", "met", "unknown"]) == 100    # unknown claims are left out
+    assert scoring.score(criterion, ["met", "met", "unknown", "unknown"]) == 100    # no challenge settled: floor only
     assert scoring.score(criterion, ["unknown"] * 4) is None  # nothing was seen: unscored, not 0
     assert scoring.score({"claims": [{"level": "floor"}] * 4}, ["met"] * 4) == 100   # e.g. the promises
     only_challenge = {"claims": [{"level": "challenge"}] * 4}
@@ -670,9 +671,9 @@ async def test_a_blind_judge_gets_no_screenshots_and_the_reply_warns(tmp_path, m
     report = await pipeline.score_workspace("Make a click game", root, {"producer": {}})
     judged = [x for x in seen if x[0].startswith("You judge each claim")]
     assert judged[0][2] == []
-    assert report["categories"][0]["score"] == 50          # non-visual unknown challenge always contributes zero
+    assert report["categories"][0]["score"] == 100         # an unknown challenge is left out, like an unknown floor
     assert report["categories"][1]["score"] is None        # blind visual criterion is excluded as a whole
-    assert report["total"]["score"] == 50
+    assert report["total"]["score"] == 100
     assert "deepseek-v4-flash 不支持看图" in report["meta"]["warnings"][0]
     assert "⚠️ 当前模型 deepseek-v4-flash 不支持看图" in result_mod.render(report)
     assert "画面维度整项不计分、不计入总分" in result_mod.render(report).split("输入：", 1)[0]

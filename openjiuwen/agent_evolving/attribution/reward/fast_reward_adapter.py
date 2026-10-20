@@ -42,7 +42,7 @@ _LABELS = {
     "zh": {
         "floor": "要求",
         "challenge": "挑战",
-        "counts": "要求 {floor_met}/{floor} 满足 · 挑战 {challenge_open}/{challenge} 未做到",
+        "counts": "要求 {floor_met}/{floor} 满足 · 挑战 {challenge_done}/{challenge} 做到",
         "unknown": "另有 {count} 项因证据不足未能判定。",
         "criteria": "出题：根据用户的请求写判定项",
         "criteria_done": "出题完成：{count} 个维度",
@@ -62,7 +62,7 @@ _LABELS = {
     "en": {
         "floor": "Requirement",
         "challenge": "Challenge",
-        "counts": "requirements {floor_met}/{floor} met · challenges {challenge_open}/{challenge} open",
+        "counts": "requirements {floor_met}/{floor} met · challenges {challenge_done}/{challenge} done",
         "unknown": "{count} more claims could not be settled.",
         "criteria": "Criteria: writing claims from the user's request",
         "criteria_done": "Criteria written: {count} criteria",
@@ -274,7 +274,7 @@ def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[s
         raise ValueError("Fast Reward found no evidence to score the work")
     dimensions = []
     unknown = 0
-    counts = {"floor": 0, "floor_met": 0, "challenge": 0, "challenge_open": 0}
+    counts = {"floor": 0, "floor_met": 0, "challenge": 0, "challenge_done": 0}
     for item in result.get("sub_category_items") or ():
         status = item.get("status")
         challenge = item.get("type") == "proactive_challenge"
@@ -284,7 +284,7 @@ def to_reward_payload(result: Mapping[str, Any], language: str = "zh") -> dict[s
             continue
         if challenge:
             counts["challenge"] += 1
-            counts["challenge_open"] += tier != "perfect"
+            counts["challenge_done"] += status == "met"
         else:
             counts["floor"] += 1
             counts["floor_met"] += tier == "perfect"
