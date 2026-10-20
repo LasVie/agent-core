@@ -196,6 +196,11 @@ i18n、工具生命周期。`tools/` 是 harness 最大的子模块（130 文件
     `observed_count`。终态 `browser_result` 附带最佳来源的 `records`、`records_source` 与
     `backed_result_count`；summary 引用而证据中不存在的链接列入 `unbacked_items`，不改变状态。
 
+18. **Browser 任务在 browser_result 中报告自身的模型用量**：Browser runtime 在 `after_model_call` 中累加
+    `model_usage`（模型调用数、工具调用数及按名称计数、输入/输出/缓存 token、费用），终态
+    `browser_result` 在有统计时附带该字段；统计不影响状态判定、预算或证据（`_record_model_usage`）。
+    它与 S_18 不变量 16 的 `task_end.model_usage` 分开记录，互不替代。
+
 ## Browser 运行时减法（F_17，当前契约）
 
 阶段计数、自然语言验收和可选条件只提供诊断，不阻断一般动作。删除阶段次数上限、
