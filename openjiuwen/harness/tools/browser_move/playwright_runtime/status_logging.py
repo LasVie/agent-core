@@ -75,6 +75,11 @@ def is_browser_subagent_status_log_enabled() -> bool:
     return True
 
 
+def is_browser_subagent_content_log_enabled() -> bool:
+    """Opt-in for evaluations: also log model text and tool arguments (off by default, content stays redacted)."""
+    return (os.getenv("BROWSER_SUBAGENT_STATUS_LOG_CONTENT") or "").strip().lower() in _TRUE_VALUES
+
+
 def _safe_str(value: Any, limit: int = 240) -> str:
     text = "" if value is None else str(value)
     text = text.replace("\r", " ").replace("\n", " ").strip()
@@ -316,6 +321,8 @@ class BrowserSubagentStatusLogger:
                 "tool_index": state.get("tool_calls", 0),
                 "tool_name": _safe_str(tool_name, 180),
                 "args_summary": self.summarize_args(str(tool_name), tool_args),
+                **({"args": _safe_str(json.dumps(tool_args, ensure_ascii=False, default=str), 1000)}
+                   if is_browser_subagent_content_log_enabled() else {}),
             },
         )
 
@@ -550,13 +557,17 @@ class BrowserSubagentStatusLogger:
                 name = getattr(call, "name", "") or _mapping_get(call, "name", "")
                 if name:
                     tool_names.append(_safe_str(name, 160))
-        return {
+        summary = {
             "content_length": len(str(content or "")),
             "reasoning_length": len(str(reasoning or "")),
             "tool_call_count": len(tool_calls) if isinstance(tool_calls, list) else 0,
             "tool_names": tool_names[:12],
             "finish_reason": _safe_str(getattr(response, "finish_reason", ""), 80),
         }
+        if is_browser_subagent_content_log_enabled():
+            summary["content"] = _safe_str(content, 2000)
+            summary["reasoning"] = _safe_str(reasoning, 2000)
+        return summary
 
     @staticmethod
     def _summarize_query(query: Any) -> dict[str, Any]:
