@@ -236,6 +236,18 @@ def test_env_toggle_for_status_logging(monkeypatch: Any) -> None:
 
 
 
+def test_model_text_is_logged_only_when_content_logging_is_opted_in(monkeypatch: Any) -> None:
+    response = SimpleNamespace(content="Use the hot command", reasoning_content="The task names Bilibili",
+                               tool_calls=[], finish_reason="stop")
+    monkeypatch.delenv("BROWSER_SUBAGENT_STATUS_LOG_CONTENT", raising=False)
+    summary = BrowserSubagentStatusLogger._summarize_model_response(response)
+    assert summary["content_length"] == 19 and "content" not in summary and "reasoning" not in summary
+
+    monkeypatch.setenv("BROWSER_SUBAGENT_STATUS_LOG_CONTENT", "1")
+    summary = BrowserSubagentStatusLogger._summarize_model_response(response)
+    assert summary["content"] == "Use the hot command" and summary["reasoning"] == "The task names Bilibili"
+
+
 def test_direct_browser_runtime_rail_wires_status_logger() -> None:
     runtime_path = (
         Path(__file__).resolve().parents[5]
