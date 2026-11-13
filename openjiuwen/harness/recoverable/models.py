@@ -48,7 +48,9 @@ class Checkpoint(BaseModel):
     commit_id: str
     """vcs commit holding the context and state of this checkpoint."""
     event_id: int
-    """vcs log position of ``commit_id``; equal positions mean nothing changed."""
+    """vcs log position of ``commit_id``; equal positions mean the context did not change."""
+    manifest_id: str | None = None
+    """Workspace manifest at this checkpoint; ``None`` when the workspace is not snapshotted."""
     kind: CheckpointKind = CheckpointKind.STEP
     created_at: float = Field(default_factory=time.time)
 
@@ -66,6 +68,15 @@ class RollbackPlan(BaseModel):
     initiator: Initiator = Initiator.HUMAN
     source: str = ""
     reason: str = ""
+    workspace_restored: bool = False
+    """False when the workspace is not snapshotted (sandbox, or no manifest at the target)."""
+    files_to_write: list[str] = Field(default_factory=list)
+    files_to_delete: list[str] = Field(default_factory=list)
+    unrecoverable_files: list[str] = Field(default_factory=list)
+    """Changed since the target, but their content there was never stored."""
+    build_outputs_to_delete: list[str] = Field(default_factory=list)
+    lost_commits: int | None = None
+    """Commits on the current git branches that disappear; ``None`` without git."""
     created_at: float = Field(default_factory=time.time)
     applied_at: float | None = None
     """Set once the plan is applied; a plan is applied at most once."""
@@ -85,6 +96,12 @@ class RollbackResult(BaseModel):
     session_id: str
     target_id: str
     abandoned_ids: list[str]
+    workspace_restored: bool = False
+    files_written: list[str] = Field(default_factory=list)
+    files_deleted: list[str] = Field(default_factory=list)
+    build_outputs_deleted: list[str] = Field(default_factory=list)
+    unrestored_files: list[str] = Field(default_factory=list)
+    """Could not be restored: never stored, or writing them failed."""
     applied_at: float = Field(default_factory=time.time)
 
 
@@ -93,10 +110,13 @@ class PendingRollback(BaseModel):
 
     Between rounds no live session exists to write into, so the context is
     restored, and the rollback checkpoint created, at the next ``BEFORE_INVOKE``.
-    Notes accumulate when a second rollback lands before that.
+    The workspace is restored at apply time already. Notes accumulate when a
+    second rollback lands before the next round.
     """
 
     schema_version: int = SCHEMA_VERSION
     session_id: str
     target_id: str
+    manifest_id: str | None = None
+    """Workspace manifest right after the files were restored."""
     notes: list[str] = Field(default_factory=list)

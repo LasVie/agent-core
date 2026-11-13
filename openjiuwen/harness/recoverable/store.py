@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.core.foundation.store.base_kv_store import BaseKVStore
+from openjiuwen.harness.recoverable.manifest import ManifestRecord
 from openjiuwen.harness.recoverable.models import (
     SCHEMA_VERSION,
     Checkpoint,
@@ -60,6 +61,14 @@ class CheckpointStore:
     @staticmethod
     def _plan_key(plan_id: str) -> str:
         return f"{_PREFIX}:plan:{plan_id}"
+
+    @staticmethod
+    def _manifest_key(session_id: str, manifest_id: str) -> str:
+        return f"{_PREFIX}:{session_id}:manifest:{manifest_id}"
+
+    @staticmethod
+    def _workspace_scan_key(workspace_key: str) -> str:
+        return f"{_PREFIX}:workspace:{workspace_key}:scan"
 
     async def get(self, session_id: str, checkpoint_id: str) -> Checkpoint | None:
         return _load(Checkpoint, await self._kv.get(self._checkpoint_key(session_id, checkpoint_id)))
@@ -108,3 +117,22 @@ class CheckpointStore:
 
     async def put_plan(self, plan: RollbackPlan) -> None:
         await self._kv.set(self._plan_key(plan.plan_id), plan.model_dump_json())
+
+    async def get_manifest(self, session_id: str, manifest_id: str) -> ManifestRecord | None:
+        raw = await self._kv.get(self._manifest_key(session_id, manifest_id))
+        return ManifestRecord.from_json(raw) if raw is not None else None
+
+    async def put_manifest(self, session_id: str, record: ManifestRecord) -> None:
+        await self._kv.set(self._manifest_key(session_id, record.manifest_id), record.to_json())
+
+    async def delete_manifests(self, session_id: str, manifest_ids: list[str]) -> None:
+        if manifest_ids:
+            await self._kv.batch_delete([self._manifest_key(session_id, mid) for mid in manifest_ids])
+
+    async def get_workspace_scan(self, workspace_key: str) -> ManifestRecord | None:
+        """The latest full scan of a workspace, shared by its sessions to reuse digests."""
+        raw = await self._kv.get(self._workspace_scan_key(workspace_key))
+        return ManifestRecord.from_json(raw) if raw is not None else None
+
+    async def put_workspace_scan(self, workspace_key: str, record: ManifestRecord) -> None:
+        await self._kv.set(self._workspace_scan_key(workspace_key), record.to_json())
