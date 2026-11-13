@@ -1,12 +1,12 @@
 ---
 title: 设计文档索引
-author: alan_cheng
-author_email: chengshuo5@huawei.com
+author: Song Haoran
+author_email: song.haoran@h-partners.com
 generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-11-12T13:50+08:00 -->
+<!-- generated-at: 2026-11-13T15:10+08:00 -->
 
 # 设计文档索引 (INDEX)
 
@@ -21,10 +21,13 @@ generated: true
 | [agent_teams](#module-3) |
 | [agent_teams/workflow](#module-4) |
 | [core/foundation/llm](#module-5) |
-| [extensions/observability](#module-6) |
-| [harness](#module-7) |
-| [harness_providers](#module-8) |
-| [未分类](#module-9) |
+| [core/foundation/tool/mcp](#module-6) |
+| [core/session/vcs](#module-7) |
+| [core/sys_operation](#module-8) |
+| [extensions/observability](#module-9) |
+| [harness](#module-10) |
+| [harness_providers](#module-11) |
+| [未分类](#module-12) |
 
 <a id="module-1"></a>
 
@@ -122,6 +125,36 @@ generated: true
 
 <a id="module-6"></a>
 
+## core/foundation/tool/mcp
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261113-1506-recoverable-harness](proposals/D-20261113-1506-recoverable-harness/design.md) | Recoverable Harness 步级回退设计方案 | draft | Song Haoran | harness | 2026-11-13 |
+
+<a id="module-7"></a>
+
+## core/session/vcs
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261113-1506-recoverable-harness](proposals/D-20261113-1506-recoverable-harness/design.md) | Recoverable Harness 步级回退设计方案 | draft | Song Haoran | harness | 2026-11-13 |
+
+<a id="module-8"></a>
+
+## core/sys_operation
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261113-1506-recoverable-harness](proposals/D-20261113-1506-recoverable-harness/design.md) | Recoverable Harness 步级回退设计方案 | draft | Song Haoran | harness | 2026-11-13 |
+
+<a id="module-9"></a>
+
 ## extensions/observability
 
 ### 开发前 (proposals)
@@ -137,7 +170,7 @@ generated: true
 |---|---|---|---|---|---|
 | [D-20261112-1120-goal-assessment-isolation](active/D-20261112-1120-goal-assessment-isolation/design.md) | Goal 独立评估的轨迹与执行上下文隔离 | in-development | alan_cheng | observability | 2026-11-12 |
 
-<a id="module-7"></a>
+<a id="module-10"></a>
 
 ## harness
 
@@ -145,6 +178,7 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
+| [D-20261113-1506-recoverable-harness](proposals/D-20261113-1506-recoverable-harness/design.md) | Recoverable Harness 步级回退设计方案 | draft | Song Haoran | harness | 2026-11-13 |
 | [SDD-0022](proposals/SDD-0022-trajectory-observability-framework/design.md) | 轨迹观测框架：基于 OTel GenAI 语义约定的 Harness 与 Team 轨迹采集和处理 | draft | @alan_cheng | observability | 2026-09-15 |
 | [SDD-0024](proposals/SDD-0024-trajectory-projection-evolution-rl/design.md) | 轨迹投影：把 OTel 标准轨迹投影为自演进与在线 AgentRL 输入 | draft | @alan_cheng | observability | 2026-09-15 |
 
@@ -161,7 +195,7 @@ generated: true
 |---|---|---|---|---|---|
 | [SDD-0006](archive/SDD-0006-native-harness-async-tool-control-and-spill/design.md) | 原生 Harness 异步工具管控框架与磁盘溢写 | shipped | @alan_cheng | harness | 2026-06-24 |
 
-<a id="module-8"></a>
+<a id="module-11"></a>
 
 ## harness_providers
 
@@ -171,7 +205,7 @@ generated: true
 |---|---|---|---|---|---|
 | [D-20261110-1839-leader-external-harness](active/D-20261110-1839-leader-external-harness/design.md) | Leader 三方 Harness 插拔设计方案 | in-development | alan_cheng | harness | 2026-11-10 |
 
-<a id="module-9"></a>
+<a id="module-12"></a>
 
 ## 未分类
 
