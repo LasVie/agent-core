@@ -135,3 +135,4 @@ generated: true
 | [S_17_personal-context](harness/S_17_personal-context.md) | S | S_17 Personal Context | yangzequ | openjiuwen/harness | — | — |
 | [S_18_subagents-and-lifecycle](harness/S_18_subagents-and-lifecycle.md) | S | S_18 SubAgent 预设与生命周期 | yangzequ | openjiuwen/harness | — | — |
 | [S_19_harness-providers](harness/S_19_harness-providers.md) | S | S_19 Harness Providers（协议实现、IO Adapter 与 Manifest 工厂） | alan_cheng | openjiuwen/harness | — | — |
+| [S_20_recoverable-harness](harness/S_20_recoverable-harness.md) | S | S_20 Recoverable Harness（步级检查点与回退） | Song Haoran | harness | openjiuwen/harness/recoverable/__init__.py, openjiuwen/harness/recoverable/harness.py, openjiuwen/harness/recoverable/models.py, openjiuwen/harness/recoverable/rail.py, openjiuwen/harness/recoverable/store.py | — |

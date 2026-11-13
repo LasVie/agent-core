@@ -345,7 +345,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [D-20261113-1506-recoverable-harness](designs/proposals/D-20261113-1506-recoverable-harness/design.md) | D | Recoverable Harness 步级回退设计方案 | Song Haoran | harness, core/session/vcs, core/foundation/tool/mcp, core/sys_operation | — | — |
+| [D-20261113-1506-recoverable-harness](designs/active/D-20261113-1506-recoverable-harness/design.md) | D | Recoverable Harness 步级回退设计方案 | Song Haoran | harness, core/session/vcs, core/foundation/tool/mcp, core/sys_operation | — | — |
 
 <a id="module-10"></a>
 
@@ -371,7 +371,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [D-20261113-1506-recoverable-harness](designs/proposals/D-20261113-1506-recoverable-harness/design.md) | D | Recoverable Harness 步级回退设计方案 | Song Haoran | harness, core/session/vcs, core/foundation/tool/mcp, core/sys_operation | — | — |
+| [D-20261113-1506-recoverable-harness](designs/active/D-20261113-1506-recoverable-harness/design.md) | D | Recoverable Harness 步级回退设计方案 | Song Haoran | harness, core/session/vcs, core/foundation/tool/mcp, core/sys_operation | — | — |
 
 <a id="module-13"></a>
 
@@ -379,7 +379,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [D-20261113-1506-recoverable-harness](designs/proposals/D-20261113-1506-recoverable-harness/design.md) | D | Recoverable Harness 步级回退设计方案 | Song Haoran | harness, core/session/vcs, core/foundation/tool/mcp, core/sys_operation | — | — |
+| [D-20261113-1506-recoverable-harness](designs/active/D-20261113-1506-recoverable-harness/design.md) | D | Recoverable Harness 步级回退设计方案 | Song Haoran | harness, core/session/vcs, core/foundation/tool/mcp, core/sys_operation | — | — |
 | [F_20261104_1720_tool-execution-environment](features/F_20261104_1720_tool-execution-environment.md) | F | 工具执行环境作用域 | alan_cheng | core/sys_operation, harness | openjiuwen/core/sys_operation/execution_environment.py, openjiuwen/core/single_agent/ability_manager.py, openjiuwen/harness/schema/build_context.py, openjiuwen/core/sys_operation/local/shell_operation.py, openjiuwen/core/sys_operation/sandbox/shell_operation.py | 无独立 D：无独立 D；在现有 harness 工具调用与 team 会话存储契约上的小范围扩展。 |
 | [B_20261104_2054_recovered-context-seed-and-execution-environment](bugfix/agent_teams/B_20261104_2054_recovered-context-seed-and-execution-environment.md) | B | 冷恢复后成员策略 seed 与执行环境传递修复 | alan_cheng | agent_teams, core/sys_operation | openjiuwen/agent_teams/agent/team_agent.py, openjiuwen/core/sys_operation/execution_environment.py, openjiuwen/core/sys_operation/sandbox/providers/base_provider.py, openjiuwen/core/sys_operation/sandbox/code_operation.py, openjiuwen/core/sys_operation/local/code_operation.py | 无独立 D：无独立 D；修复 F_20261104_1720_tool-execution-environment / F_20261104_1721_session-execution-settings 在冷恢复与远程调用路径上的遗漏。 |
 
@@ -413,7 +413,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [D-20261110-1903-team-goal-mode](designs/active/D-20261110-1903-team-goal-mode/design.md) | D | Team Leader 与成员 Goal 模式设计方案 | alan_cheng | agent_teams, harness | — | — |
 | [D-20261112-1120-goal-assessment-isolation](designs/active/D-20261112-1120-goal-assessment-isolation/design.md) | D | Goal 独立评估的轨迹与执行上下文隔离 | alan_cheng | core/foundation/llm, extensions/observability, harness, agent_evolving/trajectory | — | — |
-| [D-20261113-1506-recoverable-harness](designs/proposals/D-20261113-1506-recoverable-harness/design.md) | D | Recoverable Harness 步级回退设计方案 | Song Haoran | harness, core/session/vcs, core/foundation/tool/mcp, core/sys_operation | — | — |
+| [D-20261113-1506-recoverable-harness](designs/active/D-20261113-1506-recoverable-harness/design.md) | D | Recoverable Harness 步级回退设计方案 | Song Haoran | harness, core/session/vcs, core/foundation/tool/mcp, core/sys_operation | — | — |
 | [SDD-0006](designs/archive/SDD-0006-native-harness-async-tool-control-and-spill/design.md) | D | 原生 Harness 异步工具管控框架与磁盘溢写 | @alan_cheng | harness | — | — |
 | [SDD-0022](designs/proposals/SDD-0022-trajectory-observability-framework/design.md) | D | 轨迹观测框架：基于 OTel GenAI 语义约定的 Harness 与 Team 轨迹采集和处理 | @alan_cheng | extensions/observability, harness, agent_teams | — | — |
 | [SDD-0024](designs/proposals/SDD-0024-trajectory-projection-evolution-rl/design.md) | D | 轨迹投影：把 OTel 标准轨迹投影为自演进与在线 AgentRL 输入 | @alan_cheng | agent_evolving, harness | — | — |
@@ -451,6 +451,7 @@ generated: true
 | [F_20261104_1720_tool-execution-environment](features/F_20261104_1720_tool-execution-environment.md) | F | 工具执行环境作用域 | alan_cheng | core/sys_operation, harness | openjiuwen/core/sys_operation/execution_environment.py, openjiuwen/core/single_agent/ability_manager.py, openjiuwen/harness/schema/build_context.py, openjiuwen/core/sys_operation/local/shell_operation.py, openjiuwen/core/sys_operation/sandbox/shell_operation.py | 无独立 D：无独立 D；在现有 harness 工具调用与 team 会话存储契约上的小范围扩展。 |
 | [F_20261110_1922_team-goal-mode](features/F_20261110_1922_team-goal-mode.md) | F | Team Leader 与成员 Goal 模式实施与决策归档 | alan_cheng | agent_teams, harness | openjiuwen/agent_teams/goal.py, openjiuwen/agent_teams/agent/goal_coordinator.py, openjiuwen/agent_teams/rails/team_goal_rail.py, openjiuwen/agent_teams/rails/elements.py, openjiuwen/agent_teams/harness/native_harness.py, openjiuwen/agent_teams/harness/team_harness.py, openjiuwen/agent_teams/harness/control.py, openjiuwen/agent_teams/harness/state.py, openjiuwen/agent_teams/agent/team_agent.py, openjiuwen/agent_teams/agent/agent_configurator.py, openjiuwen/agent_teams/agent/stream_controller.py, openjiuwen/agent_teams/agent/member_activity.py, openjiuwen/agent_teams/agent/spawn_manager.py, openjiuwen/agent_teams/agent/coordination/handlers/agent_lifecycle.py, openjiuwen/agent_teams/agent/coordination/handlers/team_completion.py, openjiuwen/agent_teams/schema/team.py, openjiuwen/agent_teams/schema/blueprint.py, openjiuwen/agent_teams/tools/member_options.py, openjiuwen/agent_teams/tools/team.py, openjiuwen/agent_teams/tools/tool_member.py, openjiuwen/agent_teams/i18n.py, openjiuwen/harness/rails/task_completion_rail.py, tests/system_tests/agent_swarm/goal/agent_team_goal_mode_e2e.py | [D-20261110-1903-team-goal-mode](designs/active/D-20261110-1903-team-goal-mode/design.md) |
 | [F_20261112_1120_goal-assessment-isolation](features/F_20261112_1120_goal-assessment-isolation.md) | F | Goal 评估调用的观测隔离实施 | alan_cheng | core/foundation/llm, extensions/observability, harness, agent_evolving/trajectory | openjiuwen/core/foundation/llm/call_scope.py, openjiuwen/extensions/observability/callback_handler.py, openjiuwen/extensions/observability/semconv.py, openjiuwen/extensions/observability/trajectory_events.py, openjiuwen/harness/rails/task_completion_rail.py, openjiuwen/harness/observability/rail.py, openjiuwen/agent_evolving/trajectory/messages.py, openjiuwen/agent_evolving/trajectory/spans.py | [D-20261112-1120-goal-assessment-isolation](designs/active/D-20261112-1120-goal-assessment-isolation/design.md) |
+| [F_20261113_1706_recoverable-harness](features/F_20261113_1706_recoverable-harness.md) | F | Recoverable Harness 实施与决策归档 | Song Haoran | harness | openjiuwen/harness/recoverable/__init__.py, openjiuwen/harness/recoverable/harness.py, openjiuwen/harness/recoverable/models.py, openjiuwen/harness/recoverable/rail.py, openjiuwen/harness/recoverable/store.py, tests/unit_tests/harness/recoverable/test_harness.py | [D-20261113-1506-recoverable-harness](designs/active/D-20261113-1506-recoverable-harness/design.md) |
 | [F_20_react-iteration-limit](features/harness/F_20_react-iteration-limit.md) | F | F_20 ReAct 迭代耗尽后的结构化结果 | openJiuwen-bot | openjiuwen/harness | — | 待核实 |
 | [F_21_browser-decision-observation-handoff](features/harness/F_21_browser-decision-observation-handoff.md) | F | Browser decision observation and local handoff | 待确认 | openjiuwen/harness | — | 待核实 |
 | [F_21_cua-desktop-subagent](features/harness/F_21_cua-desktop-subagent.md) | F | cua_agent desktop subagent | kwangyyinc | openjiuwen/harness | — | 待核实 |
@@ -486,6 +487,7 @@ generated: true
 | [S_17_personal-context](specs/harness/S_17_personal-context.md) | S | S_17 Personal Context | yangzequ | openjiuwen/harness | — | — |
 | [S_18_subagents-and-lifecycle](specs/harness/S_18_subagents-and-lifecycle.md) | S | S_18 SubAgent 预设与生命周期 | yangzequ | openjiuwen/harness | — | — |
 | [S_19_harness-providers](specs/harness/S_19_harness-providers.md) | S | S_19 Harness Providers（协议实现、IO Adapter 与 Manifest 工厂） | alan_cheng | openjiuwen/harness | — | — |
+| [S_20_recoverable-harness](specs/harness/S_20_recoverable-harness.md) | S | S_20 Recoverable Harness（步级检查点与回退） | Song Haoran | harness | openjiuwen/harness/recoverable/__init__.py, openjiuwen/harness/recoverable/harness.py, openjiuwen/harness/recoverable/models.py, openjiuwen/harness/recoverable/rail.py, openjiuwen/harness/recoverable/store.py | — |
 
 <a id="module-17"></a>
 

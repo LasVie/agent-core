@@ -2,13 +2,14 @@
 id: D-20261113-1506-recoverable-harness
 title: Recoverable Harness 步级回退设计方案
 slug: recoverable-harness
-status: draft
-stage: proposals
+status: in-development
+stage: active
 author: Song Haoran
 author_email: song.haoran@h-partners.com
-reviewers: []
+reviewers: [Song Haoran]
 created: 2026-11-13
 updated: 2026-11-13
+approved-date: 2026-11-13
 domain: harness
 modules:
   - harness
@@ -161,16 +162,16 @@ flowchart LR
 | P5 | sys_operation 没有删除方法，而恢复时要删除目标之后新建的文件和构建产物 | 给 sys_operation 增加删除方法（增量）；本地模式可以先直接删除 | sys_operation 维护者 | 沙箱模式受影响 |
 | P6 | 回退说明要不要加模型生成的总结 | 第一版不加；需要时借鉴 DeepSeek Harness 的限长总结 | 待定 | 否 |
 | P7 | 账本怎样得知一次工具调用经用户批准 | 确认类中断 Rail 在用户批准时写一个标记，账本 Rail 读取；只改 harness。只用于确认时的提示，不影响授权 | rails 与 security 维护者 | 否 |
-| P8 | 超过自动回退次数上限后怎样处理，默认上限多少 | 上限只用来避免反复打扰人：超过后不再交人，直接拒绝并发出事件；上限可配置，例如同一目标 2 次、同一轮 5 次 | 待定 | 是 |
-| P9 | 模型没调工具但循环继续时（有待注入的插话等），这一步没有结束回调 | 在下一次 `BEFORE_MODEL_CALL` 时补建；此时插话已注入，回到这个检查点会保留插话。备选：并入下一步 | 开发者 | 是 |
-| P10 | 怎样复用 PA 的持久化模块 | 检查点只记各日志的位置；上下文日志和副作用日志各定义一个接口，DeepAgent 用 vcs 和 ④ 的账本实现，PA 用它的窗口与归档、执行日志实现。复用 PA 的存储做法（不可变记录写入时比对内容）、写前意图 Rail（把写入目标抽成接口）、消息编解码与补齐缺失工具结果的函数。PA 的会话存储不能直接当 DeepAgent 的上下文日志：记录结构是 PA 专用的，存的是最新状态加换窗归档，不是逐步日志 | 开发者与 PA 维护者 | 是 |
+| P8 | 超过自动回退次数上限后怎样处理，默认上限多少 | **已定（2026-11-13）：** 超过后不再交人，直接拒绝并发出事件；默认同一目标 2 次、同一轮 5 次，可以配置 | Song Haoran | 是 |
+| P9 | 模型没调工具但循环继续时（有待注入的插话等），这一步没有结束回调 | **已定（2026-11-13）：** 在下一次 `BEFORE_MODEL_CALL` 时补建；此时插话已注入，回到这个检查点会保留插话 | Song Haoran | 是 |
+| P10 | 怎样复用 PA 的持久化模块 | **已定（2026-11-13）：** 第一版只服务 DeepAgent，不考虑 PA，不复用 PA 的代码，也不为 PA 预留接口。PA 的写前意图 Rail 绑定了 PA 的构造对象和事件日志，DeepAgent 用不了；④ 自己实现登记 Rail，只借鉴它的做法 | Song Haoran | 否 |
 | P11 | 回退说明中的证据引用可能已过期：旧路线改过文件后又读取，读到的内容与回退后的文件不一致 | 每条引用记下读取时所在的检查点；读取发生在旧路线某次写操作之后的，标为"可能过期" | 开发者 | 否 |
 | P13 | 工作区以外的其他本地状态（本地数据库、启动的服务等）第一版承诺做到哪一步；只回退文件可能造成不一致 | 第一版按不可逆如实报告；可能不一致时是提醒还是拒绝回退，待讨论 | 开发者 | 否 |
 | P14 | 回退时还有外部进程在用工作区（开发服务器、IDE 的 git 集成），以及后台子 Agent | Agent 启动的后台进程按 PID 停掉（已定）；外部进程只能提醒；后台子 Agent 待讨论 | 开发者 | 否 |
-| P19 | 进程重启后怎样恢复：默认的内存 checkpointer 重启即丢，④ 的数据还在 | 要求宿主配置持久的 checkpointer，或由 ④ 从 vcs 恢复 Session | 开发者 | 是 |
+| P19 | 进程重启后怎样恢复：默认的内存 checkpointer 重启即丢，④ 的数据还在 | **已定（2026-11-13）：** 重启后仍要能回退。④ 的数据默认全部持久化；宿主用同一个 session_id 重新打开会话时，Session 是空的就由 ④ 从 vcs 恢复（第 5.10 节）。CLI 能否按 session_id 恢复会话待核实 | Song Haoran | 是 |
 | P20 | 工作区快照和工作区外文件的备份中的敏感内容（`.env`、密钥） | 访问控制，过期后真正删除；是否加密待定 | 开发者与安全维护者 | 否 |
-| P22 | 依赖目录、构建产物、对外命令三份名单的默认内容 | 第 5.11 节列出的是起点，开发时逐个核对，并允许宿主配置 | 开发者 | 是 |
-| P23 | shell 与执行代码工具的声明参数：参数形态、提示词写法 | 只在开启 ④ 时加这个参数 | 工具负责人 | 是 |
+| P22 | 依赖目录、构建产物、对外命令三份名单的默认内容 | **已定（2026-11-13）：** 先用第 5.4 节列出的默认值，开发时补全，宿主可以配置 | Song Haoran | 是 |
+| P23 | shell 与执行代码工具的声明参数：参数形态、提示词写法 | **已定（2026-11-13）：** `side_effect`（`none` / `reversible` / `irreversible`，必填）、`reverse_command`、`external_paths` 三个参数，只在开启 ④ 时加；提示词写法开发时定 | Song Haoran | 是 |
 
 ## 4. 总体方案与设计取舍
 
@@ -365,11 +366,11 @@ flowchart LR
 - 代价与成立条件：超过单文件上限的文件被改或被删后无法恢复，建 C0 时列给用户。
 - 实现体现：第 5.5 节、第 5.11.2 节。
 
-#### D-12 放在 harness 层的独立模块，复用 PA 的持久化
+#### D-12 放在 harness 层的独立模块，第一版只服务 DeepAgent
 
 - 选择与依据：放在新模块 `openjiuwen/harness/recoverable/`。core 不能依赖工具、Rail、工作区等 harness 概念；
-  `harness_protocol` 只放契约；vcs 不该承担副作用和工作区。第一版服务 DeepAgent，可以扩展到 PA，复用 PA 的持久化，不另做一套。
-- 代价与成立条件：其他 harness 需要新增绑定；复用方式待定（P10）。
+  `harness_protocol` 只放契约；vcs 不该承担副作用和工作区。第一版只服务 DeepAgent，不考虑 PA（P10）。
+- 代价与成立条件：其他 harness 需要新增绑定。原定"复用 PA 的持久化"在 2026-11-13 取消：PA 的写前意图 Rail 绑定了 PA 自己的构造对象和事件日志。
 - 实现体现：第 6.1 节。
 
 ### 4.3 替代方案与排除理由
@@ -402,7 +403,7 @@ flowchart LR
 | 反思记忆 | 保存所有回退说明和被否决的动作，供查询 | 拦截重复动作（① 负责） |
 | DeepAgent 绑定 | 提供两个 Rail；读写 DeepAgent 状态；借用 ① 的工具环境执行反向操作；回退后让 Agent 继续 | — |
 
-除 DeepAgent 绑定外，各部分不依赖 DeepAgent。以后接入 PA 或其他 harness，只需新增一个绑定（P10）。
+除 DeepAgent 绑定外，各部分不依赖 DeepAgent。以后接入其他 harness，只需新增一个绑定。
 
 **关键不变量：**
 
@@ -534,7 +535,9 @@ stateDiagram-v2
 
 还有几种情况，一步结束了或停下了，却不触发 `AFTER_REACT_ITERATION`：
 
-- **模型没调工具，但循环继续**（有待注入的用户插话、Rail 要求继续、图片不支持需要重试）：处理方式待定（P9）。
+- **模型没调工具，但循环继续**（[react_agent.py](../../../../../openjiuwen/core/single_agent/agents/react_agent.py) 中没有工具调用的分支：Rail 要求继续、
+  有待注入的用户插话、图片不支持需要重试、空回复重试）：在下一次 `BEFORE_MODEL_CALL` 时补建，此时插话已注入（P9）。
+  所以 `BEFORE_MODEL_CALL` 时只要上下文和上一个检查点相比有变化，就建一个检查点，"每轮开始"和这种情况用同一条规则。
 - **停在确认中断上**：一步中某个调用需要用户确认时，同一步的其他调用照样执行完并写回结果。这一步没走完，不建检查点。
   用户确认后只执行被拦下的那个调用（[handler.py](../../../../../openjiuwen/core/single_agent/interrupt/handler.py) `handle_resume`），
   循环直接进入下一步；下一次 `BEFORE_MODEL_CALL` 时建立的"每轮开始"检查点，记下的正是这一步结束时的状态。
@@ -628,9 +631,17 @@ sequenceDiagram
 ### 5.10 持久化与恢复
 
 - **回退进度：** 回退开始前写进度记录，每完成一个阶段更新一次。进程崩溃后，`resume_rollback` 从中断的阶段接着做；幂等键防止重复执行反向操作。
-- **进程重启：** DeepAgent 的 Session 状态现在由 checkpointer 保存，默认是内存
-  （[checkpointer.py](../../../../../openjiuwen/core/session/checkpointer/checkpointer.py)），进程重启后 Session 就没了，而 ④ 的数据还在。
-  要求宿主配置持久的 checkpointer，还是由 ④ 从 vcs 恢复 Session，待定（P19）。
+- **进程重启后仍要能回退（P19）。** DeepAgent 的 Session 状态由 checkpointer 保存，默认是内存
+  （[checkpointer.py](../../../../../openjiuwen/core/session/checkpointer/checkpointer.py)），进程重启后 Session 就没了；
+  CLI 的会话记录（[session_store.py](../../../../../openjiuwen/harness/cli/storage/session_store.py)）只存消息的角色和文字。
+  vcs 在每个检查点记下了完整的上下文和状态，所以由 ④ 负责恢复：
+  - ④ 的数据默认全部持久化：vcs、检查点、账本存进工作区外的一个 SQLite 文件，文件内容存进工作区外的内容目录。
+  - 宿主用同一个 session_id 重新打开会话时，④ 在本轮开始前找到这个会话的 HEAD。Session 是空的（没有任何消息），
+    就把 HEAD 的上下文和状态写回 Session，Agent 接着执行；Session 不空（宿主用持久的 checkpointer 自己恢复了），就以 Session 为准，
+    下一个检查点记下差异。必须在写入任何新内容之前完成，否则 vcs 会把空 Session 当成一次"清空上下文"记下来。
+  - 宿主要能按 session_id 重新打开会话。CLI 是否支持待核实，不支持时需要加一个恢复会话的入口。
+  - 重启后接不上的：进行中的回退从回退进度记录接着做；没建完的 C0 重新建；之前启动的后台进程已不是当前进程的子进程，
+    PID 也可能被复用，停掉之前核对进程启动时间，对不上就不动、只报告；停机期间用户改的文件，下一次扫描会发现。
 - **保留与清理：** 回退时目标之后的检查点立即删除；只被它们用到的文件内容和包列表在提交后清理。
   会话删除时，它的检查点一起删除。总量超过上限时，从最老的检查点开始删，被删的检查点不能再作为回退目标，并提示用户。
 
@@ -848,7 +859,7 @@ IDE 中没保存的修改会和回退冲突，回退写回文件后再保存会�
 | 在边界快照并回滚的先例 | [snapshot_rail.py](../../../../../openjiuwen/agent_teams/harness/snapshot_rail.py)、[native_harness.py](../../../../../openjiuwen/agent_teams/harness/native_harness.py) | 借鉴做法，不依赖 agent_teams | 只存内存中的当前轮，不处理文件和外部效果 |
 | DeepAgent 状态读写 | [deep_agent.py](../../../../../openjiuwen/harness/deep_agent.py) `save_state` / `load_state` | 建检查点前写进 Session；回退后读回 | V2 |
 | BaseKVStore | [base_kv_store.py](../../../../../openjiuwen/core/foundation/store/base_kv_store.py) | ④ 自己的各类记录 | — |
-| PA 的持久化模块 | [session_state.py](../../../../../openjiuwen/harness/persistent_agent/execution/session_state.py)、[tool_intent_rail.py](../../../../../openjiuwen/harness/persistent_agent/execution/tool_intent_rail.py)、[session_record.py](../../../../../openjiuwen/harness/persistent_agent/schema/session_record.py) | 复用，不另做一套 | 复用方式待定（P10） |
+| PA 的写前意图 Rail | [tool_intent_rail.py](../../../../../openjiuwen/harness/persistent_agent/execution/tool_intent_rail.py) | 借鉴做法：写不进就拒绝执行、排在权限检查之后、参数摘要、操作 ID。不复用代码（P10） | 绑定了 PA 的构造对象和事件日志 |
 | 文件变更监听 | [memory/lite/manager.py](../../../../../openjiuwen/core/memory/lite/manager.py) 可选使用 `watchdog` | 以后发现改动的备选做法（R-08） | `watchdog` 没有声明为依赖 |
 
 vcs 不需要改：`commit`、`restore`、`rewind` 的现有行为正好够用。沙箱没有快照接口（P3）。
@@ -926,6 +937,8 @@ I-06 给 `McpToolCard` 新增的是可选字段，旧调用方不受影响。没
 | 2026-11-11 | Song Haoran | 声明表 | 确认 | 声明表的分工；MCP 工具的提示做默认值，第一版改 core 保留它们（D-08、I-06） |
 | 2026-11-13 | Song Haoran | 工作区外的文件、找改动、存储与上限 | 确认 | 工作区外的文件由 ④ 备份和恢复，远程资源的覆盖类操作按不可逆处理，确认时可以逐条取消反向操作（D-09）；每一步扫描一次找改动（D-06）；依赖目录按检查点的包列表恢复，不管是谁装的；确认时提示会消失的 git 提交数；存储位置与上限（D-11）；放弃"回退后检视再确认"的方案（R-03）；运行中收到的回退一律先结束本轮；`resume_rollback` 后再恢复一次工作区 |
 | 2026-11-13 | — | 文档迁移 | — | 从 harness 模块目录下的架构草案（未提交过）迁入本目录，按设计模板重排章节；内容不变 |
+| 2026-11-13 | Song Haoran | 批准开发 | 批准 | 进入开发，移到 active；P8、P23 按建议定下；P19 改为要求重启后仍能回退，做法待定 |
+| 2026-11-13 | Song Haoran | 开工前的待定问题 | 确认 | P9 在下一次模型调用前补建检查点；P19 由 ④ 持久化并从 vcs 恢复 Session（第 5.10 节）；P22 用默认名单；P10 改为第一版只服务 DeepAgent、不考虑 PA，D-12 随之修订 |
 
 ## 11. 参考与交接
 
@@ -933,5 +946,5 @@ I-06 给 `McpToolCard` 新增的是可选字段，旧调用方不受影响。没
   [Rail 规约](../../../../../openjiuwen/harness/rails/AGENTS.md)；[PA 上下文与窗口规约](../../../../../openjiuwen/harness/persistent_agent/docs/specs/S_03_context-and-windows.md)、
   [PA 工具效果与意图规约](../../../../../openjiuwen/harness/persistent_agent/docs/specs/S_08_tool-effects-and-intent.md)（复用 PA 时的现有契约，P10）；
   [AgentFS 规范](https://github.com/tursodatabase/agentfs/blob/main/SPEC.md)（外部）。
-- 开发交接：已确认的范围和关键决策见第 2.3、4.2 节；开工前需要先定 P8、P9、P10、P19、P22、P23；验收条件见第 8 节。
+- 开发交接：已确认的范围和关键决策见第 2.3、4.2 节；开工前要定的 P8、P9、P10、P19、P22、P23 已在 2026-11-13 定下；验收条件见第 8 节。
 - 关联实施归档：尚无。
