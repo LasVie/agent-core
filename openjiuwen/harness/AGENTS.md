@@ -44,7 +44,7 @@ harness/
 ├── personal_context/      # 个人化上下文：fetch/ + context_graph / source_metadata（S_17）
 ├── prompts/               # 提示词构建：builder / sections/ / tools/ / l10n（S_06）
 ├── rails/                 # 行为约束层：三层基类 + 事件路由 + priority（见 rails/AGENTS.md，S_04）
-├── recoverable/           # 步级检查点与经确认的回退：harness / rail / store / models（S_20）
+├── recoverable/           # 步级检查点与经确认的回退：harness / rail / store / models / manifest / objects / workspace（S_20）
 ├── resources/             # 扩展包：extension_loader / extension_resolver / template_card（展示卡片）（S_13）
 ├── schema/                # 数据模型：config / state / task / stop_condition / interaction（S_07）
 ├── security/              # 工具权限引擎：tiered_policy / file_guard / shell_ast（S_08）
