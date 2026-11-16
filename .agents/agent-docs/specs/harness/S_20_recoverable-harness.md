@@ -8,6 +8,7 @@ modules:
 - harness
 files:
 - openjiuwen/harness/recoverable/__init__.py
+- openjiuwen/harness/recoverable/cleanup.py
 - openjiuwen/harness/recoverable/dependencies.py
 - openjiuwen/harness/recoverable/effects.py
 - openjiuwen/harness/recoverable/external.py
@@ -29,7 +30,7 @@ files:
 | 项 | 值 |
 |---|---|
 | 类型 | spec |
-| 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py` / `effects.py` / `processes.py` / `dependencies.py` / `external.py` / `lock.py`） |
+| 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py` / `effects.py` / `processes.py` / `dependencies.py` / `external.py` / `lock.py` / `cleanup.py`） |
 | 最近一次修订日期 | 2026-11-16 |
 | 关联设计 | D-20261113-1506-recoverable-harness |
 | 关联 feature | F_20261113_1706_recoverable-harness.md |
@@ -145,7 +146,7 @@ Rail 的事件路由与 priority 规则见 S_04。
 31. **自动信号有次数上限。** 同一目标默认 2 次，同一轮默认 5 次，超过的直接拒绝，不交人。只计被接受的自动信号，人发起的不计。
     计数单独保存，不随历史删除。每轮开始时清零"同一轮"的计数；以写回回退开始的一轮不清零，因为它接着做被回退打断的任务。
 32. **检查点和回退都发出事件。** `on_event` 收到：检查点已建立（含 `checkpoint_id`、`seq`、轮次；回退检查点也算）、建立失败；
-    回退已接收、已拒绝、等待确认、已作废、已执行、部分完成（`resume_rollback` 的结果同样发出）。
+    回退已接收、已拒绝、等待确认、已作废、已执行、部分完成（`resume_rollback` 的结果同样发出）；最老的检查点因存储上限被删除。
     事件只是通知，事实以检查点库和回退计划为准；监听方出错只记日志。
 33. **同一工作区同一时间只有一个会话开启回退。** 会话第一轮开始时（`BEFORE_INVOKE`）占住工作区，执行或继续回退时也要占住；
     占住的会话调用 `release_session`，或它所在的进程退出，才释放。被别的会话占住时，本轮不开始、回退不执行，报
@@ -154,12 +155,24 @@ Rail 的事件路由与 priority 规则见 S_04。
 34. **本轮开始时的准备失败就不开始本轮。** `BEFORE_INVOKE` 里占住工作区、写回回退、重启后恢复 Session 任何一步失败，
     `CheckpointRail` 抛出 `AbortError`，调用方收到原来的错误，模型不会被调用。普通回调异常只会被记日志，
     本轮会在没恢复的上下文上照常运行。待写回的回退保留，下一轮再写。
+35. **回退之后清理用不到的数据。** 每次回退执行后，删除工作区各会话都用不到的清单记录、包列表、回退计划和文件内容。
+    还用得到的文件内容：剩下的检查点、待写回的回退和最新扫描的清单（由增量链重建后）里的文件；
+    以及账本里还能回退的调用的工作区外备份（在最老的检查点之后、没被放弃的，或部分完成的回退还会重试的）。
+    被增量替换掉的旧内容不再需要，即使记着它的旧清单记录因为是增量的基础而保留。目标已不在历史上的计划、作废的计划被删除，
+    等待确认的计划先作废它的信号。
+36. **存储超过上限时从最老的检查点删起。** 每轮结束时，存下的文件内容超过 `storage_cap`（默认 100 GB），或磁盘剩余空间少于
+    `min_free_ratio`（默认 20%）时，在工作区各会话中按建立时间删除最老的检查点，每次删可删数量的四分之一（至少一个），
+    清理一次再检查，直到回到上限以内，或每个会话只剩最新的检查点。每个会话的最新检查点不删。被删的检查点不能再作为回退目标；
+    每个受影响的会话发出一个事件并记日志。文件内容的大小在每个进程第一次检查时和每次清理后统计一次，其间累加新存的文件；
+    克隆的文件按完整大小计。磁盘剩余空间不足时，即使空间是被别的程序占用，也会删到每个会话只剩最新检查点。
+37. **删除会话。** `delete_session` 删除会话的检查点、清单、包列表、账本、信号、计数、回退计划和 vcs 日志。
+    没有别的会话占住工作区时立即清理只有它用到的文件内容，否则等占住的会话下次清理。会话正在运行时拒绝。
 
 ## 接口契约
 
 | 入口 | 说明 |
 |---|---|
-| `RecoverableHarness(*, kv_store=None, storage_dir=None, dependency_dirs=..., build_output_dirs=..., file_size_cap=1 GB, use_clones=True, declarations=None, on_event=None, auto_limit_per_target=2, auto_limit_per_round=5)` | `kv_store` 默认是 `storage_dir/recoverable.db` 上的 SQLite（`DbBasedKVStore`）；`storage_dir` 默认 `~/.openjiuwen/recoverable`，文件内容在 `storage_dir/objects/<工作区键>/`。依赖目录默认 `node_modules`、`.venv`、`venv`、`.tox`；构建产物默认 `dist`、`build`、`target`、`.next`。`declarations` 是宿主工具的 `EffectDeclaration`，按工具名；`outward_commands` 默认 `ssh`、`scp`、`sftp`、`kubectl`、`helm`、`docker`、`podman`、`aws`、`gcloud`、`az`、`terraform`、`psql`、`mysql`、`mongosh`、`redis-cli`、`crontab`、`systemctl`、`launchctl` |
+| `RecoverableHarness(*, kv_store=None, storage_dir=None, dependency_dirs=..., build_output_dirs=..., file_size_cap=1 GB, use_clones=True, declarations=None, on_event=None, auto_limit_per_target=2, auto_limit_per_round=5, storage_cap=100 GB, min_free_ratio=0.2)` | `kv_store` 默认是 `storage_dir/recoverable.db` 上的 SQLite（`DbBasedKVStore`）；`storage_dir` 默认 `~/.openjiuwen/recoverable`，文件内容在 `storage_dir/objects/<工作区键>/`。依赖目录默认 `node_modules`、`.venv`、`venv`、`.tox`；构建产物默认 `dist`、`build`、`target`、`.next`。`declarations` 是宿主工具的 `EffectDeclaration`，按工具名；`outward_commands` 默认 `ssh`、`scp`、`sftp`、`kubectl`、`helm`、`docker`、`podman`、`aws`、`gcloud`、`az`、`terraform`、`psql`、`mysql`、`mongosh`、`redis-cli`、`crontab`、`systemctl`、`launchctl` |
 | `rail() -> CheckpointRail` | 注册到 DeepAgent 的 Rail；一个 harness 服务一个 DeepAgent |
 | `history(session_id, limit=None) -> list[Checkpoint]` | 从 HEAD 沿父检查点往回，最新的在前 |
 | `uncovered_files(session_id) -> list[str]` | 最新清单中超过单文件上限、没有存下的文件 |
@@ -168,6 +181,7 @@ Rail 的事件路由与 priority 规则见 S_04。
 | `request_rollback(RollbackSignal) -> RollbackTicket` | 不变量 29～31。`RollbackSignal` 含 `signal_id`、`session_id`、`target_id`、`initiator`（`human` / `auto`）、`source`、`reason`；回执的 `status` 为 `waiting`、`awaiting_approval`、`rejected`、`invalidated`、`applied`，等待确认时带 `plan_id`，被拒绝或作废时 `detail` 写明原因 |
 | `get_ticket(session_id, signal_id) -> RollbackTicket \| None` | 查询回执；进程退出时还在等待的信号，此时生成计划 |
 | `decline_rollback(plan_id, reason="") -> RollbackPlan` | 人拒绝一份等待确认的计划；计划状态变为 `invalidated`，信号作废 |
+| `delete_session(session_id)` | 不变量 37 |
 | `release_session(session_id) -> bool` | 不变量 33；宿主在同一进程里关闭一个会话、开始另一个时调用。被释放会话的检查点保留，以后回退它时会重新占住工作区 |
 | `add_declaration_params(deep_agent)` | 不变量 23，`CheckpointRail` 调用 |
 | `resume_rollback(plan_id) -> RollbackResult` / `accept_partial(plan_id) -> RollbackPlan` | 只接受 `partial` 的回退，不变量 21 |
@@ -219,6 +233,7 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 | HEAD | `recoverable:{session_id}:head` | 当前检查点 ID |
 | 清单 `ManifestRecord` | `recoverable:{session_id}:manifest:{manifest_id}` | 相对 `parent_id` 的变化（路径 → 条目，删除记 `null`）；`parent_id` 为空时是完整清单，每 50 份增量存一份完整的 |
 | 包列表 | `recoverable:{session_id}:packages:{packages_id}` | 环境的工作区相对路径 → 包名 → 版本 |
+| 工作区的会话 | `recoverable:workspace:{工作区键}:sessions` | 在这个工作区跑过的会话 ID，清理时据此找出还要用的文件内容 |
 | 工作区最新扫描 | `recoverable:workspace:{工作区键}:scan` | 完整清单，供同一工作区的新会话复用指纹 |
 | `RollbackPlan` | `recoverable:plan:{plan_id}` | 目标、当时的 HEAD、要丢弃的检查点（最新的在前）、发起方、来源、理由、对应的信号、文件变化、会消失的提交数、效果及其结果、状态（`planned` / `completed` / `partial` / `accepted` / `invalidated`）、`applied_at`。也是回退的进度记录 |
 | `RollbackTicket` | `recoverable:{session_id}:signal:{signal_id}` | 信号、状态、计划 ID、原因 |
