@@ -13,12 +13,15 @@ files:
 - openjiuwen/harness/recoverable/manifest.py
 - openjiuwen/harness/recoverable/models.py
 - openjiuwen/harness/recoverable/objects.py
+- openjiuwen/harness/recoverable/processes.py
 - openjiuwen/harness/recoverable/rail.py
 - openjiuwen/harness/recoverable/store.py
 - openjiuwen/harness/recoverable/workspace.py
 - tests/unit_tests/harness/recoverable/test_harness.py
 - tests/unit_tests/harness/recoverable/test_ledger.py
+- tests/unit_tests/harness/recoverable/test_shell.py
 - tests/unit_tests/harness/recoverable/test_workspace.py
+- openjiuwen/harness/rails/security/tool_security_rail.py
 designs:
 - D-20261113-1506-recoverable-harness
 design_note: null
@@ -39,8 +42,10 @@ design_note: null
   - **U3 副作用账本**：工具的副作用声明表；调用前登记意图、登记不了就不执行；调用后补结果和撤销参数；
     回退时先撤销（最新的在前）、再恢复工作区；人可以在确认时划掉撤销；失败即停、状态为部分完成；
     `resume_rollback` / `accept_partial`；Agent 的记忆目录不回退。
+  - **U4 shell 与执行代码的逐条声明**：`bash`、`code` 的三个声明参数（只在开启 ④ 时出现）；对外命令名单；
+    退出码不为 0 的命令，反向命令要人确认才执行；反向命令执行前复检；后台进程在回退时先停掉。
 
-  shell 声明（U4）、依赖与全局安装（U5）、工作区外的文件（U6）、
+  依赖与全局安装（U5）、工作区外的文件（U6）、
   运行中的信号与并发控制（U7）、MCP 提示（U8）尚未实现。
 
 ## 决策归属与关系
@@ -119,6 +124,24 @@ U3 新增的做法：
   做法是让待写回记录允许没有目标、只带说明。
 - **记忆目录：** Rail 从工作区节点 `memory`、`coding_memory` 取路径，传给快照作为不进快照的目录。
 
+U4 新增的做法：
+
+- **声明参数加在工具卡片上，不改工具。** `CheckpointRail.init`（以及每轮 `BEFORE_INVOKE`，以防工具被重载）把三个参数加进
+  这个 Agent 的 `bash`、`code` 工具卡片的 `input_params`；卡片 ID 带 Agent ID，不会影响别的 Agent。
+  `bash` 和 `code` 用 `inputs.get` 取参数，多出的参数被忽略，所以既不改工具实现，也不从调用参数里删掉它们
+  （删掉会改到上下文里那条模型回复的工具调用）。参数说明就是给模型的提示，按 `DeepAgentConfig.language` 选中文或英文。
+- **对外命令的判断：** 按 shell 分隔符切出每条简单命令，跳过环境变量赋值和 `sudo`、`env` 等前缀，看程序名；
+  `git push` 和带写方法或请求体的 `curl` / `wget` 单独判断。只用来把"无外部效果"的声明改为不可逆，不拦命令。
+- **失败命令的反向命令要人确认（A32）：** `bash` 的结果 `success` 为 `False`（退出码按语义判为失败）时，记录状态为失败，
+  但仍从参数里取出反向命令。计划里这类记录是 `review`，人在确认时把它列进 `confirmed_effect_ids` 才执行。
+- **反向命令的复检（A32）：** 用 bash 工具层的 `check_injection`（命令替换、进程替换等），再用 Agent 上 `PermissionInterruptRail` 的
+  权限引擎判断；判为 `deny` 不执行，`ask` 视为人已在确认计划时同意。为此给 `PermissionInterruptRail` 加了只读属性 `engine`（S_08 已同步）。
+- **反向命令在工作区根目录执行：** 两轮之间没有绑定当前目录，所以撤销时给 `bash` 传 `workdir`。
+- **后台进程：** 后台启动的 `bash` 调用不论声明什么都进账本，补结果时从返回的 `pid` 记下 `ps -o lstart=` 报告的启动时间。
+  回退最先停这些进程：后台命令有自己的会话（`start_new_session`），pid 就是进程组号，所以 `killpg` 能停掉它派生的子进程。
+  启动时间对不上（例如重启后 pid 被复用）就不动。没有用 psutil：它不是基础依赖（只在 `cua` 额外依赖里）。
+- **账本里记下 `external_paths`**，供 U6 在执行前备份。
+
 ## 与设计的偏差
 
 | 设计 | 实际 | 原因与影响 |
@@ -130,6 +153,8 @@ U3 新增的做法：
 | 回退说明写明副作用去向（§5.11.5） | 写明文件恢复情况和每条外部效果的去向 | 依赖随 U5 加入 |
 | 工作区整体回到检查点（D-04） | 记忆目录不进快照、回退时不动 | 与"记忆写入不回退"冲突，2026-11-13 由需求方定为记忆优先，设计第 4.1、10 节已修订 |
 | 失败的调用（§4.1 只提到"只登记了意图、没有结果"） | 抛出异常或报告失败的调用，和没有结果的一样列为"结果未知"，不撤销 | 失败不代表一点效果都没发生，按未知处理更稳妥 |
+| 退出码不为 0 的命令"列进计划由人判断"（A32） | 状态为失败、有反向命令的记录列为 `review`，确认时显式列出才执行 | 与 A32 一致，补充了确认的接口 |
+| 反向命令"重新过一遍 shell 的安全检查"（A32） | 注入检查 + 权限策略的 `deny`；`ask` 不再询问 | 回退在两轮之间执行，没有中断可以询问；人已在确认计划时看过这些命令 |
 | 继续部分完成的回退（§5.6） | 不阻止下一轮开始，由宿主决定先 `resume_rollback`、`accept_partial` 还是直接继续 | 每一轮本来都由宿主发起 |
 | 检查点事件、回退事件（§5.3） | 未实现，失败只记日志 | 属于 U7 |
 | 任务循环模式（§5.7.1 的 `AFTER_TASK_ITERATION`） | 不支持 | 任务循环模式下外层 invoke 没有 Session，写回和重启恢复都挂在外层 `BEFORE_INVOKE` 上 |
@@ -147,6 +172,8 @@ U3 新增的做法：
 | 2026-11-13 / U2 测试有效性 | 同上 | 临时把 racy 窗口改为 0、把等第一份清单改为不等，各跑对应用例 | 两个对应用例都失败，恢复后都通过 | — |
 | 2026-11-16 / U3：V-03 的一部分、V-13、V-14、V-16 的一部分 | 同上；模拟的工单服务（创建可撤销、发消息不可逆） | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable/ tests/unit_tests/harness/test_deep_agent_rail_event_routing.py -q -p no:cacheprovider` | 通过：25 个用例（U1 7 个、U2 7 个、U3 8 个、路由契约 3 个） | 撤销中途进程崩溃、结果未知的撤销没有测试 |
 | 2026-11-16 / U3 测试有效性 | 同上 | 临时分别去掉记忆目录、把撤销顺序改为最旧的在前、把登记失败改为照常执行 | 对应用例都失败（顺序改动使 3 个用例失败），恢复后都通过 | — |
+| 2026-11-16 / U4：V-12、V-15 | 同上；真实的 `bash` 工具，本地 sys_operation，命令白名单关闭 | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable/ tests/unit_tests/harness/test_deep_agent_rail_event_routing.py -q -p no:cacheprovider` | 通过：31 个用例（U1～U3 22 个、U4 6 个、路由契约 3 个）；使用 `PermissionInterruptRail` 的 5 个测试文件 67 个用例通过 | `code` 工具没有端到端测试；Windows 没有测试 |
+| 2026-11-16 / U4 测试有效性 | 同上 | 临时分别去掉反向命令复检、让 `review` 项自动执行、去掉对外命令判断、不停后台进程 | 对应用例各失败 1 个，恢复后都通过 | — |
 | 2026-11-13 / V4、V7 实测 | 本仓库工作目录（8,527 个文件，218 MB，含 `.git`），APFS | 直接调用 `WorkspaceSnapshot.scan`，各测克隆和复制 | 第一份清单：克隆 2.52 秒、复制 2.24 秒；之后每步扫描约 170 毫秒 | 系统缓存为空时、更大的仓库上没有测。克隆没有更快，因为时间主要花在算指纹 |
 
 ### 可见行为、副作用与证据有效范围
@@ -180,6 +207,13 @@ U3 新增的做法：
   - 登记写不进时工单工具没有执行，模型收到"could not be recorded"；
   - 没有补上结果的调用列为结果未知，不撤销；结果里没有工单号时列为无法撤销；
   - `memory/` 下的文件在回退后仍在，普通文件被删除。
+- **shell（U4）**，用真实的 `bash` 工具执行，回退后检查工作区外的文件和进程：
+  - 开启 ④ 时，模型拿到的 `bash` 参数里有三个声明参数，`side_effect` 必填；没开启的 Agent 没有；
+  - 声明为可撤销的命令在回退时由反向命令删掉它建的文件；
+  - 两条失败的命令都列为 `review`，只确认较新的一条时，只有它的反向命令执行；
+  - `ssh -V` 声明为无外部效果，被改为不可逆并写明原因；没有声明的命令为不可逆；声明为无外部效果的普通命令不进账本；
+  - 含 `$(...)` 的反向命令被拦下，撤销记为失败，回退为 `partial`；
+  - 后台的 `sleep 60` 在回退时被停掉，计划和结果里都有它的 pid。
 
 ## 验证结论
 
@@ -192,7 +226,9 @@ U3 新增的做法：
 - **U3 已证明的范围：** 声明过的工具在回退时按顺序撤销、划掉、失败即停、继续和接受；登记失败不执行；结果未知和无法撤销的处理；记忆不回退。
 - **U3 未覆盖的：** 撤销执行到一半进程崩溃（记录停在"已登记"）后的报告路径；真实的 cron 后端；`bash`、`code`、MCP 工具，
   它们在 U4、U8 之前都按不可逆处理。
-- **交付判断：** U1～U3 满足各自范围，主链路（上下文、文件、登记过的外部效果）已打通；整个特性尚未交付。
+- **U4 已证明的范围：** `bash` 的逐条声明、对外命令判断、失败命令的确认、反向命令复检、后台进程停止。
+- **U4 未覆盖的：** `code` 工具（同一套逻辑，没有端到端测试）；模型实际会不会认真填写声明（需要真实模型评估）；Windows。
+- **交付判断：** U1～U4 满足各自范围；整个特性尚未交付。
 
 ### 覆盖与资料同步
 
@@ -211,7 +247,9 @@ U3 新增的做法：
 | CLI 能否按 session_id 重新打开会话 | 未核实 | 不能的话，CLI 用户在重启后无法回退 | U7 或 CLI 接入时核实 |
 | 回退计划记录从不清理 | 未实现 | 存储慢慢增长 | 和总量上限、清理一起做（U7） |
 | 任务循环模式 | 未实现 | 不建检查点 | 待定 |
-| 依赖目录、shell 与执行代码的外部效果、工作区外的文件 | 未实现 | `bash`、`code` 按不可逆处理；回退说明里已如实写明 | U4～U6 |
+| 依赖目录、工作区外的文件 | 未实现 | 回退说明里已如实写明；`external_paths` 已记下但还不备份 | U5、U6 |
+| 名单以外的对外命令（如 `python deploy.py`） | 已知限制 | 以模型的声明为准，确认时有提示 | 无更好办法，靠声明和名单补漏 |
+| 模型是否认真填写声明 | 未验证 | 没填的按不可逆，回退说明会多出"撤不回"的条目 | 用真实模型评估 |
 | MCP 工具 | 未实现 | 按不可逆处理 | U8（取 MCP 服务器给的提示） |
 | "经用户批准过的调用"标记 | 未实现（P7） | 计划里不能标出 | 待 rails 维护者 |
 | 账本的参数摘要可能含密钥 | 已知风险（P20） | 摘要最多 500 字符，存在本机存储里 | 和敏感内容处理一起做 |

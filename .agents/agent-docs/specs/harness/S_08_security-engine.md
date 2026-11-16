@@ -18,7 +18,7 @@ author_email: yangzequ1@huawei.com
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/security/`（14 文件）、`openjiuwen/harness/rails/security/` |
-| 最近一次修订日期 | 2026-10-14 |
+| 最近一次修订日期 | 2026-11-16 |
 | 关联 feature | F_21_cua-desktop-subagent |
 
 ## 范围 / 边界
@@ -122,6 +122,7 @@ class ExternalDirectoryChecker:
     def check_external_paths(self, ...) -> Any
 
 def build_permission_interrupt_rail(...) -> PermissionInterruptRail
+PermissionInterruptRail.engine -> PermissionEngine   # 只读，供同一策略的其他检查复用（如 S_20 回退前复检反向命令）
 def merge_permission_allow_rule_into_permissions(...) -> Any
 def merge_external_directory_allow_into_permissions(...) -> Any
 def merge_file_guard_access_allows(...) -> Any
