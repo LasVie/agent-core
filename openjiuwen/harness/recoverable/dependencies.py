@@ -16,7 +16,11 @@ manager:
   ``direct_url.json``) and is reinstalled from it: asking an index for the same
   name could fetch an unrelated package;
 - a Node ``node_modules`` next to a ``package.json``: the ``package.json`` of each
-  top-level package. Only npm projects are restored; pnpm and yarn are reported.
+  top-level package; a package that did not come from a registry keeps its source
+  from npm's hidden lockfile (``node_modules/.package-lock.json``). Only npm
+  projects are restored, by list with ``--no-save``; the caller first puts back
+  the target's ``package.json`` and ``package-lock.json``, or npm would re-add
+  what the changed ``package.json`` names. pnpm and yarn are reported.
 
 Global installs (``npm -g``, ``brew``, ``pip`` outside a virtual environment) are
 compared before and after the command that made them, and only that difference is
@@ -129,6 +133,33 @@ def _requirement(name: str, version: str) -> list[str]:
     return [f"{name} @ {source}"]
 
 
+def _npm_sources(path: Path) -> dict[str, str]:
+    """Top-level packages of ``node_modules`` that did not come from a registry, with their source.
+
+    A local directory is a link resolved relative to the project; git and other
+    URLs are kept as npm recorded them. A registry tarball (``.../-/<name>.tgz``)
+    has no source to keep.
+    """
+    try:
+        entries = json.loads((path / ".package-lock.json").read_text(encoding="utf-8")).get("packages", {})
+    except (OSError, ValueError, AttributeError):
+        return {}
+    sources = {}
+    for key, entry in entries.items() if isinstance(entries, dict) else ():
+        name = key[len("node_modules/"):] if key.startswith("node_modules/") else ""
+        resolved = entry.get("resolved") if isinstance(entry, dict) else None
+        if not name or "/node_modules/" in name or not isinstance(resolved, str):
+            continue
+        if entry.get("link") or not ("/-/" in resolved and resolved.endswith(".tgz")):
+            sources[name] = resolved
+    return sources
+
+
+def _npm_spec(name: str, version: str) -> str:
+    """What ``npm install`` takes to install ``name`` at ``version``, from its source when it has one."""
+    return version.split(_SOURCE, 1)[1] if _SOURCE in version else f"{name}@{version}"
+
+
 def list_packages(path: Path) -> Packages:
     """What the environment at ``path`` holds, read from disk."""
     kind = env_kind(path)
@@ -140,6 +171,7 @@ def list_packages(path: Path) -> Packages:
                 source = _direct_source(dist)
                 packages[_normalize(name)] = dist.version + (_SOURCE + source if source else "")
     elif kind == "node":
+        sources = _npm_sources(path)
         manifests = list(path.glob("*/package.json")) + list(path.glob("@*/*/package.json"))
         for manifest in manifests:
             try:
@@ -147,7 +179,9 @@ def list_packages(path: Path) -> Packages:
             except (OSError, ValueError):
                 continue
             if isinstance(data, dict) and data.get("name") and data.get("version"):
-                packages[data["name"]] = str(data["version"])
+                name = manifest.parent.relative_to(path).as_posix()  # The directory npm installed it as.
+                source = sources.get(name)
+                packages[name] = str(data["version"]) + (_SOURCE + source if source else "")
     return packages
 
 
@@ -211,9 +245,10 @@ def restore_environment(root: Path, change: PackageChange) -> str | None:
             return "npm is not available"
         steps = []
         if change.remove:
-            steps.append([npm, "uninstall", "--no-save", *change.remove])
+            steps.append([npm, "uninstall", "--no-save", "--no-fund", "--no-audit", *change.remove])
         if change.install:
-            steps.append([npm, "install", "--no-save", *(f"{n}@{v}" for n, v in change.install.items())])
+            steps.append([npm, "install", "--no-save", "--no-fund", "--no-audit",
+                          *(_npm_spec(n, v) for n, v in change.install.items())])
         path = project
     else:
         return "not a recognized environment"

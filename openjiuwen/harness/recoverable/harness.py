@@ -52,6 +52,7 @@ import contextlib
 import hashlib
 import inspect
 import json
+import posixpath
 import shutil
 import time
 import uuid
@@ -103,7 +104,7 @@ from openjiuwen.harness.recoverable.effects import (
 )
 from openjiuwen.harness.recoverable.external import back_up_paths, put_back, record_after
 from openjiuwen.harness.recoverable.lock import WorkspaceLock
-from openjiuwen.harness.recoverable.manifest import Manifest, ManifestRecord
+from openjiuwen.harness.recoverable.manifest import EntryKind, Manifest, ManifestRecord
 from openjiuwen.harness.recoverable.models import (
     Checkpoint,
     CheckpointKind,
@@ -1837,8 +1838,12 @@ class RecoverableHarness:
         for env in created:
             await asyncio.to_thread(shutil.rmtree, root / env, True)
             done.append(PackageChangeInfo(env=env, remove=["(the whole environment)"]))
+        loaded = await self._load_manifest(session_id, target.manifest_id) if changes else None
         for change in changes:
             if change.error is None:
+                if loaded is not None and env_kind(root / change.env) == "node":
+                    # npm reads package.json even with --no-save: the changed one would re-add what it names.
+                    await asyncio.to_thread(self._put_back_project_files, loaded[0], change.env)
                 step = PackageChange(env=change.env, remove=change.remove, install=change.install)
                 change = change.model_copy(update={"error": await asyncio.to_thread(restore_environment, root, step)})
             done.append(change)
@@ -1847,6 +1852,21 @@ class RecoverableHarness:
             files.fingerprints = {"": "changed"}  # Matches no real fingerprint: re-list every environment.
             await self._snapshot_packages(session_id, files, manifest.dependency_dirs)
         return done
+
+    def _put_back_project_files(self, manifest: Manifest, env: str) -> None:
+        """Write the target's package.json and package-lock.json of an npm project before npm runs.
+
+        The files stage restores them anyway; this only lets npm see the target's dependencies.
+        """
+        project = posixpath.dirname(env)
+        for name in ("package.json", "package-lock.json"):
+            rel = posixpath.join(project, name) if project else name
+            entry = manifest.entries.get(rel)
+            full = self._workspace.root / rel
+            if entry is None:
+                full.unlink(missing_ok=True)
+            elif entry.kind == EntryKind.FILE and self._workspace.objects.has(entry.digest):
+                self._workspace.objects.materialize(entry.digest, full, entry.mode)
 
     async def _restore_workspace(self, session_id: str, target: Checkpoint) -> tuple[RestoreReport | None, str | None]:
         """Make the workspace match ``target``; return the report and the manifest id afterwards."""
