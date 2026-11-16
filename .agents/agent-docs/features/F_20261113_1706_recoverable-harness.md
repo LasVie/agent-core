@@ -8,6 +8,7 @@ modules:
 - harness
 files:
 - openjiuwen/harness/recoverable/__init__.py
+- openjiuwen/harness/recoverable/dependencies.py
 - openjiuwen/harness/recoverable/effects.py
 - openjiuwen/harness/recoverable/harness.py
 - openjiuwen/harness/recoverable/manifest.py
@@ -17,6 +18,7 @@ files:
 - openjiuwen/harness/recoverable/rail.py
 - openjiuwen/harness/recoverable/store.py
 - openjiuwen/harness/recoverable/workspace.py
+- tests/unit_tests/harness/recoverable/test_dependencies.py
 - tests/unit_tests/harness/recoverable/test_harness.py
 - tests/unit_tests/harness/recoverable/test_ledger.py
 - tests/unit_tests/harness/recoverable/test_shell.py
@@ -44,8 +46,10 @@ design_note: null
     `resume_rollback` / `accept_partial`；Agent 的记忆目录不回退。
   - **U4 shell 与执行代码的逐条声明**：`bash`、`code` 的三个声明参数（只在开启 ④ 时出现）；对外命令名单；
     退出码不为 0 的命令，反向命令要人确认才执行；反向命令执行前复检；后台进程在回退时先停掉。
+  - **U5 依赖与全局安装**：每个检查点记下工作区里 Python 虚拟环境和 npm 项目的包列表；回退时按列表安装和卸载，
+    目标之后新建的环境整个删除；Agent 的全局安装（`npm -g`、`brew`、虚拟环境以外的 `pip`）按前后对比生成反向命令。
 
-  依赖与全局安装（U5）、工作区外的文件（U6）、
+  工作区外的文件（U6）、
   运行中的信号与并发控制（U7）、MCP 提示（U8）尚未实现。
 
 ## 决策归属与关系
@@ -142,6 +146,24 @@ U4 新增的做法：
   启动时间对不上（例如重启后 pid 被复用）就不动。没有用 psutil：它不是基础依赖（只在 `cua` 额外依赖里）。
 - **账本里记下 `external_paths`**，供 U6 在执行前备份。
 
+U5 新增的做法：
+
+- **新增 `dependencies.py`。** 包列表直接从磁盘读，不运行包管理器：Python 用 `importlib.metadata.distributions(path=...)`
+  读 `site-packages`；Node 读 `node_modules` 顶层和 `@scope/` 下每个包的 `package.json`。这样快、不需要网络，
+  也不要求虚拟环境里有 pip（uv 建的 `.venv` 就没有）。
+- **先看修改时间，再决定要不要重读。** Python 看 `site-packages` 目录，Node 看 `node_modules` 目录和 `.package-lock.json`：
+  安装、卸载、升级都会增删其中的条目，所以目录的修改时间会变。
+- **依赖目录在扫描时顺便记下。** 工作区扫描遇到名单里的目录本来就跳过，现在把路径记进 `Manifest.dependency_dirs`，
+  不需要另外遍历工作区。
+- **恢复依赖用的命令：** Python 优先用环境自己的 `python -m pip`，没有 pip 时用 `uv pip --python <环境>`；
+  Node 用 `npm uninstall/install --no-save`，不改 `package.json`（它是普通文件，随后由快照恢复）。
+  pnpm、yarn 的 `node_modules` 结构和命令都不同，只报告不处理。
+- **目标之后新建的环境整个删除**，符合"回到检查点时的状态"；目标时有、现在已不存在的环境无法重建（不知道用哪个 Python），只报告。
+- **全局安装：** 只认几种明确的写法，执行前后各取一次全局列表（`npm ls -g --json`、`brew list --versions`、`pip list --format=json`），
+  比较差异生成反向命令，所以只撤这次调用造成的变化，用户自己装的不动。即使命令失败到一半，差异也是准确的。
+  反向命令作为单独一项排在模型写的反向命令之后（设计 A30）。
+- **检查点的去重**加上了 `packages_id`。
+
 ## 与设计的偏差
 
 | 设计 | 实际 | 原因与影响 |
@@ -174,6 +196,8 @@ U4 新增的做法：
 | 2026-11-16 / U3 测试有效性 | 同上 | 临时分别去掉记忆目录、把撤销顺序改为最旧的在前、把登记失败改为照常执行 | 对应用例都失败（顺序改动使 3 个用例失败），恢复后都通过 | — |
 | 2026-11-16 / U4：V-12、V-15 | 同上；真实的 `bash` 工具，本地 sys_operation，命令白名单关闭 | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable/ tests/unit_tests/harness/test_deep_agent_rail_event_routing.py -q -p no:cacheprovider` | 通过：31 个用例（U1～U3 22 个、U4 6 个、路由契约 3 个）；使用 `PermissionInterruptRail` 的 5 个测试文件 67 个用例通过 | `code` 工具没有端到端测试；Windows 没有测试 |
 | 2026-11-16 / U4 测试有效性 | 同上 | 临时分别去掉反向命令复检、让 `review` 项自动执行、去掉对外命令判断、不停后台进程 | 对应用例各失败 1 个，恢复后都通过 | — |
+| 2026-11-16 / U5：V-08、V-11 的一部分 | 同上；假的包管理器：虚拟环境的 `bin/python` 和 PATH 上的 `npm` 都是 shell 脚本，按参数增删 `*.dist-info` 和 `package.json`，全局包放在一个临时目录 | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable/ tests/unit_tests/harness/test_deep_agent_rail_event_routing.py -q -p no:cacheprovider` | 通过：36 个用例（U1～U4 28 个、U5 5 个、路由契约 3 个） | 没有用真实的 pip、uv、npm、brew 验证（V8、V9），也没有联网安装 |
+| 2026-11-16 / U5 测试有效性 | 同上 | 临时分别让依赖恢复什么都不做、让全局反向命令为空、让指纹恒定 | 对应用例都失败（依赖恢复 4 个、全局 1 个、指纹 1 个），恢复后都通过 | — |
 | 2026-11-13 / V4、V7 实测 | 本仓库工作目录（8,527 个文件，218 MB，含 `.git`），APFS | 直接调用 `WorkspaceSnapshot.scan`，各测克隆和复制 | 第一份清单：克隆 2.52 秒、复制 2.24 秒；之后每步扫描约 170 毫秒 | 系统缓存为空时、更大的仓库上没有测。克隆没有更快，因为时间主要花在算指纹 |
 
 ### 可见行为、副作用与证据有效范围
@@ -214,6 +238,13 @@ U4 新增的做法：
   - `ssh -V` 声明为无外部效果，被改为不可逆并写明原因；没有声明的命令为不可逆；声明为无外部效果的普通命令不进账本；
   - 含 `$(...)` 的反向命令被拦下，撤销记为失败，回退为 `partial`；
   - 后台的 `sleep 60` 在回退时被停掉，计划和结果里都有它的 pid。
+- **依赖（U5）**，回退后直接读环境里的包：
+  - Agent 装了 bar、把 foo 从 1.0 升到 1.1，之后用户又装了 baz：计划是卸载 bar、baz，安装 foo==1.0；回退后只剩 foo 1.0，
+    回退说明写着"Dependencies in .venv restored"；装包那一步的检查点记下了新的包列表；
+  - 目标之后才建的 `.venv` 被整个删除；
+  - 装不回去的包（假 pip 拒绝安装）让回退成为 `partial`，结果里带着错误；
+  - npm 项目的 `node_modules` 回到 left-pad 1.0.0，is-odd 被卸载；
+  - `npm install -g eslint@9.0.0 typescript@5.4.0` 生成的反向命令是卸载 eslint、把 typescript 装回 5.0.0，用户原有的全局包不动。
 
 ## 验证结论
 
@@ -228,7 +259,9 @@ U4 新增的做法：
   它们在 U4、U8 之前都按不可逆处理。
 - **U4 已证明的范围：** `bash` 的逐条声明、对外命令判断、失败命令的确认、反向命令复检、后台进程停止。
 - **U4 未覆盖的：** `code` 工具（同一套逻辑，没有端到端测试）；模型实际会不会认真填写声明（需要真实模型评估）；Windows。
-- **交付判断：** U1～U4 满足各自范围；整个特性尚未交付。
+- **U5 已证明的范围：** 包列表的记录和按列表恢复、新建环境的删除、失败时 `partial`、全局 npm 安装的反向命令，都是在假的包管理器上。
+- **U5 未覆盖的：** 真实的 pip、uv、npm、brew；联网安装；装回已下架版本、从本地路径或 git 地址安装的包；conda 环境。
+- **交付判断：** U1～U5 满足各自范围；整个特性尚未交付。
 
 ### 覆盖与资料同步
 
@@ -247,7 +280,11 @@ U4 新增的做法：
 | CLI 能否按 session_id 重新打开会话 | 未核实 | 不能的话，CLI 用户在重启后无法回退 | U7 或 CLI 接入时核实 |
 | 回退计划记录从不清理 | 未实现 | 存储慢慢增长 | 和总量上限、清理一起做（U7） |
 | 任务循环模式 | 未实现 | 不建检查点 | 待定 |
-| 依赖目录、工作区外的文件 | 未实现 | 回退说明里已如实写明；`external_paths` 已记下但还不备份 | U5、U6 |
+| 工作区外的文件 | 未实现 | `external_paths` 已记下但还不备份 | U6 |
+| 真实包管理器上的依赖恢复（V8、V9） | 未验证 | 只在假的包管理器上测过 | 在真实项目上实测 |
+| pnpm、yarn、conda 环境 | 未实现 | 记下包列表，恢复时只报告 | 有需要再加 |
+| 全局 `pip` 的识别 | 已知限制 | 按 ④ 所在进程的 `VIRTUAL_ENV` 判断是不是全局；命令里先激活虚拟环境再装包时，前后比较的是全局 pip，差异为空 | 需要时改为解析命令实际用的解释器 |
+| Node 只看顶层包 | 有意取舍 | 嵌套依赖随顶层包一起装卸，不单独记 | — |
 | 名单以外的对外命令（如 `python deploy.py`） | 已知限制 | 以模型的声明为准，确认时有提示 | 无更好办法，靠声明和名单补漏 |
 | 模型是否认真填写声明 | 未验证 | 没填的按不可逆，回退说明会多出"撤不回"的条目 | 用真实模型评估 |
 | MCP 工具 | 未实现 | 按不可逆处理 | U8（取 MCP 服务器给的提示） |

@@ -8,6 +8,7 @@ modules:
 - harness
 files:
 - openjiuwen/harness/recoverable/__init__.py
+- openjiuwen/harness/recoverable/dependencies.py
 - openjiuwen/harness/recoverable/effects.py
 - openjiuwen/harness/recoverable/harness.py
 - openjiuwen/harness/recoverable/manifest.py
@@ -26,7 +27,7 @@ files:
 | 项 | 值 |
 |---|---|
 | 类型 | spec |
-| 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py` / `effects.py` / `processes.py`） |
+| 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py` / `effects.py` / `processes.py` / `dependencies.py`） |
 | 最近一次修订日期 | 2026-11-16 |
 | 关联设计 | D-20261113-1506-recoverable-harness |
 | 关联 feature | F_20261113_1706_recoverable-harness.md |
@@ -37,8 +38,10 @@ files:
 包括上下文、Session 状态和工作区文件；工具调用对工作区以外的影响记在副作用账本里。
 人确认回退计划后，能撤销的外部效果按声明撤销，再把工作区、上下文和状态恢复到指定检查点。
 
+依赖目录（`node_modules`、`.venv` 等）不进快照，改为每个检查点记下包列表，回退时按列表安装和卸载。
+
 不回退的，回退说明会如实告诉 Agent：
-- 依赖目录（`node_modules`、`.venv` 等）、Agent 的记忆目录；
+- Agent 的记忆目录；无法按列表恢复的依赖环境；
 - 不可逆、无法撤销、结果未知的外部效果，账本里没有的外部效果；
 - 沙箱中的工作区。
 
@@ -92,7 +95,7 @@ Rail 的事件路由与 priority 规则见 S_04。
     "保留"类列为保留；不可逆类列为不可逆；失败了但有撤销参数的（例如退出码不为 0 的 shell 命令）列为待人确认（`review`），
     只有人在 `RollbackApproval.confirmed_effect_ids` 里确认才执行；其余没有成功结果的列为结果未知；
     可撤销但缺撤销参数的列为无法撤销；其余执行撤销。都不悄悄丢掉。
-19. **执行顺序：撤销 → 恢复工作区 → 放弃记录与检查点。** 撤销从最新的记录往前执行，跳过人在确认时划掉的。
+19. **执行顺序：停后台进程 → 撤销 → 恢复依赖环境 → 恢复工作区文件 → 放弃记录与检查点。** 撤销从最新的记录往前执行，跳过人在确认时划掉的。
     第一次撤销失败后，其余撤销不再执行（记为待执行），工作区照常恢复；工作区写回失败的文件重试一次。
     有撤销失败、待执行或未恢复的文件时，回退状态为 `partial`，否则为 `completed`；人划掉的撤销不算失败。
 20. **撤销调用自己也进账本**，带被撤销记录的 ID 和回退 ID。同一回退里已成功的撤销不再执行；
@@ -106,6 +109,18 @@ Rail 的事件路由与 priority 规则见 S_04。
     启动时间不一致的（pid 已被别的进程占用）不动，只报告。没有进程组信号的平台只报告。
 23. **声明参数只在开启 ④ 时出现。** `CheckpointRail.init` 和每轮 `BEFORE_INVOKE` 把三个参数加进 `bash`、`code` 工具卡片的
     `input_params`，`side_effect` 列为必填；描述随 `DeepAgentConfig.language` 用中文或英文。工具本身忽略这些参数。
+24. **每个检查点记下依赖环境的包列表。** 扫描时遇到的依赖目录里，有 `pyvenv.cfg` 的是 Python 虚拟环境，
+    名为 `node_modules` 且上一级有 `package.json` 的是 Node 环境。包列表直接从磁盘读：Python 读 `site-packages` 的 `*.dist-info`，
+    Node 读顶层（含 `@scope/`）每个包的 `package.json`，不运行包管理器。先比较 `site-packages` 或 `node_modules`
+    与 `.package-lock.json` 的修改时间，有变化才重读。包列表没变时，新检查点沿用上一个的 `packages_id`。
+25. **依赖按列表恢复，不管是谁装的。** 回退时在撤销之后、写回文件之前，把每个环境恢复成目标检查点的列表：
+    多出来的卸载，少了的或版本不同的安装目标版本。Python 用环境自己的 `pip`，没有时用 `uv pip --python`；
+    Node 只处理 npm 项目，用 `npm uninstall/install --no-save`，不改 `package.json`；pnpm、yarn 项目只报告。
+    目标之后新建的环境整个删除；目标时有、现在已不存在的环境只报告。安装或卸载失败的环境记下错误，回退为 `partial`。
+26. **全局安装只撤 Agent 做的。** `bash` 命令里认出 `npm -g`、`brew install/uninstall/upgrade/reinstall`、不在虚拟环境中的
+    `pip` / `python -m pip` 时，不论声明什么都进账本，执行前后各取一次全局包列表，比较后生成反向命令
+    （新增的卸载，删掉或版本变了的装回原版本；brew 的版本变化装不回，列为无法撤销）。
+    这条反向命令作为单独的一项排在模型写的反向命令之后执行。
 
 ## 接口契约
 
@@ -116,7 +131,7 @@ Rail 的事件路由与 priority 规则见 S_04。
 | `history(session_id, limit=None) -> list[Checkpoint]` | 从 HEAD 沿父检查点往回，最新的在前 |
 | `uncovered_files(session_id) -> list[str]` | 最新清单中超过单文件上限、没有存下的文件 |
 | `plan_rollback(session_id, target_id, *, initiator, source, reason) -> RollbackPlan` | 目标必须在当前历史上，否则报 `DEEPAGENT_INPUT_PARAM_ERROR`；目标可以是 HEAD 本身。计划列出要写回、删除、无法恢复的文件，要删除的构建产物，会消失的 git 提交数，以及每条外部效果的处理方式（`effects`，最新的在前） |
-| `apply_rollback(RollbackApproval) -> RollbackResult` | 不变量 4、5、6、10、19、22；`RollbackApproval.cancelled_effect_ids` 是人划掉的撤销，`confirmed_effect_ids` 是人确认执行的 `review` 项。执行时重新收集账本记录。结果给出状态、每条效果的结果、停掉的进程、实际写回、删除、删除的构建产物和没能恢复的文件；计划里有 `processes_to_stop` |
+| `apply_rollback(RollbackApproval) -> RollbackResult` | 不变量 4、5、6、10、19、22、25；`RollbackApproval.cancelled_effect_ids` 是人划掉的撤销，`confirmed_effect_ids` 是人确认执行的 `review` 项。执行时重新收集账本记录。结果给出状态、每条效果的结果、停掉的进程、实际写回、删除、删除的构建产物和没能恢复的文件；计划里有 `processes_to_stop` 和 `package_changes`（每个环境要卸载和安装的包），结果里有每个环境的恢复情况 |
 | `add_declaration_params(deep_agent)` | 不变量 23，`CheckpointRail` 调用 |
 | `resume_rollback(plan_id) -> RollbackResult` / `accept_partial(plan_id) -> RollbackPlan` | 只接受 `partial` 的回退，不变量 21 |
 | `check_workspace(root)` / `bind_workspace(root, *, sandboxed)` | 不变量 8；`CheckpointRail` 在拿到工作区或 sys_operation 时调用。sys_operation 是沙箱模式时不做工作区快照 |
@@ -160,11 +175,12 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 
 | 记录 | 键（`BaseKVStore`） | 内容 |
 |---|---|---|
-| `Checkpoint` | `recoverable:{session_id}:checkpoint:{checkpoint_id}` | `seq`、`parent_id`、vcs `commit_id` 与 `event_id`、`manifest_id`、`ledger_seq`（当时账本的最大序号）、`kind`（`step` / `rollback`） |
-| `LedgerRecord` | `recoverable:{session_id}:ledger:{seq:012d}` | 工具名、参数摘要（最多 500 字符）、类别及原因（`detail`）、状态（`intended` / `succeeded` / `failed`）、错误、撤销工具与参数、`external_paths`、后台进程的 `pid` 与启动时间、`reverses` / `rollback_id`（撤销调用）、`abandoned` |
+| `Checkpoint` | `recoverable:{session_id}:checkpoint:{checkpoint_id}` | `seq`、`parent_id`、vcs `commit_id` 与 `event_id`、`manifest_id`、`packages_id`、`ledger_seq`（当时账本的最大序号）、`kind`（`step` / `rollback`） |
+| `LedgerRecord` | `recoverable:{session_id}:ledger:{seq:012d}` | 工具名、参数摘要（最多 500 字符）、类别及原因（`detail`）、状态（`intended` / `succeeded` / `failed`）、错误、撤销工具与参数、`external_paths`、后台进程的 `pid` 与启动时间、全局安装的反向命令（`generated_undo`）与无法撤销项、`reverses` / `rollback_id`（撤销调用）、`abandoned` |
 | 账本序号 | `recoverable:{session_id}:ledger_seq` | 已分配的最大序号；同一会话内用锁串行分配 |
 | HEAD | `recoverable:{session_id}:head` | 当前检查点 ID |
 | 清单 `ManifestRecord` | `recoverable:{session_id}:manifest:{manifest_id}` | 相对 `parent_id` 的变化（路径 → 条目，删除记 `null`）；`parent_id` 为空时是完整清单，每 50 份增量存一份完整的 |
+| 包列表 | `recoverable:{session_id}:packages:{packages_id}` | 环境的工作区相对路径 → 包名 → 版本 |
 | 工作区最新扫描 | `recoverable:workspace:{工作区键}:scan` | 完整清单，供同一工作区的新会话复用指纹 |
 | `RollbackPlan` | `recoverable:plan:{plan_id}` | 目标、当时的 HEAD、要丢弃的检查点（最新的在前）、发起方、来源、理由、文件变化、会消失的提交数、效果及其结果、状态（`planned` / `completed` / `partial` / `accepted`）、`applied_at`。也是回退的进度记录 |
 | `PendingRollback` | `recoverable:{session_id}:pending` | 目标检查点（为空时只有说明待写入）、恢复后的清单、待写入的回退说明 |
