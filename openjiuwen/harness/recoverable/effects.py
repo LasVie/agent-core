@@ -8,7 +8,8 @@ change anything else, and if so, can that change be undone?
 
 Tools whose effect is the same on every call are declared once in a table, keyed
 by tool name. ``BUILTIN_DECLARATIONS`` covers the harness's own tools; a host adds
-or overrides entries for its tools. A tool missing from the table is irreversible.
+or overrides entries for its tools. An MCP tool missing from the table follows its
+server's ``readOnlyHint``; any other tool missing from the table is irreversible.
 
 Shell and code execution do something different on every call, so the model
 declares each call through three extra arguments (``side_effect``,
@@ -28,6 +29,7 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 from openjiuwen.core.common.exception.codes import StatusCode
+from openjiuwen.core.foundation.tool.mcp.base import McpToolCard
 from openjiuwen.core.common.exception.errors import build_error
 
 
@@ -191,9 +193,18 @@ class DeclarationTable:
         """True when the model declares each call of ``tool_name``; a host entry turns that off."""
         return tool_name in PER_CALL_TOOLS and tool_name not in self._overrides
 
-    def for_call(self, tool_name: str, args: dict[str, Any]) -> CallDeclaration:
-        """The declaration of one call: the table, or for shell and code the call's own arguments."""
+    def for_call(self, tool_name: str, args: dict[str, Any], card: Any = None) -> CallDeclaration:
+        """The declaration of one call: the table, or for shell and code the call's own arguments.
+
+        ``card`` is the tool's card when the caller has it. An MCP tool the table
+        does not name is without effect when its server marks it read-only.
+        """
         if not self.declared_per_call(tool_name):
+            if tool_name not in self._table and isinstance(card, McpToolCard):
+                if (card.annotations or {}).get("readOnlyHint") is True:
+                    return CallDeclaration(EffectDeclaration(category=EffectCategory.NONE),
+                                           "its MCP server marks it read-only")
+                return CallDeclaration(IRREVERSIBLE, "an MCP tool its server does not mark read-only")
             return CallDeclaration(self.get(tool_name))
         declared = args.get(SIDE_EFFECT_ARG)
         if declared == EffectCategory.NONE.value:

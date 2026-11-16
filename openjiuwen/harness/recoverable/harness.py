@@ -69,6 +69,7 @@ from openjiuwen.core.foundation.llm import AssistantMessage, ToolMessage, UserMe
 from openjiuwen.core.foundation.llm.schema.message import OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA
 from openjiuwen.core.foundation.store.base_kv_store import BaseKVStore
 from openjiuwen.core.foundation.store.kv.db_based_kv_store import DbBasedKVStore
+from openjiuwen.core.foundation.tool.mcp.base import McpToolCard
 from openjiuwen.core.session.vcs import VersioningConfig, VersioningManager, for_session
 from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
 from openjiuwen.core.sys_operation.execution_environment import ExecutionEnvironment, execution_environment_scope
@@ -973,7 +974,7 @@ class RecoverableHarness:
         if ctx.extra.get("_skip_tool") or (isinstance(skips, dict) and skips.get(call_id)):
             return  # An earlier rail already decided this call does not run.
         args = parse_args(getattr(inputs, "tool_args", None))
-        call = self._declarations.for_call(tool_name, args)
+        call = self._declarations.for_call(tool_name, args, self._mcp_card(tool_name))
         # Recorded even without effect: rollback stops a background process and reverses global installs.
         background = tool_name == SHELL_TOOL and bool(args.get("run_in_background"))
         manager = global_manager(str(args.get("command") or "")) if tool_name == SHELL_TOOL else None
@@ -1008,6 +1009,23 @@ class RecoverableHarness:
             ctx.extra.setdefault("_skip_tool_calls", {})[call_id] = True
             return
         ctx.extra[_RECORD_KEY] = record
+
+    def _mcp_card(self, tool_name: str) -> McpToolCard | None:
+        """The card an MCP server listed for a model-facing tool name, with the server's hints; else ``None``.
+
+        The agent registers MCP tools under ``mcp_<server>_<tool>`` with a plain
+        card; the server's own card sits with the tool in the resource manager.
+        """
+        from openjiuwen.core.runner import Runner
+
+        deep_agent = self._rail.deep_agent
+        react_agent = deep_agent.react_agent if deep_agent is not None else None
+        if react_agent is None or not tool_name.startswith("mcp_"):
+            return None
+        card = react_agent.ability_manager.get(tool_name)
+        tool = Runner.resource_mgr.get_tool(tool_id=card.id) if card is not None and card.id else None
+        listed = getattr(tool, "card", None)
+        return listed if isinstance(listed, McpToolCard) else None
 
     def _back_up(self, declared: list[str], args: dict) -> list[PathBackup]:
         """Back up the outside paths a call declared; in a sandbox they are not on this machine."""
