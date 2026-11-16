@@ -101,6 +101,10 @@ SHELL_TOOL = "bash"
 PER_CALL_TOOLS = frozenset({SHELL_TOOL, "code"})
 """Tools the model declares call by call. A reverse command always runs through the shell."""
 
+FILE_WRITING_TOOLS = {"write_file": "file_path", "edit_file": "file_path"}
+"""Built-in file tools, with the argument naming the file they write. They take absolute paths too; a
+path outside the workspace is backed up like one listed in ``external_paths``."""
+
 SIDE_EFFECT_ARG = "side_effect"
 REVERSE_COMMAND_ARG = "reverse_command"
 EXTERNAL_PATHS_ARG = "external_paths"

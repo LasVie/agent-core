@@ -90,6 +90,7 @@ from openjiuwen.harness.recoverable.dependencies import (
 from openjiuwen.harness.recoverable.effects import (
     DEFAULT_OUTWARD_COMMANDS,
     EXTERNAL_PATHS_ARG,
+    FILE_WRITING_TOOLS,
     PER_CALL_TOOLS,
     SHELL_TOOL,
     SIDE_EFFECT_ARG,
@@ -102,7 +103,7 @@ from openjiuwen.harness.recoverable.effects import (
     parse_args,
     result_data,
 )
-from openjiuwen.harness.recoverable.external import back_up_paths, put_back, record_after
+from openjiuwen.harness.recoverable.external import back_up_paths, put_back, record_after, resolve_paths
 from openjiuwen.harness.recoverable.lock import WorkspaceLock
 from openjiuwen.harness.recoverable.manifest import EntryKind, Manifest, ManifestRecord
 from openjiuwen.harness.recoverable.models import (
@@ -981,6 +982,7 @@ class RecoverableHarness:
         manager = global_manager(str(args.get("command") or "")) if tool_name == SHELL_TOOL else None
         paths = args.get(EXTERNAL_PATHS_ARG) if self._declarations.declared_per_call(tool_name) else None
         declared = [p for p in paths if isinstance(p, str)] if isinstance(paths, list) else []
+        declared += self._outside_file(tool_name, args)
         if call.declaration.category == EffectCategory.NONE and not background and manager is None and not declared:
             return
         if manager is not None:
@@ -1010,6 +1012,15 @@ class RecoverableHarness:
             ctx.extra.setdefault("_skip_tool_calls", {})[call_id] = True
             return
         ctx.extra[_RECORD_KEY] = record
+
+    def _outside_file(self, tool_name: str, args: dict) -> list[str]:
+        """The file a file tool writes, when it lies outside the workspace; inside, the snapshot covers it."""
+        target = args.get(FILE_WRITING_TOOLS.get(tool_name, ""))
+        if not isinstance(target, str) or not target.strip() or self._workspace is None:
+            return []
+        root = self._workspace.root
+        resolved = resolve_paths([target], root)
+        return [target] if any(p != root and root not in p.parents for p in resolved) else []
 
     def _mcp_card(self, tool_name: str) -> McpToolCard | None:
         """The card an MCP server listed for a model-facing tool name, with the server's hints; else ``None``.
