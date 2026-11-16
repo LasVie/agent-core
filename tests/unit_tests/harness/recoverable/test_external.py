@@ -7,6 +7,7 @@ backup taken before the call can put it back.
 """
 from __future__ import annotations
 
+import json
 import os
 import stat
 
@@ -16,6 +17,7 @@ from openjiuwen.core.foundation.store.kv.in_memory_kv_store import InMemoryKVSto
 from openjiuwen.harness.recoverable import EffectAction, EffectOutcome, RecoverableHarness, RollbackStatus
 from openjiuwen.harness.recoverable.external import resolve_paths
 from tests.unit_tests.fixtures.deep_agent_interrupts import run, scripted
+from tests.unit_tests.fixtures.mock_llm import create_tool_call_response
 from tests.unit_tests.harness.recoverable.test_shell import _agent, _apply, _bash, _model, _plan, runner  # noqa: F401
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX shell and file modes")
@@ -166,3 +168,30 @@ async def test_a_path_that_cannot_be_written_back_fails_and_can_be_resumed(tmp_p
     resumed = await harness.resume_rollback(result.plan_id)
     assert resumed.status == RollbackStatus.COMPLETED
     assert rc.read_text() == "original\n"
+
+
+@pytest.mark.asyncio
+async def test_outside_files_written_by_the_file_tools_are_put_back(tmp_path, runner):
+    harness, agent, outside = _setup(tmp_path)
+    rc, new, inside = outside / "rc", outside / "new.txt", tmp_path / "ws" / "notes.txt"
+    rc.write_text("export A=1\n")
+
+    def call(tool: str, call_id: str, **args):
+        return create_tool_call_response(tool, json.dumps(args), tool_call_id=call_id)
+
+    with scripted(_model(
+        call("read_file", "c0", file_path=str(rc)),
+        call("edit_file", "c1", file_path=str(rc), old_string="A=1", new_string="A=2"),
+        call("write_file", "c2", file_path=str(new), content="hello"),
+        call("write_file", "c3", file_path=str(inside), content="inside the workspace"),
+    )):
+        await run(agent, "edit", "s1")
+    assert rc.read_text() == "export A=2\n" and new.read_text() == "hello"
+
+    plan = await _plan(harness)
+    assert [(e.tool_name, e.args_summary) for e in plan.effects] == [
+        ("write_file (outside file)", str(new)), ("edit_file (outside file)", str(rc)),
+    ], "a write inside the workspace is left to the snapshot"
+    await _apply(harness, plan)
+
+    assert rc.read_text() == "export A=1\n" and not new.exists() and not inside.exists()
