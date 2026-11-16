@@ -107,7 +107,7 @@ Rail 的事件路由与 priority 规则见 S_04。
     模型写的反向命令执行前再检查一次：含命令替换、进程替换等注入写法的，或被 Agent 的权限策略判为 `deny` 的，不执行，记为撤销失败；
     `ask` 视为已由人在确认计划时同意。反向命令在工作区根目录执行。
 21. **`partial` 的回退不自动继续。** `resume_rollback` 重试失败和待执行的撤销，再恢复一次工作区，并在下一轮开始时给 Agent 一条说明；
-    `accept_partial` 接受现状。
+    `accept_partial` 接受现状。被进程崩溃打断的回退（`applying`）也由 `resume_rollback` 完成，见不变量 38。
 22. **后台进程在回退时先停掉。** 用 `run_in_background` 启动的 shell 命令一律进账本，记下 pid 和 `ps` 报告的启动时间。
     回退时，在撤销和恢复工作区之前，停掉目标之后启动、仍在运行且启动时间一致的进程组（先 `SIGTERM`，2 秒后 `SIGKILL`）；
     启动时间不一致的（pid 已被别的进程占用）不动，只报告。没有进程组信号的平台只报告。
@@ -170,6 +170,13 @@ Rail 的事件路由与 priority 规则见 S_04。
     供用户决定。有一轮在运行、或别的进程占着工作区时拒绝。被删的检查点不能再作为回退目标。
 37. **删除会话。** `delete_session` 删除会话的检查点、清单、包列表、账本、信号、计数、回退计划和 vcs 日志。
     没有别的会话占住工作区时立即清理只有它用到的文件内容，否则等占住的会话下次清理。会话正在运行时拒绝。
+38. **回退有进度记录，崩溃后从中断处接着做。** `apply_rollback` 在动手前把计划状态改为 `applying`，记下要丢弃的检查点和确认后的效果，
+    并在会话上留一个"回退执行中"的标记；之后每完成一个阶段（停进程、撤销、恢复依赖、恢复文件）记一次进度和这个阶段的结果。
+    提交阶段（放弃记录、写回退说明、移动 HEAD、删除检查点、计划定稿、清除标记）的每一步都可以重做：回退说明按计划 ID 去重。
+    进程在中途退出时，计划停在 `applying`；有标记时会话不能开始新的一轮、也不接受新的回退信号，直到 `resume_rollback`
+    从最后记下的阶段之后接着做。已成功的撤销按账本不再执行；执行到一半、结果未知的撤销不重试，记为失败，回退为 `partial`。
+    回退说明里文件和进程的数字取自各阶段当时的结果，不是重做时的。标记还在、计划却已定稿时（崩溃发生在提交的最后一步），
+    下一轮开始时清除标记。
 
 ## 接口契约
 
@@ -190,7 +197,7 @@ Rail 的事件路由与 priority 规则见 S_04。
 | `prune_checkpoints(keep_latest, *, dry_run=False) -> PruneReport` | 不变量 36；报告每个会话删除（或将删除）的检查点数和腾出的字节数 |
 | `release_session(session_id) -> bool` | 不变量 33；宿主在同一进程里关闭一个会话、开始另一个时调用。被释放会话的检查点保留，以后回退它时会重新占住工作区 |
 | `add_declaration_params(deep_agent)` | 不变量 23，`CheckpointRail` 调用 |
-| `resume_rollback(plan_id) -> RollbackResult` / `accept_partial(plan_id) -> RollbackPlan` | 只接受 `partial` 的回退，不变量 21 |
+| `resume_rollback(plan_id) -> RollbackResult` / `accept_partial(plan_id) -> RollbackPlan` | `resume_rollback` 接受 `partial` 和 `applying` 的回退（不变量 21、38）；`accept_partial` 只接受 `partial` |
 | `check_workspace(root)` / `bind_workspace(root, *, sandboxed)` | 不变量 8；`CheckpointRail` 在拿到工作区或 sys_operation 时调用。sys_operation 是沙箱模式时不做工作区快照 |
 | `begin_round` / `end_round` / `before_tool` / `after_tool` / `take_checkpoint` | 只供 `CheckpointRail` 调用 |
 
@@ -241,11 +248,12 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 | 包列表 | `recoverable:{session_id}:packages:{packages_id}` | 环境的工作区相对路径 → 包名 → 版本 |
 | 工作区的会话 | `recoverable:workspace:{工作区键}:sessions` | 在这个工作区跑过的会话 ID，清理时据此找出还要用的文件内容 |
 | 工作区最新扫描 | `recoverable:workspace:{工作区键}:scan` | 完整清单，供同一工作区的新会话复用指纹 |
-| `RollbackPlan` | `recoverable:plan:{plan_id}` | 目标、当时的 HEAD、要丢弃的检查点（最新的在前）、发起方、来源、理由、对应的信号、文件变化、会消失的提交数、效果及其结果、状态（`planned` / `completed` / `partial` / `accepted` / `invalidated`）、`applied_at`。也是回退的进度记录 |
+| `RollbackPlan` | `recoverable:plan:{plan_id}` | 目标、当时的 HEAD、要丢弃的检查点（最新的在前）、发起方、来源、理由、对应的信号、文件变化、会消失的提交数、效果及其结果、状态（`planned` / `applying` / `completed` / `partial` / `accepted` / `invalidated`）、`applied_at`、进度 `progress`（最后完成的阶段、要丢弃的检查点、停掉的进程、恢复依赖后的包列表、写回和删除的文件、恢复后的清单）。也是回退的进度记录 |
+| 回退执行中 | `recoverable:{session_id}:applying` | 正在执行的回退计划 ID；提交完成后删除 |
 | `RollbackTicket` | `recoverable:{session_id}:signal:{signal_id}` | 信号、状态、计划 ID、原因 |
 | 未结信号 | `recoverable:{session_id}:active_signal` | 等待步骤边界或等待确认的信号 ID，最多一个 |
 | `RollbackCounts` | `recoverable:{session_id}:counts` | 轮次、本轮被接受的自动信号数、每个目标被接受的自动信号数 |
-| `PendingRollback` | `recoverable:{session_id}:pending` | 目标检查点（为空时只有说明待写入）、恢复后的清单、待写入的回退说明 |
+| `PendingRollback` | `recoverable:{session_id}:pending` | 目标检查点（为空时只有说明待写入）、恢复后的清单、待写入的回退说明，以及这些说明来自哪些回退计划 |
 | vcs 日志 | `{session_id}:vcs:...` | 由 vcs `KvBackend` 维护 |
 | 工作区锁 | 文件 `storage_dir/locks/{工作区键}.lock`，不在 `BaseKVStore` 里 | 占住时写入 `session {session_id}, pid {pid}`，被拒绝的一方在报错里看到 |
 
