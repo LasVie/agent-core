@@ -115,6 +115,8 @@ Rail 的事件路由与 priority 规则见 S_04。
     启动时间不一致的（pid 已被别的进程占用）不动，只报告。没有进程组信号的平台只报告。
 23. **声明参数只在开启 ④ 时出现。** `CheckpointRail.init` 和每轮 `BEFORE_INVOKE` 把三个参数加进 `bash`、`code` 工具卡片的
     `input_params`，`side_effect` 列为必填；描述随 `DeepAgentConfig.language` 用中文或英文。工具本身忽略这些参数。
+    `side_effect` 的描述让模型按顺序判断：只读、只改工作区或只改列出的本机外部文件为 `none`（并说明不要因为"能撤销"就选
+    `reversible`）；新建独立的东西并能删掉为 `reversible`；其余（含 `git push`）为 `irreversible`。
 24. **每个检查点记下依赖环境的包列表。** 扫描时遇到的依赖目录里，有 `pyvenv.cfg` 的是 Python 虚拟环境，
     名为 `node_modules` 且上一级有 `package.json` 的是 Node 环境。包列表直接从磁盘读：Python 读 `site-packages` 的 `*.dist-info`，
     Node 读顶层（含 `@scope/`）每个包的 `package.json`，不运行包管理器。先比较 `site-packages` 或 `node_modules`
@@ -132,7 +134,9 @@ Rail 的事件路由与 priority 规则见 S_04。
     `pip` / `python -m pip` 时，不论声明什么都进账本，执行前后各取一次全局包列表，比较后生成反向命令
     （新增的卸载，删掉或版本变了的装回原版本；brew 的版本变化装不回，列为无法撤销）。
     这条反向命令作为单独的一项排在模型写的反向命令之后执行。
-27. **工作区外的文件只按 Agent 的声明备份和恢复。** `bash`、`code` 调用在 `external_paths` 里列出的路径，
+27. **工作区外的文件只按 Agent 的声明或文件工具的目标备份和恢复。** `write_file`、`edit_file` 的 `file_path` 在工作区以外时，
+    按列在 `external_paths` 里处理（文件工具接受绝对路径）；在工作区里的不登记，由快照负责。
+    `bash`、`code` 调用在 `external_paths` 里列出的路径，
     在 `BEFORE_TOOL_CALL` 写意图记录之前备份：`~` 和相对路径（相对 `workdir`，没有时相对工作区根目录）先变成绝对路径，
     符号链接连同它指向的路径一起备份；文件内容存进工作区的内容目录，条目存进这条记录，不存在的路径记为"不存在"。
     工作区里的路径不备份，由快照负责。包含工作区或与 ④ 存储目录重叠的、超过 1 万个条目或总大小超过 `file_size_cap` 的、
@@ -235,7 +239,7 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 
 | 类别 | 工具 |
 |---|---|
-| 无外部效果 | 文件工具（`read_file`、`write_file`、`edit_file`、`glob`、`list_files`、`grep`）、`todo_*`、计划与模式切换、搜索与网页读取、多模态理解、`ask_user`、记忆读取、`cron_get_job` / `cron_list_jobs` / `cron_preview_job`、`subagent_list` |
+| 无外部效果 | 文件工具（`read_file`、`write_file`、`edit_file`、`glob`、`list_files`、`grep`；`write_file`、`edit_file` 写工作区外的文件时另行备份，不变量 27）、`todo_*`、计划与模式切换、搜索与网页读取、多模态理解、`ask_user`、记忆读取、`cron_get_job` / `cron_list_jobs` / `cron_preview_job`、`subagent_list` |
 | 保留 | `write_memory`、`edit_memory`、`coding_memory_write`、`coding_memory_edit` |
 | 可撤销 | `cron_create_job`：用 `cron_delete_job(job_id=result.id)` 撤销 |
 | 逐条声明 | `bash`、`code`（不变量 15） |
