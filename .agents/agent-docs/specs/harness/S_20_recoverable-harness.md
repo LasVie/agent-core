@@ -119,6 +119,9 @@ Rail 的事件路由与 priority 规则见 S_04。
     名为 `node_modules` 且上一级有 `package.json` 的是 Node 环境。包列表直接从磁盘读：Python 读 `site-packages` 的 `*.dist-info`，
     Node 读顶层（含 `@scope/`）每个包的 `package.json`，不运行包管理器。先比较 `site-packages` 或 `node_modules`
     与 `.package-lock.json` 的修改时间，有变化才重读。包列表没变时，新检查点沿用上一个的 `packages_id`。
+    从本地路径、压缩包地址或 git 提交装的 Python 包，按 PEP 610 的 `direct_url.json` 连同来源一起记下
+    （`<版本> @ <来源>`，可编辑安装为 `<版本> @ editable <地址>`），恢复时从这个来源装回，不按名字去包索引里找：
+    同名的包可能是别人发布的另一个包。
 25. **依赖按列表恢复，不管是谁装的。** 回退时在撤销之后、写回文件之前，把每个环境恢复成目标检查点的列表：
     多出来的卸载，少了的或版本不同的安装目标版本。Python 用环境自己的 `pip`，没有时用 `uv pip --python`；
     Node 只处理 npm 项目，用 `npm uninstall/install --no-save`，不改 `package.json`；pnpm、yarn 项目只报告。
@@ -248,7 +251,7 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 | 账本序号 | `recoverable:{session_id}:ledger_seq` | 已分配的最大序号；同一会话内用锁串行分配 |
 | HEAD | `recoverable:{session_id}:head` | 当前检查点 ID |
 | 清单 `ManifestRecord` | `recoverable:{session_id}:manifest:{manifest_id}` | 相对 `parent_id` 的变化（路径 → 条目，删除记 `null`）；`parent_id` 为空时是完整清单，每 50 份增量存一份完整的 |
-| 包列表 | `recoverable:{session_id}:packages:{packages_id}` | 环境的工作区相对路径 → 包名 → 版本 |
+| 包列表 | `recoverable:{session_id}:packages:{packages_id}` | 环境的工作区相对路径 → 包名 → 版本（有直接来源的为 `<版本> @ <来源>`） |
 | 工作区的会话 | `recoverable:workspace:{工作区键}:sessions` | 在这个工作区跑过的会话 ID，清理时据此找出还要用的文件内容 |
 | 工作区最新扫描 | `recoverable:workspace:{工作区键}:scan` | 完整清单，供同一工作区的新会话复用指纹 |
 | `RollbackPlan` | `recoverable:plan:{plan_id}` | 目标、当时的 HEAD、要丢弃的检查点（最新的在前）、发起方、来源、理由、对应的信号、文件变化、会消失的提交数、效果及其结果、状态（`planned` / `applying` / `completed` / `partial` / `accepted` / `invalidated`）、`applied_at`、进度 `progress`（最后完成的阶段、要丢弃的检查点、停掉的进程、恢复依赖后的包列表、写回和删除的文件、恢复后的清单）。也是回退的进度记录 |
