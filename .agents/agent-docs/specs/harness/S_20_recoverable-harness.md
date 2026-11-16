@@ -10,6 +10,7 @@ files:
 - openjiuwen/harness/recoverable/__init__.py
 - openjiuwen/harness/recoverable/dependencies.py
 - openjiuwen/harness/recoverable/effects.py
+- openjiuwen/harness/recoverable/external.py
 - openjiuwen/harness/recoverable/harness.py
 - openjiuwen/harness/recoverable/manifest.py
 - openjiuwen/harness/recoverable/models.py
@@ -27,7 +28,7 @@ files:
 | 项 | 值 |
 |---|---|
 | 类型 | spec |
-| 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py` / `effects.py` / `processes.py` / `dependencies.py`） |
+| 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py` / `effects.py` / `processes.py` / `dependencies.py` / `external.py`） |
 | 最近一次修订日期 | 2026-11-16 |
 | 关联设计 | D-20261113-1506-recoverable-harness |
 | 关联 feature | F_20261113_1706_recoverable-harness.md |
@@ -43,6 +44,7 @@ files:
 不回退的，回退说明会如实告诉 Agent：
 - Agent 的记忆目录；无法按列表恢复的依赖环境；
 - 不可逆、无法撤销、结果未知的外部效果，账本里没有的外部效果；
+- Agent 没有声明的工作区外文件，没能备份的工作区外文件，以及 Agent 之后又被改过的工作区外文件；
 - 沙箱中的工作区。
 
 只支持单轮模式，不支持任务循环模式。
@@ -121,6 +123,16 @@ Rail 的事件路由与 priority 规则见 S_04。
     `pip` / `python -m pip` 时，不论声明什么都进账本，执行前后各取一次全局包列表，比较后生成反向命令
     （新增的卸载，删掉或版本变了的装回原版本；brew 的版本变化装不回，列为无法撤销）。
     这条反向命令作为单独的一项排在模型写的反向命令之后执行。
+27. **工作区外的文件只按 Agent 的声明备份和恢复。** `bash`、`code` 调用在 `external_paths` 里列出的路径，
+    在 `BEFORE_TOOL_CALL` 写意图记录之前备份：`~` 和相对路径（相对 `workdir`，没有时相对工作区根目录）先变成绝对路径，
+    符号链接连同它指向的路径一起备份；文件内容存进工作区的内容目录，条目存进这条记录，不存在的路径记为"不存在"。
+    工作区里的路径不备份，由快照负责。包含工作区或与 ④ 存储目录重叠的、超过 1 万个条目或总大小超过 `file_size_cap` 的、
+    读不了的、在沙箱里的路径不备份，回退时列为不可逆。调用结束后（失败也一样，停在中断上的除外）按内容再记一次每个路径。
+28. **工作区外的文件逐个路径恢复，Agent 之后又被改过的不覆盖。** 回退时每个路径是单独的一项，可以在确认时划掉，
+    排在同一调用的模型反向命令和全局包反向命令之后。现在的内容与备份相同的不动；与调用结束时不同的（有人又改过）不覆盖，
+    结果记为保留（`kept`），不算失败；其余恢复成备份，原来不存在的删除。写不回去的（例如需要 sudo）记为撤销失败，回退为 `partial`；
+    `resume_rollback` 重试时不再比对调用结束时的内容，因为上次的尝试可能已经改了一部分。
+    调用结束时的内容没能记下的（停在中断上、超过上限），列为待人确认（`review`）。
 
 ## 接口契约
 
@@ -131,7 +143,7 @@ Rail 的事件路由与 priority 规则见 S_04。
 | `history(session_id, limit=None) -> list[Checkpoint]` | 从 HEAD 沿父检查点往回，最新的在前 |
 | `uncovered_files(session_id) -> list[str]` | 最新清单中超过单文件上限、没有存下的文件 |
 | `plan_rollback(session_id, target_id, *, initiator, source, reason) -> RollbackPlan` | 目标必须在当前历史上，否则报 `DEEPAGENT_INPUT_PARAM_ERROR`；目标可以是 HEAD 本身。计划列出要写回、删除、无法恢复的文件，要删除的构建产物，会消失的 git 提交数，以及每条外部效果的处理方式（`effects`，最新的在前） |
-| `apply_rollback(RollbackApproval) -> RollbackResult` | 不变量 4、5、6、10、19、22、25；`RollbackApproval.cancelled_effect_ids` 是人划掉的撤销，`confirmed_effect_ids` 是人确认执行的 `review` 项。执行时重新收集账本记录。结果给出状态、每条效果的结果、停掉的进程、实际写回、删除、删除的构建产物和没能恢复的文件；计划里有 `processes_to_stop` 和 `package_changes`（每个环境要卸载和安装的包），结果里有每个环境的恢复情况 |
+| `apply_rollback(RollbackApproval) -> RollbackResult` | 不变量 4、5、6、10、19、22、25、28；`RollbackApproval.cancelled_effect_ids` 是人划掉的撤销，`confirmed_effect_ids` 是人确认执行的 `review` 项。执行时重新收集账本记录。结果给出状态、每条效果的结果、停掉的进程、实际写回、删除、删除的构建产物和没能恢复的文件；计划里有 `processes_to_stop` 和 `package_changes`（每个环境要卸载和安装的包），结果里有每个环境的恢复情况 |
 | `add_declaration_params(deep_agent)` | 不变量 23，`CheckpointRail` 调用 |
 | `resume_rollback(plan_id) -> RollbackResult` / `accept_partial(plan_id) -> RollbackPlan` | 只接受 `partial` 的回退，不变量 21 |
 | `check_workspace(root)` / `bind_workspace(root, *, sandboxed)` | 不变量 8；`CheckpointRail` 在拿到工作区或 sys_operation 时调用。sys_operation 是沙箱模式时不做工作区快照 |
@@ -156,7 +168,8 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 - 删除了哪些构建产物，需要重新构建；
 - 哪些文件没能恢复；
 - 依赖目录和记忆没有回退；
-- 每条外部效果的去向：已撤销、人要求保留、撤销失败或未执行、不可逆、无法撤销、结果未知、有意保留；账本以外的效果没有处理；
+- 每条外部效果的去向：已撤销、人要求保留、因 Agent 之后又被改过而保留的工作区外文件、撤销失败或未执行、不可逆、无法撤销、结果未知、有意保留；
+  账本以外的效果和没有声明的工作区外文件没有处理；
 - 回退理由。
 
 **内置声明表**（`effects.BUILTIN_DECLARATIONS`）：
@@ -176,7 +189,7 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 | 记录 | 键（`BaseKVStore`） | 内容 |
 |---|---|---|
 | `Checkpoint` | `recoverable:{session_id}:checkpoint:{checkpoint_id}` | `seq`、`parent_id`、vcs `commit_id` 与 `event_id`、`manifest_id`、`packages_id`、`ledger_seq`（当时账本的最大序号）、`kind`（`step` / `rollback`） |
-| `LedgerRecord` | `recoverable:{session_id}:ledger:{seq:012d}` | 工具名、参数摘要（最多 500 字符）、类别及原因（`detail`）、状态（`intended` / `succeeded` / `failed`）、错误、撤销工具与参数、`external_paths`、后台进程的 `pid` 与启动时间、全局安装的反向命令（`generated_undo`）与无法撤销项、`reverses` / `rollback_id`（撤销调用）、`abandoned` |
+| `LedgerRecord` | `recoverable:{session_id}:ledger:{seq:012d}` | 工具名、参数摘要（最多 500 字符）、类别及原因（`detail`）、状态（`intended` / `succeeded` / `failed`）、错误、撤销工具与参数、`external_paths` 及其备份 `external_backups`（每个路径执行前和执行后的条目、没能备份的原因）、后台进程的 `pid` 与启动时间、全局安装的反向命令（`generated_undo`）与无法撤销项、`reverses` / `rollback_id`（撤销调用）、`abandoned` |
 | 账本序号 | `recoverable:{session_id}:ledger_seq` | 已分配的最大序号；同一会话内用锁串行分配 |
 | HEAD | `recoverable:{session_id}:head` | 当前检查点 ID |
 | 清单 `ManifestRecord` | `recoverable:{session_id}:manifest:{manifest_id}` | 相对 `parent_id` 的变化（路径 → 条目，删除记 `null`）；`parent_id` 为空时是完整清单，每 50 份增量存一份完整的 |
