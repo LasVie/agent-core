@@ -133,17 +133,33 @@ Rail 的事件路由与 priority 规则见 S_04。
     结果记为保留（`kept`），不算失败；其余恢复成备份，原来不存在的删除。写不回去的（例如需要 sudo）记为撤销失败，回退为 `partial`；
     `resume_rollback` 重试时不再比对调用结束时的内容，因为上次的尝试可能已经改了一部分。
     调用结束时的内容没能记下的（停在中断上、超过上限），列为待人确认（`review`）。
+29. **回退经信号发起，同一会话同一时间只有一个未结的信号。** `request_rollback` 按 `signal_id` 去重，重复投递返回同一张回执。
+    目标不在当前历史上的拒绝。已有未结信号（等待步骤边界或等待确认）时，新信号被拒绝；例外是人发起的信号取代自动信号，
+    被取代的信号和它的计划作废。人拒绝计划（`decline_rollback`）时，计划和信号作废。作废的计划不能再执行。
+    任何一次回退执行后，同一会话其他未结的信号都作废（它们的计划是按旧历史算的）。
+30. **运行中收到的信号等到下一个步骤边界。** `BEFORE_MODEL_CALL` 和 `AFTER_REACT_ITERATION` 在建完检查点之后，
+    发现有等待中的信号就用 `request_force_finish` 结束本轮，本轮结果的 `result_type` 是 `"rollback"`。
+    本轮结束时（`AFTER_INVOKE`，包括停在确认中断上、抛出异常）生成计划，信号变为等待确认。会话空闲时收到的信号立刻生成计划。
+    进程在等待期间退出的，下次查询回执时生成计划。
+31. **自动信号有次数上限。** 同一目标默认 2 次，同一轮默认 5 次，超过的直接拒绝，不交人。只计被接受的自动信号，人发起的不计。
+    计数单独保存，不随历史删除。每轮开始时清零"同一轮"的计数；以写回回退开始的一轮不清零，因为它接着做被回退打断的任务。
+32. **检查点和回退都发出事件。** `on_event` 收到：检查点已建立（含 `checkpoint_id`、`seq`、轮次；回退检查点也算）、建立失败；
+    回退已接收、已拒绝、等待确认、已作废、已执行、部分完成（`resume_rollback` 的结果同样发出）。
+    事件只是通知，事实以检查点库和回退计划为准；监听方出错只记日志。
 
 ## 接口契约
 
 | 入口 | 说明 |
 |---|---|
-| `RecoverableHarness(*, kv_store=None, storage_dir=None, dependency_dirs=..., build_output_dirs=..., file_size_cap=1 GB, use_clones=True, declarations=None)` | `kv_store` 默认是 `storage_dir/recoverable.db` 上的 SQLite（`DbBasedKVStore`）；`storage_dir` 默认 `~/.openjiuwen/recoverable`，文件内容在 `storage_dir/objects/<工作区键>/`。依赖目录默认 `node_modules`、`.venv`、`venv`、`.tox`；构建产物默认 `dist`、`build`、`target`、`.next`。`declarations` 是宿主工具的 `EffectDeclaration`，按工具名；`outward_commands` 默认 `ssh`、`scp`、`sftp`、`kubectl`、`helm`、`docker`、`podman`、`aws`、`gcloud`、`az`、`terraform`、`psql`、`mysql`、`mongosh`、`redis-cli`、`crontab`、`systemctl`、`launchctl` |
+| `RecoverableHarness(*, kv_store=None, storage_dir=None, dependency_dirs=..., build_output_dirs=..., file_size_cap=1 GB, use_clones=True, declarations=None, on_event=None, auto_limit_per_target=2, auto_limit_per_round=5)` | `kv_store` 默认是 `storage_dir/recoverable.db` 上的 SQLite（`DbBasedKVStore`）；`storage_dir` 默认 `~/.openjiuwen/recoverable`，文件内容在 `storage_dir/objects/<工作区键>/`。依赖目录默认 `node_modules`、`.venv`、`venv`、`.tox`；构建产物默认 `dist`、`build`、`target`、`.next`。`declarations` 是宿主工具的 `EffectDeclaration`，按工具名；`outward_commands` 默认 `ssh`、`scp`、`sftp`、`kubectl`、`helm`、`docker`、`podman`、`aws`、`gcloud`、`az`、`terraform`、`psql`、`mysql`、`mongosh`、`redis-cli`、`crontab`、`systemctl`、`launchctl` |
 | `rail() -> CheckpointRail` | 注册到 DeepAgent 的 Rail；一个 harness 服务一个 DeepAgent |
 | `history(session_id, limit=None) -> list[Checkpoint]` | 从 HEAD 沿父检查点往回，最新的在前 |
 | `uncovered_files(session_id) -> list[str]` | 最新清单中超过单文件上限、没有存下的文件 |
 | `plan_rollback(session_id, target_id, *, initiator, source, reason) -> RollbackPlan` | 目标必须在当前历史上，否则报 `DEEPAGENT_INPUT_PARAM_ERROR`；目标可以是 HEAD 本身。计划列出要写回、删除、无法恢复的文件，要删除的构建产物，会消失的 git 提交数，以及每条外部效果的处理方式（`effects`，最新的在前） |
 | `apply_rollback(RollbackApproval) -> RollbackResult` | 不变量 4、5、6、10、19、22、25、28；`RollbackApproval.cancelled_effect_ids` 是人划掉的撤销，`confirmed_effect_ids` 是人确认执行的 `review` 项。执行时重新收集账本记录。结果给出状态、每条效果的结果、停掉的进程、实际写回、删除、删除的构建产物和没能恢复的文件；计划里有 `processes_to_stop` 和 `package_changes`（每个环境要卸载和安装的包），结果里有每个环境的恢复情况 |
+| `request_rollback(RollbackSignal) -> RollbackTicket` | 不变量 29～31。`RollbackSignal` 含 `signal_id`、`session_id`、`target_id`、`initiator`（`human` / `auto`）、`source`、`reason`；回执的 `status` 为 `waiting`、`awaiting_approval`、`rejected`、`invalidated`、`applied`，等待确认时带 `plan_id`，被拒绝或作废时 `detail` 写明原因 |
+| `get_ticket(session_id, signal_id) -> RollbackTicket \| None` | 查询回执；进程退出时还在等待的信号，此时生成计划 |
+| `decline_rollback(plan_id, reason="") -> RollbackPlan` | 人拒绝一份等待确认的计划；计划状态变为 `invalidated`，信号作废 |
 | `add_declaration_params(deep_agent)` | 不变量 23，`CheckpointRail` 调用 |
 | `resume_rollback(plan_id) -> RollbackResult` / `accept_partial(plan_id) -> RollbackPlan` | 只接受 `partial` 的回退，不变量 21 |
 | `check_workspace(root)` / `bind_workspace(root, *, sandboxed)` | 不变量 8；`CheckpointRail` 在拿到工作区或 sys_operation 时调用。sys_operation 是沙箱模式时不做工作区快照 |
@@ -154,11 +170,11 @@ Rail 的事件路由与 priority 规则见 S_04。
 | 事件 | 路由 | callback priority | 做什么 |
 |---|---|---|---|
 | `BEFORE_INVOKE` | 外层 DeepAgent | 10000 | 标记会话运行中；写回待写回的回退或重启后丢失的 Session（不变量 6、7）；会话还没有清单时在后台开始建第一份（不变量 11） |
-| `BEFORE_MODEL_CALL` | 内层 ReAct | 1 | 建检查点：每轮开始，以及没调工具却继续循环的那一步 |
+| `BEFORE_MODEL_CALL` | 内层 ReAct | 1 | 建检查点：每轮开始，以及没调工具却继续循环的那一步；有等待中的信号时结束本轮（不变量 30） |
 | `BEFORE_TOOL_CALL` | 内层 ReAct | 1 | 等第一份清单完成；登记意图（不变量 16） |
 | `AFTER_TOOL_CALL` / `ON_TOOL_EXCEPTION` | 内层 ReAct | 1000000 | 补上结果和撤销参数（不变量 17） |
-| `AFTER_REACT_ITERATION` | 内层 ReAct | 1 | 建检查点：每步结束 |
-| `AFTER_INVOKE` | 外层 DeepAgent | 1 | 本轮没有异常时建检查点；保存最新扫描供同一工作区的下一个会话复用；标记会话空闲 |
+| `AFTER_REACT_ITERATION` | 内层 ReAct | 1 | 建检查点：每步结束；有等待中的信号时结束本轮 |
+| `AFTER_INVOKE` | 外层 DeepAgent | 1 | 本轮没有异常时建检查点；保存最新扫描供同一工作区的下一个会话复用；标记会话空闲；为等待中的信号生成计划 |
 
 Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下同一边界上其他 Rail 处理完的状态。
 
@@ -195,7 +211,10 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 | 清单 `ManifestRecord` | `recoverable:{session_id}:manifest:{manifest_id}` | 相对 `parent_id` 的变化（路径 → 条目，删除记 `null`）；`parent_id` 为空时是完整清单，每 50 份增量存一份完整的 |
 | 包列表 | `recoverable:{session_id}:packages:{packages_id}` | 环境的工作区相对路径 → 包名 → 版本 |
 | 工作区最新扫描 | `recoverable:workspace:{工作区键}:scan` | 完整清单，供同一工作区的新会话复用指纹 |
-| `RollbackPlan` | `recoverable:plan:{plan_id}` | 目标、当时的 HEAD、要丢弃的检查点（最新的在前）、发起方、来源、理由、文件变化、会消失的提交数、效果及其结果、状态（`planned` / `completed` / `partial` / `accepted`）、`applied_at`。也是回退的进度记录 |
+| `RollbackPlan` | `recoverable:plan:{plan_id}` | 目标、当时的 HEAD、要丢弃的检查点（最新的在前）、发起方、来源、理由、对应的信号、文件变化、会消失的提交数、效果及其结果、状态（`planned` / `completed` / `partial` / `accepted` / `invalidated`）、`applied_at`。也是回退的进度记录 |
+| `RollbackTicket` | `recoverable:{session_id}:signal:{signal_id}` | 信号、状态、计划 ID、原因 |
+| 未结信号 | `recoverable:{session_id}:active_signal` | 等待步骤边界或等待确认的信号 ID，最多一个 |
+| `RollbackCounts` | `recoverable:{session_id}:counts` | 轮次、本轮被接受的自动信号数、每个目标被接受的自动信号数 |
 | `PendingRollback` | `recoverable:{session_id}:pending` | 目标检查点（为空时只有说明待写入）、恢复后的清单、待写入的回退说明 |
 | vcs 日志 | `{session_id}:vcs:...` | 由 vcs `KvBackend` 维护 |
 
