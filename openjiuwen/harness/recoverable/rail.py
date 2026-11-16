@@ -4,10 +4,12 @@
 
 Hooks and where they run (see ``rails/AGENTS.md`` for the routing):
 
-- ``BEFORE_INVOKE`` (outer DeepAgent): mark the session running, write back a
-  pending rollback or a session lost to a restart, and start the session's first
-  workspace snapshot. Runs first in its chain so no other rail reads the context
-  before it is restored.
+- ``BEFORE_INVOKE`` (outer DeepAgent): claim the workspace for the session, mark
+  the session running, write back a pending rollback or a session lost to a
+  restart, and start the session's first workspace snapshot. Runs first in its
+  chain so no other rail reads the context before it is restored. A failure here
+  stops the round (``AbortError``): running on a context that was not restored,
+  or beside another session's rollback, would lose work.
 - ``BEFORE_MODEL_CALL`` (inner ReAct): checkpoint the round start, and any step
   that ended without tool calls but kept the loop going.
 - ``BEFORE_TOOL_CALL`` (inner ReAct): wait for the first workspace snapshot, so no
@@ -38,7 +40,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from openjiuwen.core.common.exception.codes import StatusCode
+from openjiuwen.core.common.exception.errors import BaseError, build_error
 from openjiuwen.core.common.logging import logger
+from openjiuwen.core.runner.callback.errors import AbortError
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentCallbackEvent
 from openjiuwen.core.sys_operation.base import OperationMode
 from openjiuwen.harness.rails.base import DeepAgentRail
@@ -116,7 +121,13 @@ class CheckpointRail(DeepAgentRail):
         if ctx.session is None or self._deep_agent is None:
             return
         self._harness.add_declaration_params(self._deep_agent)  # Tools may have been reloaded.
-        await self._harness.begin_round(ctx.session, self._deep_agent)
+        try:
+            await self._harness.begin_round(ctx.session, self._deep_agent)
+        except Exception as exc:  # Plain callback errors are only logged; abort to stop the round.
+            error = exc if isinstance(exc, BaseError) else build_error(
+                StatusCode.DEEPAGENT_RUNTIME_ERROR, cause=exc, error_msg=f"recoverable round start failed: {exc}",
+            )
+            raise AbortError(reason=str(error), cause=error) from exc
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         await self._take(ctx)

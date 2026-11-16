@@ -13,6 +13,10 @@ rollback is planned, confirmed by a person, then applied between rounds:
    live session through vcs ``rewind`` (which also drops the later log), appends
    the rollback note and commits the rollback checkpoint.
 
+Only one session per workspace has rollback on at a time: the first to start a
+round holds the workspace until :meth:`RecoverableHarness.release_session` or
+the end of its process.
+
 Rollbacks usually arrive as signals (:meth:`RecoverableHarness.request_rollback`).
 A signal received while the agent runs ends the round at the next step boundary;
 its plan is made when the round ends. Only one signal per session is open at a
@@ -89,6 +93,7 @@ from openjiuwen.harness.recoverable.effects import (
     result_data,
 )
 from openjiuwen.harness.recoverable.external import back_up_paths, put_back, record_after
+from openjiuwen.harness.recoverable.lock import WorkspaceLock
 from openjiuwen.harness.recoverable.manifest import Manifest, ManifestRecord
 from openjiuwen.harness.recoverable.models import (
     Checkpoint,
@@ -324,6 +329,7 @@ class RecoverableHarness:
         self._declarations = DeclarationTable(declarations, frozenset(outward_commands))
         self._workspace: WorkspaceSnapshot | None = None
         self._outside_objects: ObjectStore | None = None
+        self._workspace_lock: WorkspaceLock | None = None
         self._workspace_key = ""
         self._rail = CheckpointRail(self)
         self._managers: dict[str, tuple[weakref.ref, VersioningManager]] = {}
@@ -368,11 +374,18 @@ class RecoverableHarness:
         """
         self.check_workspace(workspace_root)
         if sandboxed:
-            self._workspace, self._outside_objects = None, None
+            if self._workspace_lock is not None:
+                self._workspace_lock.release()
+            self._workspace, self._outside_objects, self._workspace_lock = None, None, None
             logger.warning("recoverable: the workspace is in a sandbox; files will not be rolled back")
             return
         root = Path(workspace_root).expanduser().resolve()
         self._workspace_key = hashlib.sha256(str(root).encode()).hexdigest()[:16]
+        lock_path = self._storage_dir / "locks" / f"{self._workspace_key}.lock"
+        if self._workspace_lock is None or self._workspace_lock.path != lock_path:
+            if self._workspace_lock is not None:
+                self._workspace_lock.release()
+            self._workspace_lock = WorkspaceLock(lock_path)
         objects = ObjectStore(
             self._storage_dir / "objects" / self._workspace_key,
             size_cap=self._file_size_cap,
@@ -387,6 +400,25 @@ class RecoverableHarness:
             root, objects, dependency_dirs=self._dependency_dirs, build_output_dirs=self._build_output_dirs,
             kept_dirs=kept_dirs,
         )
+
+    def release_session(self, session_id: str) -> bool:
+        """Let another session have rollback in this workspace; False when ``session_id`` did not hold it.
+
+        Call it when the host closes a session but keeps the process, such as a
+        CLI starting a new conversation. The released session's checkpoints stay;
+        rolling it back later claims the workspace again.
+        """
+        return self._workspace_lock is not None and self._workspace_lock.release(session_id)
+
+    def _claim(self, session_id: str) -> None:
+        """Hold the workspace for ``session_id`` or refuse: a rollback would undo another session's work."""
+        refusal = self._workspace_lock.claim(session_id) if self._workspace_lock is not None else None
+        if refusal is not None:
+            raise build_error(
+                StatusCode.DEEPAGENT_RUNTIME_ERROR,
+                error_msg=f"rollback is not available to session {session_id}: {refusal}; "
+                          "release that session first or use another workspace",
+            )
 
     def _checkpoints(self) -> CheckpointStore:
         if self._store is None:
@@ -567,7 +599,8 @@ class RecoverableHarness:
 
         Raises:
             BaseError: the approval does not match a stored, unapplied plan; the
-                target left the history; or the session is running a round.
+                target left the history; the session is running a round; or
+                another session holds the workspace.
         """
         store = self._checkpoints()
         plan = await store.get_plan(approval.plan_id)
@@ -580,6 +613,7 @@ class RecoverableHarness:
         session_id = plan.session_id
         async with self._lock(session_id):
             self._ensure_idle(session_id)
+            self._claim(session_id)
             chain = await store.chain(session_id)
             ids = [checkpoint.checkpoint_id for checkpoint in chain]
             if plan.target_id not in ids:
@@ -651,6 +685,7 @@ class RecoverableHarness:
         session_id = plan.session_id
         async with self._lock(session_id):
             self._ensure_idle(session_id)
+            self._claim(session_id)
             target = await store.get(session_id, plan.target_id)
             if target is None:
                 raise build_error(
@@ -696,6 +731,7 @@ class RecoverableHarness:
     async def begin_round(self, session: "Session", deep_agent: "DeepAgent") -> None:
         """Mark the session running, write back a pending rollback or a lost session, start the baseline."""
         session_id = session.get_session_id()
+        self._claim(session_id)
         self._running.add(session_id)
         try:
             async with self._lock(session_id):
