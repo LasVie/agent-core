@@ -70,6 +70,25 @@ class EffectStatus(str, Enum):
     """The tool raised or reported failure. Part of the effect may still have happened."""
 
 
+class PathBackup(BaseModel):
+    """One path outside the workspace that a call declared it writes, before and right after the call.
+
+    Entries are ``Entry.to_list()`` values keyed by POSIX path relative to the
+    parent of ``path``, so the path itself is keyed by its own name.
+    """
+
+    path: str
+    """Absolute path, after ``~`` and a relative path are resolved."""
+    before: dict[str, list] | None = None
+    """What the path held before the call; ``None`` when it did not exist."""
+    error: str | None = None
+    """Why the path was not backed up, such as too large or unreadable. It cannot be put back."""
+    after: dict[str, list] | None = None
+    """What the call left; ``None`` when the call left nothing there."""
+    after_taken: bool = False
+    """False until ``after`` is recorded. Without it a later change by someone else cannot be told apart."""
+
+
 class LedgerRecord(BaseModel):
     """One tool call that may have changed something outside the workspace."""
 
@@ -97,6 +116,8 @@ class LedgerRecord(BaseModel):
     """Why the call got its category, such as an outward command declared without effect."""
     external_paths: list[str] = Field(default_factory=list)
     """Paths outside the workspace the call declared it writes."""
+    external_backups: list[PathBackup] = Field(default_factory=list)
+    """Backups of ``external_paths``, taken before the call; a rollback puts them back."""
     pid: int | None = None
     """Process group of a command started in the background; stopped on rollback."""
     pid_started: str | None = None
@@ -130,6 +151,8 @@ class EffectOutcome(str, Enum):
     FAILED = "failed"
     PENDING = "pending"
     """Not attempted because an earlier undo failed; ``resume_rollback`` tries it."""
+    KEPT = "kept"
+    """An outside file changed again after the agent's call, so it was left as it is."""
 
 
 class PlannedEffect(BaseModel):
@@ -139,6 +162,8 @@ class PlannedEffect(BaseModel):
     action: EffectAction
     undo_tool: str | None = None
     undo_args: dict[str, Any] | None = None
+    path: str | None = None
+    """Set on an outside file: the undo puts this path back from the call's backup, no tool runs."""
     outcome: EffectOutcome | None = None
     detail: str = ""
 

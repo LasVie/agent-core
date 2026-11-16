@@ -22,9 +22,11 @@ background; every tool call waits for it, model calls do not.
 
 Tool calls that may change something outside the workspace are written to the
 side-effect ledger before they run (a call whose record cannot be written does
-not run) and completed with their outcome after. A rollback undoes the reversible
-ones, newest first, before it restores the workspace; it stops at the first undo
-that fails and reports the rollback as partial.
+not run) and completed with their outcome after. Outside files a shell or code
+call declares are backed up into the same record. A rollback undoes the
+reversible effects and puts the outside files back, newest first, before it
+restores the workspace; it stops at the first undo that fails and reports the
+rollback as partial.
 """
 
 from __future__ import annotations
@@ -79,6 +81,7 @@ from openjiuwen.harness.recoverable.effects import (
     parse_args,
     result_data,
 )
+from openjiuwen.harness.recoverable.external import back_up_paths, put_back, record_after
 from openjiuwen.harness.recoverable.manifest import Manifest, ManifestRecord
 from openjiuwen.harness.recoverable.models import (
     Checkpoint,
@@ -89,6 +92,7 @@ from openjiuwen.harness.recoverable.models import (
     Initiator,
     LedgerRecord,
     PackageChangeInfo,
+    PathBackup,
     PendingRollback,
     PlannedEffect,
     RollbackApproval,
@@ -169,6 +173,8 @@ def _effect_lines(effects: list[PlannedEffect]) -> list[str]:
     groups: list[tuple[str, list[PlannedEffect]]] = [
         ("Undone outside the workspace", [e for e in effects if e.outcome == EffectOutcome.UNDONE]),
         ("Left in place at the user's request", [e for e in effects if e.outcome == EffectOutcome.CANCELLED]),
+        ("Outside files left as they are because they changed again after the agent's call",
+         [e for e in effects if e.outcome == EffectOutcome.KEPT]),
         ("Undo FAILED or was not attempted; still in effect",
          [e for e in effects if e.outcome in (EffectOutcome.FAILED, EffectOutcome.PENDING)]),
         ("Could NOT be undone and still in effect", [e for e in effects if e.action == EffectAction.IRREVERSIBLE]),
@@ -182,7 +188,8 @@ def _effect_lines(effects: list[PlannedEffect]) -> list[str]:
     lines = [f"{title}: {_listed([_label(e) for e in group])}." for title, group in groups if group]
     if not effects:
         lines.append("No effects outside the workspace were recorded after that checkpoint.")
-    lines.append("Effects the harness did not record, such as those inside subagents, were not handled.")
+    lines.append("Effects the harness did not record, such as those inside subagents or outside files a call "
+                 "did not declare, were not handled.")
     return lines
 
 
@@ -294,6 +301,7 @@ class RecoverableHarness:
         self._use_clones = use_clones
         self._declarations = DeclarationTable(declarations, frozenset(outward_commands))
         self._workspace: WorkspaceSnapshot | None = None
+        self._outside_objects: ObjectStore | None = None
         self._workspace_key = ""
         self._rail = CheckpointRail(self)
         self._managers: dict[str, tuple[weakref.ref, VersioningManager]] = {}
@@ -332,7 +340,7 @@ class RecoverableHarness:
         """
         self.check_workspace(workspace_root)
         if sandboxed:
-            self._workspace = None
+            self._workspace, self._outside_objects = None, None
             logger.warning("recoverable: the workspace is in a sandbox; files will not be rolled back")
             return
         root = Path(workspace_root).expanduser().resolve()
@@ -341,6 +349,11 @@ class RecoverableHarness:
             self._storage_dir / "objects" / self._workspace_key,
             size_cap=self._file_size_cap,
             use_clones=self._use_clones,
+        )
+        # Same objects; its own instance, so an outside file that cannot be cloned
+        # (another volume) does not turn clones off for the workspace.
+        self._outside_objects = ObjectStore(
+            self._storage_dir / "objects" / self._workspace_key, size_cap=None, use_clones=self._use_clones,
         )
         self._workspace = WorkspaceSnapshot(
             root, objects, dependency_dirs=self._dependency_dirs, build_output_dirs=self._build_output_dirs,
@@ -610,8 +623,9 @@ class RecoverableHarness:
         """Hold a tool call until the first workspace snapshot exists, then record its intent.
 
         A call that may change something outside the workspace gets a ledger record
-        before it runs. If the record cannot be written, the call is skipped with
-        an error result: an effect nobody recorded could never be rolled back.
+        before it runs, with a backup of the outside files it declares. If the record
+        cannot be written, the call is skipped with an error result: an effect
+        nobody recorded could never be rolled back.
         """
         files = self._files.get(session.get_session_id())
         if files is not None and files.baseline is not None:
@@ -627,13 +641,15 @@ class RecoverableHarness:
         # Recorded even without effect: rollback stops a background process and reverses global installs.
         background = tool_name == SHELL_TOOL and bool(args.get("run_in_background"))
         manager = global_manager(str(args.get("command") or "")) if tool_name == SHELL_TOOL else None
-        if call.declaration.category == EffectCategory.NONE and not background and manager is None:
+        paths = args.get(EXTERNAL_PATHS_ARG) if self._declarations.declared_per_call(tool_name) else None
+        declared = [p for p in paths if isinstance(p, str)] if isinstance(paths, list) else []
+        if call.declaration.category == EffectCategory.NONE and not background and manager is None and not declared:
             return
         if manager is not None:
             ctx.extra[_GLOBAL_KEY] = (manager, await asyncio.to_thread(list_global, manager))
-        paths = args.get(EXTERNAL_PATHS_ARG)
         session_id = session.get_session_id()
         try:
+            backups = await asyncio.to_thread(self._back_up, declared, args) if declared else []
             store = self._checkpoints()
             async with self._ledger_lock(session_id):
                 record = LedgerRecord(
@@ -645,7 +661,8 @@ class RecoverableHarness:
                     args_summary=_summary(args),
                     category=call.declaration.category,
                     detail=call.detail,
-                    external_paths=[str(p) for p in paths] if isinstance(paths, list) else [],
+                    external_paths=declared,
+                    external_backups=backups,
                 )
                 await store.put_record(record)
         except Exception:  # Fail closed: the call must not run unrecorded.
@@ -655,6 +672,15 @@ class RecoverableHarness:
             ctx.extra.setdefault("_skip_tool_calls", {})[call_id] = True
             return
         ctx.extra[_RECORD_KEY] = record
+
+    def _back_up(self, declared: list[str], args: dict) -> list[PathBackup]:
+        """Back up the outside paths a call declared; in a sandbox they are not on this machine."""
+        if self._workspace is None or self._outside_objects is None:
+            return [PathBackup(path=path, error="the workspace runs in a sandbox, outside this machine")
+                    for path in declared]
+        cwd = Path(str(args.get("workdir") or self._workspace.root))
+        return back_up_paths(declared, cwd, self._workspace.root, self._storage_dir, self._outside_objects,
+                             self._file_size_cap)
 
     async def after_tool(self, ctx: "AgentCallbackContext", exception: BaseException | None) -> None:
         """Complete the call's ledger record with its outcome and, if reversible, its undo."""
@@ -682,6 +708,10 @@ class RecoverableHarness:
         data = result_data(result)
         if isinstance(data, dict) and data.get("status") == "started" and isinstance(data.get("pid"), int):
             update.update(pid=data["pid"], pid_started=await asyncio.to_thread(process_start_time, data["pid"]))
+        if record.external_backups:  # Even after a failure: the call may have written part of them.
+            update["external_backups"] = await asyncio.to_thread(
+                lambda: [record_after(backup, self._file_size_cap) for backup in record.external_backups]
+            )
         if global_before is not None and global_before[1] is not None:
             # Compare what is installed now with before: exact even when the command failed halfway.
             manager, before = global_before
@@ -745,7 +775,31 @@ class RecoverableHarness:
                     args_summary="; ".join(record.generated_cannot), action=EffectAction.CANNOT_UNDO,
                     detail="the old version cannot be installed again",
                 ))
+            # Outside files last: a reverse command may still read them.
+            effects.extend(self._path_effect(record, index, backup)
+                           for index, backup in enumerate(record.external_backups))
         return effects
+
+    @staticmethod
+    def _path_effect(record: LedgerRecord, index: int, backup: PathBackup) -> PlannedEffect:
+        """What a rollback does about one outside path a call declared."""
+        effect = PlannedEffect(
+            record_id=f"{record.record_id}:path:{index}", tool_name=f"{record.tool_name} (outside file)",
+            args_summary=backup.path, action=EffectAction.UNDO, path=backup.path,
+            detail="put back as it was before the call" if backup.before is not None
+            else "did not exist before the call; it is deleted",
+        )
+        if backup.error is not None:
+            return effect.model_copy(update={
+                "action": EffectAction.IRREVERSIBLE, "path": None, "detail": f"not backed up: {backup.error}",
+            })
+        if not backup.after_taken:
+            return effect.model_copy(update={
+                "action": EffectAction.REVIEW,
+                "detail": "what the call left there was not recorded, so a later change by someone else cannot be "
+                          "told apart; putting it back overwrites any such change",
+            })
+        return effect
 
     @staticmethod
     def _planned_effect(record: LedgerRecord) -> PlannedEffect:
@@ -835,19 +889,34 @@ class RecoverableHarness:
     async def _run_undos(self, session_id: str, rollback_id: str, effects: list[PlannedEffect]) -> list[PlannedEffect]:
         """Run the pending undos in order; after the first failure the rest stay pending."""
         result, stopped = [], False
+        done = (EffectOutcome.UNDONE, EffectOutcome.CANCELLED, EffectOutcome.KEPT)
         for effect in effects:
-            if effect.action != EffectAction.UNDO or effect.outcome in (EffectOutcome.UNDONE, EffectOutcome.CANCELLED):
+            if effect.action != EffectAction.UNDO or effect.outcome in done:
                 result.append(effect)
             elif stopped:
                 result.append(effect.model_copy(update={"outcome": EffectOutcome.PENDING, "detail": ""}))
             else:
-                error = await self._undo(session_id, rollback_id, effect)
-                if error is None:
-                    result.append(effect.model_copy(update={"outcome": EffectOutcome.UNDONE, "detail": ""}))
+                if effect.path is not None:
+                    outcome, detail = await self._put_back(session_id, effect)
                 else:
-                    stopped = True
-                    result.append(effect.model_copy(update={"outcome": EffectOutcome.FAILED, "detail": error}))
+                    error = await self._undo(session_id, rollback_id, effect)
+                    outcome, detail = (EffectOutcome.FAILED, error) if error else (EffectOutcome.UNDONE, "")
+                stopped = outcome == EffectOutcome.FAILED
+                result.append(effect.model_copy(update={"outcome": outcome, "detail": detail}))
         return result
+
+    async def _put_back(self, session_id: str, effect: PlannedEffect) -> tuple[EffectOutcome, str]:
+        """Put one outside path back from its call's backup."""
+        record_id = effect.record_id.split(":", 1)[0]
+        record = next((r for r in await self._checkpoints().records(session_id) if r.record_id == record_id), None)
+        backup = next((b for b in record.external_backups if b.path == effect.path), None) if record else None
+        if backup is None or self._outside_objects is None:
+            return EffectOutcome.FAILED, "the backup of this path is not available"
+        # A retry after a failed attempt skips the check: that attempt may have changed the path itself.
+        check_after = backup.after_taken and effect.outcome != EffectOutcome.FAILED
+        outcome, detail = await asyncio.to_thread(put_back, backup, self._outside_objects, check_after=check_after)
+        logger.info("recoverable: outside path %s %s %s", backup.path, outcome.value, detail)
+        return outcome, detail
 
     async def _undo(self, session_id: str, rollback_id: str, effect: PlannedEffect) -> str | None:
         """Run one undo through the agent's tool environment, without the model. Return an error or None.

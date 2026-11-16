@@ -44,7 +44,7 @@ def clone_file(src: Path, dst: Path) -> bool:
     return False
 
 
-def _hash_file(path: Path) -> str:
+def hash_file(path: Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         while chunk := handle.read(_CHUNK):
@@ -89,7 +89,7 @@ class ObjectStore:
         tmp = self._tmp / uuid.uuid4().hex
         try:
             if self._clones and clone_file(src, tmp):
-                digest = _hash_file(tmp)  # Hash the clone: it cannot change underneath us.
+                digest = hash_file(tmp)  # Hash the clone: it cannot change underneath us.
             else:
                 self._clones = False
                 if capped and self._size_cap is not None and size > self._size_cap:

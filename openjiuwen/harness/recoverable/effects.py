@@ -215,22 +215,24 @@ def declaration_schema(language: str) -> dict[str, dict[str, Any]]:
     """JSON-schema properties the model fills to declare a shell or code call."""
     if language == "en":
         texts = (
-            "What this call changes OUTSIDE the workspace. Workspace files and installed dependencies are "
-            "restored by rollback, so changing only them is 'none'. 'reversible': it only CREATES something "
-            "outside (a container, a cloud resource, a scheduled job) and reverse_command removes it. "
-            "'irreversible': it sends, publishes, deploys, or overwrites or deletes anything outside.",
+            "What this call changes OUTSIDE the workspace. Workspace files, installed dependencies and the "
+            "files listed in external_paths are restored by rollback, so changing only them is 'none'. "
+            "'reversible': it only CREATES something outside (a container, a cloud resource, a scheduled job) "
+            "and reverse_command removes it. 'irreversible': it sends, publishes, deploys, or overwrites or "
+            "deletes anything else outside.",
             "For 'reversible' only: the shell command that removes what this call created, for example "
             "`docker rm -f db` for `docker run -d --name db postgres`.",
-            "Absolute paths OUTSIDE the workspace that this call writes, for example ~/.zshrc. Empty if none.",
+            "Absolute paths OUTSIDE the workspace that this call creates, changes or deletes, for example "
+            "~/.zshrc. They are backed up before the call and put back on rollback. Empty if none.",
         )
     else:
         texts = (
-            "这次调用对工作区以外的影响。工作区里的文件和安装的依赖回退时会自动恢复，只改它们填 none。"
-            "reversible：只在工作区外新建了东西（容器、云资源、定时任务），并能用 reverse_command 删掉。"
-            "irreversible：会发送、发布、部署，或覆盖、删除工作区外的东西。",
+            "这次调用对工作区以外的影响。工作区里的文件、安装的依赖和 external_paths 里列出的文件回退时会自动恢复，"
+            "只改它们填 none。reversible：只在工作区外新建了东西（容器、云资源、定时任务），并能用 reverse_command 删掉。"
+            "irreversible：会发送、发布、部署，或覆盖、删除工作区外的其他东西。",
             "仅 reversible 时填写：删掉这次调用新建的东西的 shell 命令，例如 `docker run -d --name db postgres` "
             "对应 `docker rm -f db`。",
-            "这次调用会写入的工作区以外的绝对路径，例如 ~/.zshrc；没有就留空。",
+            "这次调用会新建、修改或删除的工作区以外的绝对路径，例如 ~/.zshrc。执行前会备份，回退时恢复；没有就留空。",
         )
     return {
         SIDE_EFFECT_ARG: {"type": "string", "enum": [c.value for c in (
