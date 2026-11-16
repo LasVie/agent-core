@@ -261,6 +261,7 @@ async def test_files_are_restored_after_a_restart(tmp_path, runner):
     )):
         await run(make_deep_agent(ws, tools=[FileTool(ws)], rails=[first.rail()]), "edit", "s1")
 
+    first.release_session("s1")  # The old process is gone, and with it its hold on the workspace.
     second = RecoverableHarness(storage_dir=storage)
     agent = make_deep_agent(ws, tools=[FileTool(ws)], rails=[second.rail()])
     await agent.ensure_initialized()  # Binds the workspace before any round runs.

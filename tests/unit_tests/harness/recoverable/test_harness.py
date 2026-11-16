@@ -168,6 +168,7 @@ async def test_session_is_restored_after_a_restart(tmp_path, runner, storage):
         await run(_agent(tmp_path, first, CountingTool("work")), "do the work", "s1")
 
     # A new process: new harness and agent over the same storage, and an empty session.
+    first.release_session("s1")  # The old process is gone, and with it its hold on the workspace.
     second = make_harness()
     agent = _agent(tmp_path, second, CountingTool("work"))
     llm = _model(create_text_response("continued"))
