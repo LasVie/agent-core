@@ -317,3 +317,28 @@ def test_a_package_from_a_direct_source_keeps_where_it_came_from(tmp_path):
         "myproject": "1.0 @ editable file:///ws",
         "fromindex": "1.0",
     }, "reinstalling by name alone could fetch an unrelated package of the same name from an index"
+
+
+def test_an_npm_package_not_from_a_registry_keeps_where_it_came_from(tmp_path):
+    web = tmp_path / "web"
+    modules = web / "node_modules"
+    (web / "package.json").parent.mkdir(parents=True)
+    (web / "package.json").write_text('{"name": "web"}')
+    for name, version in (("left-pad", "1.1.0"), ("gitpkg", "1.0.0"), ("localpkg", "0.1.0"), ("@scope/util", "2.0.0")):
+        (modules / name).mkdir(parents=True)
+        (modules / name / "package.json").write_text(json.dumps({"name": name, "version": version}))
+    (modules / ".package-lock.json").write_text(json.dumps({"packages": {
+        "node_modules/left-pad": {"version": "1.1.0",
+                                  "resolved": "https://registry.npmjs.org/left-pad/-/left-pad-1.1.0.tgz"},
+        "node_modules/gitpkg": {"version": "1.0.0", "resolved": "git+ssh://git@example.com/gitpkg.git#abc123"},
+        "node_modules/localpkg": {"resolved": "../localpkg", "link": True},
+        "node_modules/@scope/util": {"version": "2.0.0",
+                                     "resolved": "https://registry.npmjs.org/@scope/util/-/util-2.0.0.tgz"},
+    }}))
+
+    assert list_packages(modules) == {
+        "left-pad": "1.1.0",
+        "gitpkg": "1.0.0 @ git+ssh://git@example.com/gitpkg.git#abc123",
+        "localpkg": "0.1.0 @ ../localpkg",
+        "@scope/util": "2.0.0",
+    }

@@ -9,6 +9,7 @@ Python, so nothing on the machine changes.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from openjiuwen.harness.recoverable import RollbackStatus
 from openjiuwen.harness.recoverable.dependencies import (
     diff_packages,
     fingerprint,
@@ -26,6 +28,15 @@ from openjiuwen.harness.recoverable.dependencies import (
     list_global,
     list_packages,
     restore_environment,
+)
+from tests.unit_tests.fixtures.deep_agent_interrupts import run, scripted
+from tests.unit_tests.fixtures.mock_llm import create_tool_call_response
+from tests.unit_tests.harness.recoverable.test_dependencies import (  # noqa: F401
+    _agent,
+    _harness,
+    _model,
+    _rollback,
+    runner,
 )
 
 UV = shutil.which("uv") or shutil.which(str(Path.home() / ".local" / "bin" / "uv"))
@@ -145,3 +156,92 @@ def test_a_global_pip_install_and_upgrade_are_reversed(tmp_path, monkeypatch):
     assert after["six"] == "1.17.0" and "tomli" in after and cannot == []
     _sh("sh", "-c", undo, env=os.environ.copy())
     assert list_global(manager) == before
+
+
+# --------------------------------------------------------------------- npm
+
+NODE_BIN = Path.home() / ".local" / "node" / "bin"
+needs_npm = pytest.mark.skipif(
+    shutil.which("npm") is None and not (NODE_BIN / "npm").exists(), reason="npm is not installed",
+)
+
+
+@pytest.fixture
+def npm_path(monkeypatch):
+    if shutil.which("npm") is None:
+        monkeypatch.setenv("PATH", f"{NODE_BIN}{os.pathsep}{os.environ['PATH']}")
+    return shutil.which("npm")
+
+
+def _npm_project(path: Path) -> Path:
+    path.mkdir(parents=True)
+    _sh("npm", "init", "-y", cwd=path)
+    return path
+
+
+@needs_npm
+@pytest.mark.asyncio
+async def test_an_npm_project_returns_to_its_checkpoint(tmp_path, npm_path, runner):
+    ws = tmp_path / "ws"
+    web = _npm_project(ws / "web")
+    _sh("npm", "install", "left-pad@1.1.0", "--no-fund", "--no-audit", cwd=web)
+    start = list_packages(web / "node_modules")
+    files = {name: (web / name).read_text() for name in ("package.json", "package-lock.json")}
+    harness = _harness(tmp_path)
+    agent = _agent(ws, harness)
+    # Saved to package.json, as npm does by default.
+    bash = json.dumps({"command": "npm install left-pad@1.3.0 is-odd@3.0.1 --no-fund --no-audit",
+                       "workdir": str(web), "side_effect": "none"})
+    with scripted(_model(create_tool_call_response("bash", bash, tool_call_id="c1"))):
+        await run(agent, "upgrade", "s1")
+        assert list_packages(web / "node_modules")["left-pad"] == "1.3.0"
+        _, result = await _rollback(harness)
+
+    assert result.status == RollbackStatus.COMPLETED, result.package_changes
+    assert list_packages(web / "node_modules") == start, "is-odd and its dependency are gone, left-pad is 1.1.0"
+    assert {name: (web / name).read_text() for name in files} == files
+
+
+@needs_npm
+def test_npm_packages_from_a_local_path_or_git_are_restored_from_there(tmp_path, npm_path):
+    web = _npm_project(tmp_path / "web")
+    _sh("npm", "install", "left-pad@1.1.0", "--no-fund", "--no-audit", cwd=web)
+    local = _npm_project(tmp_path / "localpkg")
+    repo = _npm_project(tmp_path / "repo")
+    package = json.loads((repo / "package.json").read_text())
+    (repo / "package.json").write_text(json.dumps({**package, "name": "gitpkg"}))
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    _sh(*git, "init", "-q", cwd=repo)
+    _sh(*git, "add", ".", cwd=repo)
+    _sh(*git, "commit", "-q", "-m", "v1", cwd=repo)
+    start = list_packages(web / "node_modules")
+    _sh("npm", "install", "--no-save", "--no-fund", "--no-audit", str(local), f"git+file://{repo}", cwd=web)
+    installed = list_packages(web / "node_modules")
+    assert " @ " in installed["localpkg"] and installed["gitpkg"].split(" @ ")[1].startswith("git+file://")
+
+    assert restore_environment(tmp_path, diff_packages("web/node_modules", installed, start)) is None
+    assert list_packages(web / "node_modules") == start
+    error = restore_environment(tmp_path, diff_packages("web/node_modules", start, installed))
+    assert error is None, error
+    assert list_packages(web / "node_modules") == installed
+
+
+@needs_npm
+@pytest.mark.asyncio
+async def test_a_global_npm_install_and_upgrade_are_reversed(tmp_path, npm_path, runner, monkeypatch):
+    monkeypatch.setenv("NPM_CONFIG_PREFIX", str(tmp_path / "npm-global"))  # Not the machine's global packages.
+    _sh("npm", "install", "-g", "left-pad@1.1.0", "--no-fund", "--no-audit")
+    before = list_global("npm")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = _harness(tmp_path)
+    agent = _agent(ws, harness)
+    bash = json.dumps({"command": "npm install -g left-pad@1.3.0 is-odd@3.0.1 --no-fund --no-audit",
+                       "side_effect": "none"})
+    with scripted(_model(create_tool_call_response("bash", bash, tool_call_id="c1"))):
+        await run(agent, "install tools", "s1")
+        assert list_global("npm")["left-pad"] == "1.3.0"
+        _, result = await _rollback(harness)
+
+    assert result.status == RollbackStatus.COMPLETED, result.effects
+    assert list_global("npm") == before
