@@ -192,6 +192,18 @@ class CheckpointStore:
         else:
             await self._kv.set(key, signal_id)
 
+    async def applying(self, session_id: str) -> str | None:
+        """The rollback being applied in the session, if any; set until its commit finishes."""
+        raw = await self._kv.get(f"{_PREFIX}:{session_id}:applying")
+        return raw.decode() if isinstance(raw, bytes) else raw
+
+    async def set_applying(self, session_id: str, plan_id: str | None) -> None:
+        key = f"{_PREFIX}:{session_id}:applying"
+        if plan_id is None:
+            await self._kv.delete(key)
+        else:
+            await self._kv.set(key, plan_id)
+
     async def get_counts(self, session_id: str) -> RollbackCounts:
         raw = await self._kv.get(f"{_PREFIX}:{session_id}:counts")
         return _load(RollbackCounts, raw) or RollbackCounts(session_id=session_id)

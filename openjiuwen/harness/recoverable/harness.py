@@ -120,8 +120,10 @@ from openjiuwen.harness.recoverable.models import (
     RecoverableEvent,
     RollbackApproval,
     RollbackPlan,
+    RollbackProgress,
     RollbackResult,
     RollbackSignal,
+    RollbackStage,
     RollbackStatus,
     RollbackTicket,
     SignalStatus,
@@ -712,9 +714,13 @@ class RecoverableHarness:
 
         Order: stop background processes, undo the recorded effects newest first,
         restore the dependency environments, restore the workspace files, then
-        discard the later checkpoints. The first undo that fails stops the
-        remaining undos; the workspace is still restored and the rollback ends as
-        ``partial``.
+        commit: discard the later checkpoints and leave the note for the next
+        round. The first undo that fails stops the remaining undos; the workspace
+        is still restored and the rollback ends as ``partial``.
+
+        Progress is recorded after each stage. If the process dies part way, the
+        plan stays ``applying``, the session cannot start a round, and
+        :meth:`resume_rollback` finishes it.
 
         Raises:
             BaseError: the approval does not match a stored, unapplied plan; the
@@ -741,70 +747,34 @@ class RecoverableHarness:
                     error_msg=f"checkpoint {plan.target_id} is no longer on the history of session {session_id}",
                 )
             index = ids.index(plan.target_id)
-            target, abandoned = chain[index], ids[:index]
-            # Stop what the agent left running first: it could keep writing during the restore.
-            stopped = await self._stop_processes(session_id, target)
+            target = chain[index]
             # Recompute: effects recorded after the plan was made are undone too.
             effects = self._apply_choices(await self._planned_effects(session_id, target), approval)
-            effects = await self._run_undos(session_id, plan.plan_id, effects)
-            # Dependencies before files: uninstalling can touch files such as package.json.
-            packages = await self._restore_dependencies(session_id, target)
-            report, manifest_id = await self._restore_workspace(session_id, target)
-            await self._abandon_records(session_id, target)
-            pending = await store.get_pending(session_id)
-            notes = [*pending.notes] if pending is not None else []
-            notes.append(_rollback_note(plan, target, len(abandoned), report, effects, stopped, packages))
-            files = self._files.get(session_id)
-            await store.put_pending(PendingRollback(
-                session_id=session_id, target_id=target.checkpoint_id, manifest_id=manifest_id,
-                packages_id=files.packages_id if files is not None else None, notes=notes,
-            ))
-            await store.set_head(session_id, target.checkpoint_id)
-            await store.delete(session_id, abandoned)
-            kept_manifests = {c.manifest_id for c in chain[index:]} | {manifest_id}
-            await store.delete_manifests(
-                session_id, sorted({c.manifest_id for c in chain[:index]} - kept_manifests - {None}),
-            )
-            unrestored = sorted({*report.unrecoverable, *report.failed}) if report else []
             plan = plan.model_copy(update={
-                "applied_at": time.time(), "effects": effects, "package_changes": packages,
-                "status": self._status(effects, unrestored, packages),
+                "status": RollbackStatus.APPLYING, "effects": effects,
+                "progress": RollbackProgress(abandoned_ids=ids[:index]),
             })
             await store.put_plan(plan)
-            self._managers.pop(session_id, None)
-            try:
-                await self._collect_garbage()
-            except Exception:  # The rollback stands; the data is freed at a later cleanup.
-                logger.exception("recoverable: cannot free the data of the discarded checkpoints")
+            await store.set_applying(session_id, plan.plan_id)
+            plan = await self._run_stages(plan, target)
         await self._settle_signals(plan)
-        logger.info(
-            "rollback applied: session=%s target=#%s discarded=%s status=%s",
-            session_id, target.seq, len(abandoned), plan.status.value,
-        )
-        return RollbackResult(
-            plan_id=plan.plan_id,
-            session_id=session_id,
-            target_id=target.checkpoint_id,
-            abandoned_ids=abandoned,
-            status=plan.status,
-            effects=effects,
-            processes_stopped=sorted(pid for pid, outcome in stopped.items() if outcome == "stopped"),
-            package_changes=packages,
-            workspace_restored=report is not None,
-            files_written=report.written if report else [],
-            files_deleted=report.deleted if report else [],
-            build_outputs_deleted=report.build_outputs_deleted if report else [],
-            unrestored_files=unrestored,
-        )
+        return self._result(plan)
 
     async def resume_rollback(self, plan_id: str) -> RollbackResult:
-        """Retry the undos a partial rollback did not finish, then restore the workspace again.
+        """Finish a rollback a crash interrupted, or retry what a partial rollback did not finish.
 
-        The undos may have changed files, so the workspace is restored once more
-        afterwards. The agent learns the outcome from a note at the next round.
+        An interrupted rollback goes on from the stage after the last one recorded;
+        undos that already succeeded are not run again. A partial rollback retries
+        its failed and pending undos and the dependencies, then restores the
+        workspace again, since the undos may have changed files. The agent learns
+        the outcome from a note at the next round.
         """
         store = self._checkpoints()
-        plan = await self._partial_plan(plan_id)
+        plan = await store.get_plan(plan_id)
+        if plan is None or plan.status not in (RollbackStatus.PARTIAL, RollbackStatus.APPLYING):
+            raise build_error(
+                StatusCode.DEEPAGENT_INPUT_PARAM_ERROR, error_msg=f"rollback {plan_id} is not partial or interrupted",
+            )
         session_id = plan.session_id
         async with self._lock(session_id):
             self._ensure_idle(session_id)
@@ -815,32 +785,125 @@ class RecoverableHarness:
                     StatusCode.DEEPAGENT_INPUT_PARAM_ERROR,
                     error_msg=f"checkpoint {plan.target_id} of rollback {plan_id} no longer exists",
                 )
+            if plan.status == RollbackStatus.APPLYING:
+                logger.info("recoverable: finishing rollback %s after stage %s", plan_id, plan.progress.stage.value)
+                plan = await self._run_stages(plan, target)
+                interrupted = True
+            else:
+                interrupted = False
+                effects = await self._run_undos(session_id, plan.plan_id, plan.effects)
+                packages = await self._restore_dependencies(session_id, target)
+                report, _ = await self._restore_workspace(session_id, target)
+                progress = self._files_progress(plan.progress or RollbackProgress(), report)
+                plan = plan.model_copy(update={
+                    "effects": effects, "package_changes": packages, "progress": progress,
+                    "status": self._status(effects, progress.unrestored_files, packages),
+                })
+                await store.put_plan(plan)
+                await self._add_note(session_id, "[ROLLBACK] A partial rollback was retried.\n"
+                                     + "\n".join(_package_lines(packages) + _effect_lines(effects)))
+        if interrupted:
+            await self._settle_signals(plan)
+        else:
+            kind = EventKind.ROLLBACK_PARTIAL if plan.status == RollbackStatus.PARTIAL else EventKind.ROLLBACK_APPLIED
+            await self._emit(kind, session_id, signal_id=plan.signal_id, plan_id=plan.plan_id,
+                             checkpoint_id=plan.target_id)
+        return self._result(plan)
+
+    async def _run_stages(self, plan: RollbackPlan, target: Checkpoint) -> RollbackPlan:
+        """Run the stages after the last one recorded, recording each, then commit. Holds the session lock."""
+        store = self._checkpoints()
+        session_id = plan.session_id
+
+        async def finished(stage: RollbackStage, **updates) -> RollbackPlan:
+            progress = plan.progress.model_copy(update={"stage": stage, **updates.pop("progress", {})})
+            done = plan.model_copy(update={"progress": progress, **updates})
+            await store.put_plan(done)
+            return done
+
+        if plan.progress.stage == RollbackStage.STARTED:
+            # Stop what the agent left running first: it could keep writing during the restore.
+            stopped = await self._stop_processes(session_id, target)
+            plan = await finished(RollbackStage.PROCESSES, progress={"stopped": stopped})
+        if plan.progress.stage == RollbackStage.PROCESSES:
             effects = await self._run_undos(session_id, plan.plan_id, plan.effects)
+            plan = await finished(RollbackStage.UNDOS, effects=effects)
+        if plan.progress.stage == RollbackStage.UNDOS:
+            # Dependencies before files: uninstalling can touch files such as package.json.
             packages = await self._restore_dependencies(session_id, target)
-            report, _ = await self._restore_workspace(session_id, target)
-            unrestored = sorted({*report.unrecoverable, *report.failed}) if report else []
-            plan = plan.model_copy(update={
-                "effects": effects, "package_changes": packages, "status": self._status(effects, unrestored, packages),
-            })
-            await store.put_plan(plan)
-            await self._add_note(session_id, "[ROLLBACK] A partial rollback was retried.\n"
-                                 + "\n".join(_package_lines(packages) + _effect_lines(effects)))
-        kind = EventKind.ROLLBACK_PARTIAL if plan.status == RollbackStatus.PARTIAL else EventKind.ROLLBACK_APPLIED
-        await self._emit(kind, session_id, signal_id=plan.signal_id, plan_id=plan.plan_id,
-                         checkpoint_id=plan.target_id)
+            files = self._files.get(session_id)
+            plan = await finished(RollbackStage.DEPENDENCIES, package_changes=packages,
+                                  progress={"packages_id": files.packages_id if files is not None else None})
+        if plan.progress.stage == RollbackStage.DEPENDENCIES:
+            report, manifest_id = await self._restore_workspace(session_id, target)
+            progress = self._files_progress(plan.progress, report).model_dump(exclude={"stage"})
+            plan = await finished(RollbackStage.FILES, progress={**progress, "manifest_id": manifest_id})
+        return await self._commit_rollback(plan, target)
+
+    async def _commit_rollback(self, plan: RollbackPlan, target: Checkpoint) -> RollbackPlan:
+        """Discard the later checkpoints and leave the note; every step is safe to repeat after a crash."""
+        store = self._checkpoints()
+        session_id, progress = plan.session_id, plan.progress
+        await self._abandon_records(session_id, target)
+        pending = await store.get_pending(session_id)
+        if pending is None or plan.plan_id not in pending.plan_ids:
+            report = RestoreReport(
+                written=progress.files_written, deleted=progress.files_deleted,
+                build_outputs_deleted=progress.build_outputs_deleted, unrecoverable=progress.unrestored_files,
+            ) if progress.workspace_restored else None
+            note = _rollback_note(plan, target, len(progress.abandoned_ids), report, plan.effects, progress.stopped,
+                                  plan.package_changes)
+            await store.put_pending(PendingRollback(
+                session_id=session_id, target_id=target.checkpoint_id, manifest_id=progress.manifest_id,
+                packages_id=progress.packages_id, notes=[*(pending.notes if pending else []), note],
+                plan_ids=[*(pending.plan_ids if pending else []), plan.plan_id],
+            ))
+        await store.set_head(session_id, target.checkpoint_id)
+        await store.delete(session_id, progress.abandoned_ids)
+        plan = plan.model_copy(update={
+            "applied_at": time.time(),
+            "status": self._status(plan.effects, progress.unrestored_files, plan.package_changes),
+        })
+        await store.put_plan(plan)
+        await store.set_applying(session_id, None)
+        self._managers.pop(session_id, None)
+        try:
+            await self._collect_garbage()
+        except Exception:  # The rollback stands; the data is freed at a later cleanup.
+            logger.exception("recoverable: cannot free the data of the discarded checkpoints")
+        logger.info(
+            "rollback applied: session=%s target=#%s discarded=%s status=%s",
+            session_id, target.seq, len(progress.abandoned_ids), plan.status.value,
+        )
+        return plan
+
+    @staticmethod
+    def _files_progress(progress: RollbackProgress, report: RestoreReport | None) -> RollbackProgress:
+        if report is None:
+            return progress.model_copy(update={"workspace_restored": False})
+        return progress.model_copy(update={
+            "workspace_restored": True, "files_written": report.written, "files_deleted": report.deleted,
+            "build_outputs_deleted": report.build_outputs_deleted,
+            "unrestored_files": sorted({*report.unrecoverable, *report.failed}),
+        })
+
+    @staticmethod
+    def _result(plan: RollbackPlan) -> RollbackResult:
+        progress = plan.progress or RollbackProgress()
         return RollbackResult(
             plan_id=plan.plan_id,
-            session_id=session_id,
+            session_id=plan.session_id,
             target_id=plan.target_id,
-            abandoned_ids=plan.abandoned_ids,
+            abandoned_ids=progress.abandoned_ids,
             status=plan.status,
-            effects=effects,
-            package_changes=packages,
-            workspace_restored=report is not None,
-            files_written=report.written if report else [],
-            files_deleted=report.deleted if report else [],
-            build_outputs_deleted=report.build_outputs_deleted if report else [],
-            unrestored_files=unrestored,
+            effects=plan.effects,
+            processes_stopped=sorted(pid for pid, outcome in progress.stopped.items() if outcome == "stopped"),
+            package_changes=plan.package_changes,
+            workspace_restored=progress.workspace_restored,
+            files_written=progress.files_written,
+            files_deleted=progress.files_deleted,
+            build_outputs_deleted=progress.build_outputs_deleted,
+            unrestored_files=progress.unrestored_files,
         )
 
     async def accept_partial(self, plan_id: str) -> RollbackPlan:
@@ -858,6 +921,7 @@ class RecoverableHarness:
         self._running.add(session_id)
         try:
             async with self._lock(session_id):
+                await self._refuse_if_applying(session_id)
                 await self._register(session_id)
                 rolled_back = await self._restore(session, deep_agent)
                 await self._count_round(session_id, rolled_back)
@@ -1050,6 +1114,9 @@ class RecoverableHarness:
         """Why a new signal is refused, or ``None``. Counts an accepted automatic signal."""
         store = self._checkpoints()
         session_id = signal.session_id
+        applying = await store.applying(session_id)
+        if applying is not None:
+            return f"rollback {applying} is being applied or was interrupted; resume it first"
         if signal.target_id not in {c.checkpoint_id for c in await store.chain(session_id)}:
             return f"checkpoint {signal.target_id} is not on the history of session {session_id}; it may be deleted"
         open_id = await store.active_signal(session_id)
@@ -1145,6 +1212,22 @@ class RecoverableHarness:
         await self._emit(kind, session_id, signal_id=plan.signal_id, plan_id=plan.plan_id,
                          checkpoint_id=plan.target_id)
 
+    async def _refuse_if_applying(self, session_id: str) -> None:
+        """A rollback cut short by a crash must finish before the session goes on; its world is half restored."""
+        store = self._checkpoints()
+        plan_id = await store.applying(session_id)
+        if plan_id is None:
+            return
+        plan = await store.get_plan(plan_id)
+        if plan is None or plan.status != RollbackStatus.APPLYING:  # The crash came after the commit.
+            await store.set_applying(session_id, None)
+            return
+        raise build_error(
+            StatusCode.DEEPAGENT_RUNTIME_ERROR,
+            error_msg=f"rollback {plan_id} of session {session_id} was interrupted; "
+                      "finish it with resume_rollback before the next round",
+        )
+
     async def _register(self, session_id: str) -> None:
         """Note that the session stores content for this workspace, so cleanup keeps what it needs."""
         if self._workspace is None or session_id in self._registered:
@@ -1183,7 +1266,8 @@ class RecoverableHarness:
         plans = [plan for plan in await store.plans() if plan.session_id == session_id]
         retried = {
             effect.record_id.split(":", 1)[0]
-            for plan in plans if plan.status == RollbackStatus.PARTIAL and plan.target_id in on_line
+            for plan in plans
+            if plan.status in (RollbackStatus.PARTIAL, RollbackStatus.APPLYING) and plan.target_id in on_line
             for effect in plan.effects
         }
         floor = chain[-1].ledger_seq if chain else 0

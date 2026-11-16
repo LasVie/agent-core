@@ -181,6 +181,8 @@ class PackageChangeInfo(BaseModel):
 
 class RollbackStatus(str, Enum):
     PLANNED = "planned"
+    APPLYING = "applying"
+    """Being applied. A crash leaves it here; ``resume_rollback`` finishes it from where it stopped."""
     COMPLETED = "completed"
     PARTIAL = "partial"
     """Some undo failed or some file was not restored; see the result."""
@@ -188,6 +190,34 @@ class RollbackStatus(str, Enum):
     """A partial rollback a person accepted as it is."""
     INVALIDATED = "invalidated"
     """Declined by a person or superseded; it can no longer be applied."""
+
+
+class RollbackStage(str, Enum):
+    """The last stage of an applying rollback that finished, in order."""
+
+    STARTED = "started"
+    PROCESSES = "processes"
+    UNDOS = "undos"
+    DEPENDENCIES = "dependencies"
+    FILES = "files"
+
+
+class RollbackProgress(BaseModel):
+    """How far an applying rollback got, and what its finished stages did, for the note after a crash."""
+
+    stage: RollbackStage = RollbackStage.STARTED
+    abandoned_ids: list[str] = Field(default_factory=list)
+    """Checkpoints after the target when the rollback started; deleted at the commit."""
+    stopped: dict[int, str] = Field(default_factory=dict)
+    """Background process to what stopping it did."""
+    packages_id: str | None = None
+    workspace_restored: bool = False
+    files_written: list[str] = Field(default_factory=list)
+    files_deleted: list[str] = Field(default_factory=list)
+    build_outputs_deleted: list[str] = Field(default_factory=list)
+    unrestored_files: list[str] = Field(default_factory=list)
+    manifest_id: str | None = None
+    """Workspace manifest right after the files were restored."""
 
 
 class RollbackPlan(BaseModel):
@@ -221,6 +251,8 @@ class RollbackPlan(BaseModel):
     status: RollbackStatus = RollbackStatus.PLANNED
     signal_id: str | None = None
     """The rollback signal this plan answers; ``None`` for a plan asked for directly."""
+    progress: RollbackProgress | None = None
+    """Set when applying starts and after each stage; the rollback progress record."""
     created_at: float = Field(default_factory=time.time)
     applied_at: float | None = None
     """Set once the plan is applied; a plan is applied at most once."""
@@ -277,6 +309,8 @@ class PendingRollback(BaseModel):
     packages_id: str | None = None
     """Package lists right after the dependencies were restored."""
     notes: list[str] = Field(default_factory=list)
+    plan_ids: list[str] = Field(default_factory=list)
+    """Rollbacks whose note is in ``notes``, so a resumed commit does not add it twice."""
 
 
 class RollbackSignal(BaseModel):
