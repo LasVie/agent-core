@@ -13,6 +13,12 @@ rollback is planned, confirmed by a person, then applied between rounds:
    live session through vcs ``rewind`` (which also drops the later log), appends
    the rollback note and commits the rollback checkpoint.
 
+Rollbacks usually arrive as signals (:meth:`RecoverableHarness.request_rollback`).
+A signal received while the agent runs ends the round at the next step boundary;
+its plan is made when the round ends. Only one signal per session is open at a
+time, except that a person's signal replaces an open automatic one. Automatic
+signals are limited per target and per round.
+
 The same ``BEFORE_INVOKE`` hook restores the session after a process restart:
 when the host reopens a session whose live context is empty, HEAD is written back
 before anything new is recorded.
@@ -33,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import shutil
 import time
@@ -40,7 +47,7 @@ import uuid
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -89,16 +96,21 @@ from openjiuwen.harness.recoverable.models import (
     EffectAction,
     EffectOutcome,
     EffectStatus,
+    EventKind,
     Initiator,
     LedgerRecord,
     PackageChangeInfo,
     PathBackup,
     PendingRollback,
     PlannedEffect,
+    RecoverableEvent,
     RollbackApproval,
     RollbackPlan,
     RollbackResult,
+    RollbackSignal,
     RollbackStatus,
+    RollbackTicket,
+    SignalStatus,
 )
 from openjiuwen.harness.recoverable.objects import ObjectStore
 from openjiuwen.harness.recoverable.processes import process_start_time, stop_process_group
@@ -128,6 +140,9 @@ _SUMMARY_LIMIT = 500
 _RECORD_KEY = "_recoverable_ledger_record"
 _GLOBAL_KEY = "_recoverable_global_packages"
 _UNRECORDED = "the side effect of this call could not be recorded, so the call was not run"
+_OPEN = (SignalStatus.WAITING, SignalStatus.AWAITING_APPROVAL)
+EventListener = Callable[[RecoverableEvent], Any]
+"""Receives checkpoint and rollback events; may be async. Its errors are logged, never raised."""
 
 
 def _at_step_boundary(context: "ModelContext") -> bool:
@@ -278,6 +293,10 @@ class RecoverableHarness:
             irreversible.
         outward_commands: Programs whose shell calls count as irreversible even
             when the model declares them without effect.
+        on_event: Called with every checkpoint and rollback event.
+        auto_limit_per_target: Automatic signals accepted per target checkpoint,
+            over the session's lifetime.
+        auto_limit_per_round: Automatic signals accepted per round.
     """
 
     def __init__(
@@ -291,6 +310,9 @@ class RecoverableHarness:
         use_clones: bool = True,
         declarations: dict[str, EffectDeclaration] | None = None,
         outward_commands: frozenset[str] = DEFAULT_OUTWARD_COMMANDS,
+        on_event: EventListener | None = None,
+        auto_limit_per_target: int = 2,
+        auto_limit_per_round: int = 5,
     ):
         self._storage_dir = Path(storage_dir).expanduser().resolve() if storage_dir else DEFAULT_STORAGE_DIR
         self._kv_store = kv_store
@@ -309,6 +331,12 @@ class RecoverableHarness:
         self._locks: dict[str, asyncio.Lock] = {}
         self._ledger_locks: dict[str, asyncio.Lock] = {}
         self._running: set[str] = set()
+        self._on_event = on_event
+        self._auto_limits = (auto_limit_per_target, auto_limit_per_round)
+        self._signal_locks: dict[str, asyncio.Lock] = {}
+        self._waiting: set[str] = set()
+        """Sessions whose open signal waits for a step boundary in this process."""
+        self._rounds: dict[str, int] = {}
 
     @property
     def storage_dir(self) -> Path:
@@ -404,6 +432,63 @@ class RecoverableHarness:
         files = await self._files_ready(session_id)
         return files.manifest.skipped() if files is not None and files.manifest is not None else []
 
+    # ------------------------------------------------------------------ signals
+
+    async def request_rollback(self, signal: RollbackSignal) -> RollbackTicket:
+        """Take a rollback signal; return its ticket.
+
+        A signal is refused when its target is not on the session's history, when
+        another signal is open (unless this one comes from a person and the open
+        one is automatic: then the open one is invalidated), or when an automatic
+        signal is over its limits. While the agent runs, the signal waits for the
+        next step boundary, where the round ends; the plan is made when the round
+        ends. Otherwise the plan is made now. Either way a person then applies the
+        plan with :meth:`apply_rollback` or declines it with :meth:`decline_rollback`.
+        """
+        session_id = signal.session_id
+        store = self._checkpoints()
+        async with self._signal_lock(session_id):
+            existing = await store.get_ticket(session_id, signal.signal_id)
+            if existing is not None:
+                return existing
+            await self._emit(EventKind.ROLLBACK_RECEIVED, session_id, signal_id=signal.signal_id)
+            refusal = await self._refusal(signal)
+            if refusal is not None:
+                ticket = RollbackTicket(signal=signal, status=SignalStatus.REJECTED, detail=refusal)
+                await store.put_ticket(ticket)
+                await self._emit(EventKind.ROLLBACK_REJECTED, session_id, signal_id=signal.signal_id, detail=refusal)
+                return ticket
+            await store.set_active_signal(session_id, signal.signal_id)
+            if session_id in self._running:
+                ticket = RollbackTicket(signal=signal, status=SignalStatus.WAITING)
+                await store.put_ticket(ticket)
+                self._waiting.add(session_id)
+                return ticket
+            return await self._make_plan(RollbackTicket(signal=signal, status=SignalStatus.WAITING))
+
+    async def get_ticket(self, session_id: str, signal_id: str) -> RollbackTicket | None:
+        """The ticket of a signal. A signal left waiting by a process that stopped gets its plan now."""
+        async with self._signal_lock(session_id):
+            ticket = await self._checkpoints().get_ticket(session_id, signal_id)
+            if ticket is not None and ticket.status == SignalStatus.WAITING and session_id not in self._running:
+                ticket = await self._make_plan(ticket)
+            return ticket
+
+    async def decline_rollback(self, plan_id: str, reason: str = "") -> RollbackPlan:
+        """A person declines a plan: it can no longer be applied, and its signal is invalidated."""
+        store = self._checkpoints()
+        plan = await store.get_plan(plan_id)
+        if plan is None or plan.status != RollbackStatus.PLANNED:
+            raise build_error(
+                StatusCode.DEEPAGENT_INPUT_PARAM_ERROR, error_msg=f"rollback {plan_id} is not waiting for approval",
+            )
+        async with self._signal_lock(plan.session_id):
+            return await self._invalidate(plan, f"declined by a person{': ' + reason if reason else ''}")
+
+    def waiting_signal(self, session_id: str) -> bool:
+        """True when a signal waits for this session's next step boundary."""
+        return session_id in self._waiting
+
     # ----------------------------------------------------------------- rollback
 
     async def plan_rollback(
@@ -421,6 +506,12 @@ class RecoverableHarness:
         Rolling back to HEAD itself discards only what happened after it, such as
         a step that stopped on an interrupt or files changed since.
         """
+        return await self._plan(session_id, target_id, initiator=initiator, source=source, reason=reason)
+
+    async def _plan(
+        self, session_id: str, target_id: str, *, initiator: Initiator, source: str, reason: str,
+        signal_id: str | None = None,
+    ) -> RollbackPlan:
         store = self._checkpoints()
         chain = await store.chain(session_id)
         ids = [checkpoint.checkpoint_id for checkpoint in chain]
@@ -439,6 +530,7 @@ class RecoverableHarness:
             initiator=initiator,
             source=source,
             reason=reason,
+            signal_id=signal_id,
             effects=await self._planned_effects(session_id, target),
             processes_to_stop=[r.pid for r in await self._processes_after(session_id, target)],
         )
@@ -479,7 +571,8 @@ class RecoverableHarness:
         """
         store = self._checkpoints()
         plan = await store.get_plan(approval.plan_id)
-        if plan is None or plan.target_id != approval.target_id or plan.applied_at is not None:
+        if (plan is None or plan.target_id != approval.target_id or plan.applied_at is not None
+                or plan.status != RollbackStatus.PLANNED):
             raise build_error(
                 StatusCode.DEEPAGENT_INPUT_PARAM_ERROR,
                 error_msg=f"approval does not match an unapplied rollback plan: {approval.plan_id}",
@@ -526,6 +619,7 @@ class RecoverableHarness:
             })
             await store.put_plan(plan)
             self._managers.pop(session_id, None)
+        await self._settle_signals(plan)
         logger.info(
             "rollback applied: session=%s target=#%s discarded=%s status=%s",
             session_id, target.seq, len(abandoned), plan.status.value,
@@ -573,6 +667,9 @@ class RecoverableHarness:
             await store.put_plan(plan)
             await self._add_note(session_id, "[ROLLBACK] A partial rollback was retried.\n"
                                  + "\n".join(_package_lines(packages) + _effect_lines(effects)))
+        kind = EventKind.ROLLBACK_PARTIAL if plan.status == RollbackStatus.PARTIAL else EventKind.ROLLBACK_APPLIED
+        await self._emit(kind, session_id, signal_id=plan.signal_id, plan_id=plan.plan_id,
+                         checkpoint_id=plan.target_id)
         return RollbackResult(
             plan_id=plan.plan_id,
             session_id=session_id,
@@ -602,14 +699,15 @@ class RecoverableHarness:
         self._running.add(session_id)
         try:
             async with self._lock(session_id):
-                await self._restore(session, deep_agent)
+                rolled_back = await self._restore(session, deep_agent)
+                await self._count_round(session_id, rolled_back)
                 await self._prepare_files(session_id)
         except Exception:
             self._running.discard(session_id)
             raise
 
     async def end_round(self, session: "Session") -> None:
-        """Mark the session idle and keep the latest scan for the workspace's next session."""
+        """Mark the session idle, keep the latest scan, and plan a signal that waited for the round to end."""
         session_id = session.get_session_id()
         try:
             files = self._files.get(session_id)
@@ -618,6 +716,16 @@ class RecoverableHarness:
                 await self._checkpoints().put_workspace_scan(self._workspace_key, record)
         finally:
             self._running.discard(session_id)
+            if session_id in self._waiting:
+                self._waiting.discard(session_id)
+                try:
+                    async with self._signal_lock(session_id):
+                        signal_id = await self._checkpoints().active_signal(session_id)
+                        ticket = await self._checkpoints().get_ticket(session_id, signal_id) if signal_id else None
+                        if ticket is not None and ticket.status == SignalStatus.WAITING:
+                            await self._make_plan(ticket)
+                except Exception:  # get_ticket plans it later.
+                    logger.exception("recoverable: cannot plan the rollback signal of session %s", session_id)
 
     async def before_tool(self, session: "Session", ctx: "AgentCallbackContext") -> None:
         """Hold a tool call until the first workspace snapshot exists, then record its intent.
@@ -726,6 +834,14 @@ class RecoverableHarness:
 
     async def take_checkpoint(self, session: "Session", deep_agent: "DeepAgent") -> Checkpoint | None:
         """Record a checkpoint when at a step boundary and something changed; return HEAD."""
+        try:
+            return await self._take_checkpoint(session, deep_agent)
+        except Exception as exc:
+            await self._emit(EventKind.CHECKPOINT_FAILED, session.get_session_id(),
+                             detail=f"{type(exc).__name__}: {exc}"[:300])
+            raise
+
+    async def _take_checkpoint(self, session: "Session", deep_agent: "DeepAgent") -> Checkpoint | None:
         context_engine = deep_agent.react_agent.context_engine
         session_id = session.get_session_id()
         context = context_engine.get_context(session_id=session_id)
@@ -751,6 +867,129 @@ class RecoverableHarness:
             )
 
     # ------------------------------------------------------------- internals
+
+    def _signal_lock(self, session_id: str) -> asyncio.Lock:
+        return self._signal_locks.setdefault(session_id, asyncio.Lock())
+
+    async def _emit(self, kind: EventKind, session_id: str, **fields: Any) -> None:
+        if self._on_event is None:
+            return
+        event = RecoverableEvent(kind=kind, session_id=session_id, round=self._rounds.get(session_id), **fields)
+        try:
+            outcome = self._on_event(event)
+            if inspect.isawaitable(outcome):
+                await outcome
+        except Exception:  # A listener must not break checkpoints or rollbacks.
+            logger.exception("recoverable: event listener failed on %s", kind.value)
+
+    async def _refusal(self, signal: RollbackSignal) -> str | None:
+        """Why a new signal is refused, or ``None``. Counts an accepted automatic signal."""
+        store = self._checkpoints()
+        session_id = signal.session_id
+        if signal.target_id not in {c.checkpoint_id for c in await store.chain(session_id)}:
+            return f"checkpoint {signal.target_id} is not on the history of session {session_id}; it may be deleted"
+        open_id = await store.active_signal(session_id)
+        open_ticket = await store.get_ticket(session_id, open_id) if open_id else None
+        if open_ticket is not None and open_ticket.status in _OPEN:
+            if signal.initiator != Initiator.HUMAN or open_ticket.signal.initiator != Initiator.AUTO:
+                return f"rollback {open_id} is still open; it must be applied or declined first"
+        if signal.initiator == Initiator.AUTO:
+            per_target, per_round = self._auto_limits
+            counts = await store.get_counts(session_id)
+            if counts.auto_by_target.get(signal.target_id, 0) >= per_target:
+                return f"automatic rollbacks to this checkpoint reached the limit of {per_target}"
+            if counts.auto_this_round >= per_round:
+                return f"automatic rollbacks in this round reached the limit of {per_round}"
+            counts.auto_by_target[signal.target_id] = counts.auto_by_target.get(signal.target_id, 0) + 1
+            counts.auto_this_round += 1
+            await store.put_counts(counts)
+        if open_ticket is not None and open_ticket.status in _OPEN:  # A person's signal replaces an automatic one.
+            await self._invalidate_ticket(open_ticket, f"superseded by the person's signal {signal.signal_id}")
+        return None
+
+    async def _make_plan(self, ticket: RollbackTicket) -> RollbackTicket:
+        """Plan an accepted signal and wait for a person; reject it if the target left the history."""
+        signal = ticket.signal
+        store = self._checkpoints()
+        try:
+            plan = await self._plan(signal.session_id, signal.target_id, initiator=signal.initiator,
+                                    source=signal.source, reason=signal.reason, signal_id=signal.signal_id)
+        except Exception as exc:  # The target was rolled away while the signal waited, or planning failed.
+            detail = f"no plan could be made: {exc}"[:300]
+            ticket = ticket.model_copy(update={
+                "status": SignalStatus.REJECTED, "detail": detail, "updated_at": time.time(),
+            })
+            await store.put_ticket(ticket)
+            await store.set_active_signal(signal.session_id, None)
+            await self._emit(EventKind.ROLLBACK_REJECTED, signal.session_id, signal_id=signal.signal_id, detail=detail)
+            return ticket
+        ticket = ticket.model_copy(update={
+            "status": SignalStatus.AWAITING_APPROVAL, "plan_id": plan.plan_id, "updated_at": time.time(),
+        })
+        await store.put_ticket(ticket)
+        await self._emit(EventKind.ROLLBACK_AWAITING_APPROVAL, signal.session_id, signal_id=signal.signal_id,
+                         plan_id=plan.plan_id)
+        return ticket
+
+    async def _invalidate_ticket(self, ticket: RollbackTicket, detail: str) -> None:
+        """Close an open signal and its plan, if it has one."""
+        store = self._checkpoints()
+        session_id = ticket.signal.session_id
+        if ticket.plan_id is not None:
+            plan = await store.get_plan(ticket.plan_id)
+            if plan is not None and plan.status == RollbackStatus.PLANNED:
+                await store.put_plan(plan.model_copy(update={"status": RollbackStatus.INVALIDATED}))
+        await store.put_ticket(ticket.model_copy(update={
+            "status": SignalStatus.INVALIDATED, "detail": detail, "updated_at": time.time(),
+        }))
+        if await store.active_signal(session_id) == ticket.signal.signal_id:
+            await store.set_active_signal(session_id, None)
+        self._waiting.discard(session_id)
+        await self._emit(EventKind.ROLLBACK_INVALIDATED, session_id, signal_id=ticket.signal.signal_id,
+                         plan_id=ticket.plan_id, detail=detail)
+
+    async def _invalidate(self, plan: RollbackPlan, detail: str) -> RollbackPlan:
+        """Invalidate a plan, through its signal when it has one."""
+        store = self._checkpoints()
+        ticket = await store.get_ticket(plan.session_id, plan.signal_id) if plan.signal_id else None
+        if ticket is not None and ticket.status in _OPEN:
+            await self._invalidate_ticket(ticket, detail)
+        else:
+            await store.put_plan(plan.model_copy(update={"status": RollbackStatus.INVALIDATED}))
+            await self._emit(EventKind.ROLLBACK_INVALIDATED, plan.session_id, plan_id=plan.plan_id, detail=detail)
+        return await store.get_plan(plan.plan_id)
+
+    async def _settle_signals(self, plan: RollbackPlan) -> None:
+        """After a rollback: mark its signal applied; any other open signal is now stale."""
+        store = self._checkpoints()
+        session_id = plan.session_id
+        async with self._signal_lock(session_id):
+            if plan.signal_id is not None:
+                ticket = await store.get_ticket(session_id, plan.signal_id)
+                if ticket is not None:
+                    await store.put_ticket(ticket.model_copy(update={
+                        "status": SignalStatus.APPLIED, "updated_at": time.time(),
+                    }))
+            open_id = await store.active_signal(session_id)
+            if open_id is not None and open_id != plan.signal_id:
+                ticket = await store.get_ticket(session_id, open_id)
+                if ticket is not None and ticket.status in _OPEN:
+                    await self._invalidate_ticket(ticket, f"superseded by rollback {plan.plan_id}")
+            if open_id == plan.signal_id:
+                await store.set_active_signal(session_id, None)
+        kind = EventKind.ROLLBACK_PARTIAL if plan.status == RollbackStatus.PARTIAL else EventKind.ROLLBACK_APPLIED
+        await self._emit(kind, session_id, signal_id=plan.signal_id, plan_id=plan.plan_id,
+                         checkpoint_id=plan.target_id)
+
+    async def _count_round(self, session_id: str, rolled_back: bool) -> None:
+        """Start a round in the counts; one that begins by writing back a rollback keeps the automatic count."""
+        store = self._checkpoints()
+        counts = await store.get_counts(session_id)
+        counts.round += 1
+        if not rolled_back:
+            counts.auto_this_round = 0
+        await store.put_counts(counts)
+        self._rounds[session_id] = counts.round
 
     async def _planned_effects(self, session_id: str, target: Checkpoint) -> list[PlannedEffect]:
         """What to do about each effect recorded after ``target``, newest first."""
@@ -1017,7 +1256,8 @@ class RecoverableHarness:
             pending = PendingRollback(session_id=session_id, target_id=None)
         await store.put_pending(pending.model_copy(update={"notes": [*pending.notes, note]}))
 
-    async def _restore(self, session: "Session", deep_agent: "DeepAgent") -> None:
+    async def _restore(self, session: "Session", deep_agent: "DeepAgent") -> bool:
+        """Write back a pending rollback or a lost session; True when a rollback was written back."""
         session_id = session.get_session_id()
         context_engine = deep_agent.react_agent.context_engine
         store = self._checkpoints()
@@ -1025,7 +1265,7 @@ class RecoverableHarness:
         if pending is not None:
             if pending.target_id is not None:
                 await self._apply_pending(store, session, deep_agent, pending)
-                return
+                return True
         head = await store.head(session_id)
         if head is not None and _live_is_empty(session, context_engine):
             await self._manager_for(session, context_engine).rewind(head.commit_id)
@@ -1034,6 +1274,7 @@ class RecoverableHarness:
         if pending is not None:  # Notes only: the round-start checkpoint records them.
             await self._append_note(session, context_engine, pending.notes)
             await store.clear_pending(session_id)
+        return False
 
     @staticmethod
     async def _append_note(session: "Session", context_engine: "ContextEngine", notes: list[str]) -> None:
@@ -1263,8 +1504,8 @@ class RecoverableHarness:
         )
         return report, files.manifest_id
 
-    @staticmethod
     async def _commit(
+        self,
         store: CheckpointStore,
         manager: VersioningManager,
         session_id: str,
@@ -1289,4 +1530,6 @@ class RecoverableHarness:
         )
         await store.put(checkpoint)
         await store.set_head(session_id, checkpoint.checkpoint_id)
+        await self._emit(EventKind.CHECKPOINT_CREATED, session_id, checkpoint_id=checkpoint.checkpoint_id,
+                         seq=checkpoint.seq, detail=kind.value)
         return checkpoint

@@ -186,6 +186,8 @@ class RollbackStatus(str, Enum):
     """Some undo failed or some file was not restored; see the result."""
     ACCEPTED = "accepted"
     """A partial rollback a person accepted as it is."""
+    INVALIDATED = "invalidated"
+    """Declined by a person or superseded; it can no longer be applied."""
 
 
 class RollbackPlan(BaseModel):
@@ -217,6 +219,8 @@ class RollbackPlan(BaseModel):
     package_changes: list[PackageChangeInfo] = Field(default_factory=list)
     """Dependency environments whose package list differs from the target's."""
     status: RollbackStatus = RollbackStatus.PLANNED
+    signal_id: str | None = None
+    """The rollback signal this plan answers; ``None`` for a plan asked for directly."""
     created_at: float = Field(default_factory=time.time)
     applied_at: float | None = None
     """Set once the plan is applied; a plan is applied at most once."""
@@ -273,3 +277,78 @@ class PendingRollback(BaseModel):
     packages_id: str | None = None
     """Package lists right after the dependencies were restored."""
     notes: list[str] = Field(default_factory=list)
+
+
+class RollbackSignal(BaseModel):
+    """A request to roll a session back, from a person or an automatic monitor such as JEV."""
+
+    signal_id: str
+    """Chosen by the sender. The same signal sent twice gets the same ticket."""
+    session_id: str
+    target_id: str
+    initiator: Initiator = Initiator.HUMAN
+    source: str = ""
+    """Who sent it, such as ``JEV``; only shown to people and the agent."""
+    reason: str = ""
+
+
+class SignalStatus(str, Enum):
+    WAITING = "waiting"
+    """Received while the agent runs; the round ends at the next step boundary and a plan follows."""
+    AWAITING_APPROVAL = "awaiting_approval"
+    """The plan is ready; a person applies it with ``apply_rollback`` or declines it."""
+    REJECTED = "rejected"
+    """Refused on arrival: bad target, another rollback in progress, or over the automatic limit."""
+    INVALIDATED = "invalidated"
+    """Declined by a person, or superseded by a person's signal or another applied rollback."""
+    APPLIED = "applied"
+
+
+class RollbackTicket(BaseModel):
+    """Where one rollback signal stands. ``detail`` says why it was rejected or invalidated."""
+
+    schema_version: int = SCHEMA_VERSION
+    signal: RollbackSignal
+    status: SignalStatus
+    plan_id: str | None = None
+    detail: str = ""
+    updated_at: float = Field(default_factory=time.time)
+
+
+class RollbackCounts(BaseModel):
+    """Automatic rollbacks of one session, kept apart from the history so a rollback cannot reset them."""
+
+    schema_version: int = SCHEMA_VERSION
+    session_id: str
+    round: int = 0
+    """Rounds started in this session."""
+    auto_this_round: int = 0
+    """Automatic signals accepted since the round began. A round that starts by writing back a
+    rollback continues the count: it carries on the task the rollback interrupted."""
+    auto_by_target: dict[str, int] = Field(default_factory=dict)
+
+
+class EventKind(str, Enum):
+    CHECKPOINT_CREATED = "checkpoint_created"
+    CHECKPOINT_FAILED = "checkpoint_failed"
+    ROLLBACK_RECEIVED = "rollback_received"
+    ROLLBACK_REJECTED = "rollback_rejected"
+    ROLLBACK_AWAITING_APPROVAL = "rollback_awaiting_approval"
+    ROLLBACK_INVALIDATED = "rollback_invalidated"
+    ROLLBACK_APPLIED = "rollback_applied"
+    ROLLBACK_PARTIAL = "rollback_partial"
+
+
+class RecoverableEvent(BaseModel):
+    """A notice for other layers. The facts stay in the checkpoint store and the rollback plans."""
+
+    kind: EventKind
+    session_id: str
+    round: int | None = None
+    checkpoint_id: str | None = None
+    seq: int | None = None
+    """Position of the checkpoint on the session's line."""
+    signal_id: str | None = None
+    plan_id: str | None = None
+    detail: str = ""
+    created_at: float = Field(default_factory=time.time)

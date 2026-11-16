@@ -22,7 +22,9 @@ from openjiuwen.harness.recoverable.models import (
     Checkpoint,
     LedgerRecord,
     PendingRollback,
+    RollbackCounts,
     RollbackPlan,
+    RollbackTicket,
 )
 
 _PREFIX = "recoverable"
@@ -169,6 +171,32 @@ class CheckpointStore:
 
     async def put_record(self, record: LedgerRecord) -> None:
         await self._kv.set(f"{self._ledger_prefix(record.session_id)}{record.seq:012d}", record.model_dump_json())
+
+    async def get_ticket(self, session_id: str, signal_id: str) -> RollbackTicket | None:
+        return _load(RollbackTicket, await self._kv.get(f"{_PREFIX}:{session_id}:signal:{signal_id}"))
+
+    async def put_ticket(self, ticket: RollbackTicket) -> None:
+        key = f"{_PREFIX}:{ticket.signal.session_id}:signal:{ticket.signal.signal_id}"
+        await self._kv.set(key, ticket.model_dump_json())
+
+    async def active_signal(self, session_id: str) -> str | None:
+        """The signal waiting for a step boundary or for approval; at most one per session."""
+        raw = await self._kv.get(f"{_PREFIX}:{session_id}:active_signal")
+        return raw.decode() if isinstance(raw, bytes) else raw
+
+    async def set_active_signal(self, session_id: str, signal_id: str | None) -> None:
+        key = f"{_PREFIX}:{session_id}:active_signal"
+        if signal_id is None:
+            await self._kv.delete(key)
+        else:
+            await self._kv.set(key, signal_id)
+
+    async def get_counts(self, session_id: str) -> RollbackCounts:
+        raw = await self._kv.get(f"{_PREFIX}:{session_id}:counts")
+        return _load(RollbackCounts, raw) or RollbackCounts(session_id=session_id)
+
+    async def put_counts(self, counts: RollbackCounts) -> None:
+        await self._kv.set(f"{_PREFIX}:{counts.session_id}:counts", counts.model_dump_json())
 
     async def records(self, session_id: str) -> list[LedgerRecord]:
         """The session's side-effect records in registration order."""

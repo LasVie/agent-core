@@ -20,6 +20,11 @@ Hooks and where they run (see ``rails/AGENTS.md`` for the routing):
 - ``AFTER_INVOKE`` (outer DeepAgent): checkpoint the round end, unless the round
   raised; mark the session idle.
 
+After the checkpoint at a step boundary (``BEFORE_MODEL_CALL``,
+``AFTER_REACT_ITERATION``), a rollback signal that arrived while the agent ran
+ends the round through ``request_force_finish``; the round's result names the
+signal, and its plan is made when the round ends.
+
 A failed checkpoint is logged and never interrupts the agent; that step just
 cannot be a rollback target.
 
@@ -50,6 +55,8 @@ _RESTORE_PRIORITY = 10_000
 _OUTCOME_PRIORITY = 1_000_000
 # The agent's memory is kept across rollbacks (design A4).
 _KEPT_NODES = ("memory", "coding_memory")
+ROLLBACK_RESULT_TYPE = "rollback"
+"""``result_type`` of a round that ended for a rollback signal."""
 
 
 class CheckpointRail(DeepAgentRail):
@@ -113,6 +120,7 @@ class CheckpointRail(DeepAgentRail):
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         await self._take(ctx)
+        self._stop_for_signal(ctx)
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         if ctx.session is not None:
@@ -126,6 +134,7 @@ class CheckpointRail(DeepAgentRail):
 
     async def after_react_iteration(self, ctx: AgentCallbackContext) -> None:
         await self._take(ctx)
+        self._stop_for_signal(ctx)
 
     async def after_invoke(self, ctx: AgentCallbackContext) -> None:
         if ctx.session is None:
@@ -135,6 +144,15 @@ class CheckpointRail(DeepAgentRail):
                 await self._take(ctx)
         finally:
             await self._harness.end_round(ctx.session)
+
+    def _stop_for_signal(self, ctx: AgentCallbackContext) -> None:
+        """End the round here when a rollback signal waits; the step is already checkpointed."""
+        if ctx.session is None or not self._harness.waiting_signal(ctx.session.get_session_id()):
+            return
+        ctx.request_force_finish({
+            "result_type": ROLLBACK_RESULT_TYPE,
+            "output": "Stopped at a step boundary for a rollback request; its plan awaits a person's decision.",
+        })
 
     async def _take(self, ctx: AgentCallbackContext) -> None:
         if ctx.session is None or self._deep_agent is None:
