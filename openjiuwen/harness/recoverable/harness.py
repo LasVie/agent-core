@@ -52,12 +52,19 @@ from openjiuwen.core.session.vcs import VersioningConfig, VersioningManager, for
 from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
 from openjiuwen.core.sys_operation.execution_environment import ExecutionEnvironment, execution_environment_scope
 from openjiuwen.harness.recoverable.effects import (
+    DEFAULT_OUTWARD_COMMANDS,
+    EXTERNAL_PATHS_ARG,
+    PER_CALL_TOOLS,
+    SHELL_TOOL,
+    SIDE_EFFECT_ARG,
     DeclarationTable,
     EffectCategory,
     EffectDeclaration,
     build_undo_args,
+    declaration_schema,
     is_failure,
     parse_args,
+    result_data,
 )
 from openjiuwen.harness.recoverable.manifest import Manifest, ManifestRecord
 from openjiuwen.harness.recoverable.models import (
@@ -76,6 +83,7 @@ from openjiuwen.harness.recoverable.models import (
     RollbackStatus,
 )
 from openjiuwen.harness.recoverable.objects import ObjectStore
+from openjiuwen.harness.recoverable.processes import process_start_time, stop_process_group
 from openjiuwen.harness.recoverable.rail import CheckpointRail
 from openjiuwen.harness.recoverable.store import CheckpointStore
 from openjiuwen.harness.recoverable.workspace import (
@@ -152,6 +160,8 @@ def _effect_lines(effects: list[PlannedEffect]) -> list[str]:
         ("Could NOT be undone (the information needed was missing)",
          [e for e in effects if e.action == EffectAction.CANNOT_UNDO]),
         ("Outcome unknown, not undone", [e for e in effects if e.action == EffectAction.UNKNOWN]),
+        ("Failed calls whose undo was not run, as nobody confirmed it",
+         [e for e in effects if e.action == EffectAction.REVIEW and e.outcome is None]),
         ("Kept on purpose", [e for e in effects if e.action == EffectAction.RETAINED]),
     ]
     lines = [f"{title}: {_listed([_label(e) for e in group])}." for title, group in groups if group]
@@ -163,13 +173,16 @@ def _effect_lines(effects: list[PlannedEffect]) -> list[str]:
 
 def _rollback_note(
     plan: RollbackPlan, target: Checkpoint, abandoned: int, report: RestoreReport | None,
-    effects: list[PlannedEffect],
+    effects: list[PlannedEffect], stopped: dict[int, str],
 ) -> str:
     who = "The user" if plan.initiator == Initiator.HUMAN else (plan.source or "An automatic monitor")
     lines = [
         f"[ROLLBACK] {who} rolled this conversation back to checkpoint #{target.seq}.",
         f"The {abandoned} later checkpoint(s) were discarded, with their model replies, tool calls and tool results.",
     ]
+    if stopped:
+        lines.append("Background processes you started after it: "
+                     + ", ".join(f"pid {pid} {outcome}" for pid, outcome in sorted(stopped.items())) + ".")
     if report is None:
         lines.append("Workspace files were NOT rolled back; check them before relying on them.")
     else:
@@ -223,6 +236,8 @@ class RecoverableHarness:
         declarations: Side-effect declarations of the host's tools, by tool name.
             They extend and override the built-in table; a tool in neither is
             irreversible.
+        outward_commands: Programs whose shell calls count as irreversible even
+            when the model declares them without effect.
     """
 
     def __init__(
@@ -235,6 +250,7 @@ class RecoverableHarness:
         file_size_cap: int | None = DEFAULT_FILE_SIZE_CAP,
         use_clones: bool = True,
         declarations: dict[str, EffectDeclaration] | None = None,
+        outward_commands: frozenset[str] = DEFAULT_OUTWARD_COMMANDS,
     ):
         self._storage_dir = Path(storage_dir).expanduser().resolve() if storage_dir else DEFAULT_STORAGE_DIR
         self._kv_store = kv_store
@@ -243,7 +259,7 @@ class RecoverableHarness:
         self._build_output_dirs = frozenset(build_output_dirs)
         self._file_size_cap = file_size_cap
         self._use_clones = use_clones
-        self._declarations = DeclarationTable(declarations)
+        self._declarations = DeclarationTable(declarations, frozenset(outward_commands))
         self._workspace: WorkspaceSnapshot | None = None
         self._workspace_key = ""
         self._rail = CheckpointRail(self)
@@ -378,6 +394,7 @@ class RecoverableHarness:
             source=source,
             reason=reason,
             effects=await self._planned_effects(session_id, target),
+            processes_to_stop=[r.pid for r in await self._processes_after(session_id, target)],
         )
         loaded = await self._load_manifest(session_id, target.manifest_id)
         files = await self._files_ready(session_id)
@@ -428,20 +445,16 @@ class RecoverableHarness:
                 )
             index = ids.index(plan.target_id)
             target, abandoned = chain[index], ids[:index]
+            # Stop what the agent left running first: it could keep writing during the restore.
+            stopped = await self._stop_processes(session_id, target)
             # Recompute: effects recorded after the plan was made are undone too.
-            effects = await self._planned_effects(session_id, target)
-            cancelled = set(approval.cancelled_effect_ids)
-            effects = [
-                e.model_copy(update={"outcome": EffectOutcome.CANCELLED})
-                if e.action == EffectAction.UNDO and e.record_id in cancelled else e
-                for e in effects
-            ]
+            effects = self._apply_choices(await self._planned_effects(session_id, target), approval)
             effects = await self._run_undos(session_id, plan.plan_id, effects)
             report, manifest_id = await self._restore_workspace(session_id, target)
             await self._abandon_records(session_id, target)
             pending = await store.get_pending(session_id)
             notes = [*pending.notes] if pending is not None else []
-            notes.append(_rollback_note(plan, target, len(abandoned), report, effects))
+            notes.append(_rollback_note(plan, target, len(abandoned), report, effects, stopped))
             await store.put_pending(PendingRollback(
                 session_id=session_id, target_id=target.checkpoint_id, manifest_id=manifest_id, notes=notes,
             ))
@@ -468,6 +481,7 @@ class RecoverableHarness:
             abandoned_ids=abandoned,
             status=plan.status,
             effects=effects,
+            processes_stopped=sorted(pid for pid, outcome in stopped.items() if outcome == "stopped"),
             workspace_restored=report is not None,
             files_written=report.written if report else [],
             files_deleted=report.deleted if report else [],
@@ -560,9 +574,13 @@ class RecoverableHarness:
         skips = ctx.extra.get("_skip_tool_calls")
         if ctx.extra.get("_skip_tool") or (isinstance(skips, dict) and skips.get(call_id)):
             return  # An earlier rail already decided this call does not run.
-        declaration = self._declarations.get(tool_name)
-        if declaration.category == EffectCategory.NONE:
+        args = parse_args(getattr(inputs, "tool_args", None))
+        call = self._declarations.for_call(tool_name, args)
+        # A background command is recorded even without effect: rollback stops its process.
+        background = tool_name == SHELL_TOOL and bool(args.get("run_in_background"))
+        if call.declaration.category == EffectCategory.NONE and not background:
             return
+        paths = args.get(EXTERNAL_PATHS_ARG)
         session_id = session.get_session_id()
         try:
             store = self._checkpoints()
@@ -573,8 +591,10 @@ class RecoverableHarness:
                     seq=await store.next_ledger_seq(session_id),
                     tool_call_id=call_id,
                     tool_name=tool_name,
-                    args_summary=_summary(parse_args(getattr(inputs, "tool_args", None))),
-                    category=declaration.category,
+                    args_summary=_summary(args),
+                    category=call.declaration.category,
+                    detail=call.detail,
+                    external_paths=[str(p) for p in paths] if isinstance(paths, list) else [],
                 )
                 await store.put_record(record)
         except Exception:  # Fail closed: the call must not run unrecorded.
@@ -595,16 +615,21 @@ class RecoverableHarness:
             return
         inputs = ctx.inputs
         result = getattr(inputs, "tool_result", None)
+        args = parse_args(getattr(inputs, "tool_args", None))
         update: dict = {"completed_at": time.time()}
-        if exception is not None or is_failure(result):
+        failed = exception is not None or is_failure(result)
+        if failed:
             update.update(status=EffectStatus.FAILED, error=_summary(str(exception) if exception else result)[:200])
         else:
             update["status"] = EffectStatus.SUCCEEDED
-            declaration = self._declarations.get(record.tool_name)
-            if declaration.category == EffectCategory.REVERSIBLE:
-                args = parse_args(getattr(inputs, "tool_args", None))
-                update.update(undo_tool=declaration.undo_tool,
-                              undo_args=build_undo_args(declaration, args, result))
+        declaration = self._declarations.for_call(record.tool_name, args).declaration
+        if declaration.category == EffectCategory.REVERSIBLE:
+            # A failed call keeps an undo taken from its arguments; the person decides whether to run it.
+            update.update(undo_tool=declaration.undo_tool,
+                          undo_args=build_undo_args(declaration, args, None if failed else result))
+        data = result_data(result)
+        if isinstance(data, dict) and data.get("status") == "started" and isinstance(data.get("pid"), int):
+            update.update(pid=data["pid"], pid_started=await asyncio.to_thread(process_start_time, data["pid"]))
         try:
             async with self._ledger_lock(record.session_id):
                 await self._checkpoints().put_record(record.model_copy(update=update))
@@ -642,20 +667,24 @@ class RecoverableHarness:
         records = [
             r for r in await self._checkpoints().records(session_id)
             if r.seq > target.ledger_seq and not r.abandoned and r.reverses is None
+            and r.category != EffectCategory.NONE  # Background launches: their processes are stopped instead.
         ]
         effects = []
         for record in sorted(records, key=lambda r: r.seq, reverse=True):
-            detail = record.error or ""
+            detail = record.detail or record.error or ""
             if record.category == EffectCategory.RETAINED:
                 action = EffectAction.RETAINED
             elif record.category == EffectCategory.IRREVERSIBLE:
                 action = EffectAction.IRREVERSIBLE
+            elif record.status == EffectStatus.FAILED and record.undo_args is not None:
+                action = EffectAction.REVIEW
+                detail = f"the call failed ({record.error or 'no detail'}); its undo was written for a success"
             elif record.status != EffectStatus.SUCCEEDED:
                 action = EffectAction.UNKNOWN
                 detail = detail or "the call never reported an outcome"
             elif record.undo_args is None:
                 action = EffectAction.CANNOT_UNDO
-                detail = "the call result lacked what the undo tool needs"
+                detail = "the call result or arguments lacked what the undo needs"
             else:
                 action = EffectAction.UNDO
             effects.append(PlannedEffect(
@@ -663,6 +692,67 @@ class RecoverableHarness:
                 action=action, undo_tool=record.undo_tool, undo_args=record.undo_args, detail=detail,
             ))
         return effects
+
+    @staticmethod
+    def _apply_choices(effects: list[PlannedEffect], approval: RollbackApproval) -> list[PlannedEffect]:
+        """Strike the undos the person cancelled; promote the reviewed ones they confirmed."""
+        cancelled, confirmed = set(approval.cancelled_effect_ids), set(approval.confirmed_effect_ids)
+        chosen = []
+        for effect in effects:
+            if effect.action == EffectAction.REVIEW and effect.record_id in confirmed:
+                effect = effect.model_copy(update={"action": EffectAction.UNDO})
+            if effect.action == EffectAction.UNDO and effect.record_id in cancelled:
+                effect = effect.model_copy(update={"outcome": EffectOutcome.CANCELLED})
+            chosen.append(effect)
+        return chosen
+
+    async def _processes_after(self, session_id: str, target: Checkpoint) -> list[LedgerRecord]:
+        return [
+            r for r in await self._checkpoints().records(session_id)
+            if r.seq > target.ledger_seq and not r.abandoned and r.pid is not None
+        ]
+
+    async def _stop_processes(self, session_id: str, target: Checkpoint) -> dict[int, str]:
+        """Stop the background processes started after ``target``; pid to what happened."""
+        stopped = {}
+        for record in await self._processes_after(session_id, target):
+            stopped[record.pid] = await asyncio.to_thread(stop_process_group, record.pid, record.pid_started)
+            logger.info("recoverable: background pid %s %s", record.pid, stopped[record.pid])
+        return stopped
+
+    def _blocked_reverse_command(self, command: str) -> str | None:
+        """Check a model-written reverse command again before it runs unattended."""
+        from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
+        from openjiuwen.harness.security.permission_engine.models import PermissionLevel
+        from openjiuwen.harness.tools.shell.bash._security import check_injection
+
+        injection = check_injection(command)
+        if injection.blocked:
+            return f"the reverse command was blocked: {injection.reason}"
+        deep_agent = self._rail.deep_agent
+        for rail in deep_agent.configured_rails() if deep_agent is not None else []:
+            if isinstance(rail, PermissionInterruptRail):
+                level, rule = rail.engine.evaluate_global_policy_directly(SHELL_TOOL, {"command": command})
+                if level == PermissionLevel.DENY:
+                    return f"the reverse command is denied by the permission policy ({rule})"
+        return None
+
+    def add_declaration_params(self, deep_agent: "DeepAgent") -> None:
+        """Let the model declare each shell and code call: add the declaration arguments to their schemas."""
+        react_agent = deep_agent.react_agent
+        if react_agent is None:
+            return
+        config = deep_agent.deep_config
+        language = "en" if str(getattr(config, "language", "") or "").lower().startswith("en") else "cn"
+        for name in PER_CALL_TOOLS:
+            card = react_agent.ability_manager.get(name) if self._declarations.declared_per_call(name) else None
+            params = getattr(card, "input_params", None)
+            if not isinstance(params, dict) or SIDE_EFFECT_ARG in params.get("properties", {}):
+                continue
+            params.setdefault("properties", {}).update(declaration_schema(language))
+            required = params.setdefault("required", [])
+            if SIDE_EFFECT_ARG not in required:
+                required.append(SIDE_EFFECT_ARG)
 
     async def _run_undos(self, session_id: str, rollback_id: str, effects: list[PlannedEffect]) -> list[PlannedEffect]:
         """Run the pending undos in order; after the first failure the rest stay pending."""
@@ -696,6 +786,10 @@ class RecoverableHarness:
             return None
         if any(r.status == EffectStatus.INTENDED for r in previous):
             return "an earlier attempt was interrupted and its outcome is unknown; check it by hand"
+        if effect.undo_tool == SHELL_TOOL:
+            blocked = self._blocked_reverse_command(str((effect.undo_args or {}).get("command") or ""))
+            if blocked is not None:
+                return blocked
         async with self._ledger_lock(session_id):
             record = LedgerRecord(
                 record_id=uuid.uuid4().hex, session_id=session_id, seq=await store.next_ledger_seq(session_id),
@@ -704,9 +798,12 @@ class RecoverableHarness:
                 reverses=effect.record_id, rollback_id=rollback_id,
             )
             await store.put_record(record)
+        undo_args = dict(effect.undo_args or {})
+        if effect.undo_tool == SHELL_TOOL and self._workspace is not None:
+            undo_args.setdefault("workdir", str(self._workspace.root))  # Between rounds no cwd is bound.
         error: str | None = None
         try:
-            result = await self._invoke_tool(effect.undo_tool or "", dict(effect.undo_args or {}))
+            result = await self._invoke_tool(effect.undo_tool or "", undo_args)
             if is_failure(result):
                 error = f"{effect.undo_tool} reported failure: {_summary(result)[:200]}"
         except Exception as exc:  # Any failure stops the remaining undos; report it.

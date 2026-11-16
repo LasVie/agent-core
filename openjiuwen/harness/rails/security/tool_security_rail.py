@@ -71,6 +71,11 @@ class PermissionInterruptRail(ConfirmInterruptRail):
     priority: int = 90
     interrupt_kind: str = InterruptKind.PERMISSION
 
+    @property
+    def engine(self) -> PermissionEngine:
+        """The permission engine this rail evaluates; read-only for other checks of the same policy."""
+        return self._engine
+
     def __init__(
         self,
         config: Optional[PermissionsSection | dict[str, Any]] = None,

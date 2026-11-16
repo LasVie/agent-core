@@ -77,6 +77,7 @@ class CheckpointRail(DeepAgentRail):
 
     def init(self, agent) -> None:
         self._deep_agent = agent
+        self._harness.add_declaration_params(agent)
 
     def uninit(self, agent) -> None:
         if self._deep_agent is agent:
@@ -107,6 +108,7 @@ class CheckpointRail(DeepAgentRail):
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         if ctx.session is None or self._deep_agent is None:
             return
+        self._harness.add_declaration_params(self._deep_agent)  # Tools may have been reloaded.
         await self._harness.begin_round(ctx.session, self._deep_agent)
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:

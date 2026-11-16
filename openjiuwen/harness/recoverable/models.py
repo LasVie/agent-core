@@ -91,6 +91,14 @@ class LedgerRecord(BaseModel):
     """On a record of an undo call: the rollback (plan) that ran it."""
     abandoned: bool = False
     """Set when a rollback discards the step this call belongs to."""
+    detail: str = ""
+    """Why the call got its category, such as an outward command declared without effect."""
+    external_paths: list[str] = Field(default_factory=list)
+    """Paths outside the workspace the call declared it writes."""
+    pid: int | None = None
+    """Process group of a command started in the background; stopped on rollback."""
+    pid_started: str | None = None
+    """Start time of ``pid`` as ``ps`` reports it, to tell a reused pid apart."""
     created_at: float = Field(default_factory=time.time)
     completed_at: float | None = None
 
@@ -104,6 +112,8 @@ class EffectAction(str, Enum):
     """Declared reversible, but the arguments for the undo tool were not in the call."""
     UNKNOWN = "unknown"
     """The call failed or never reported an outcome; nothing is undone."""
+    REVIEW = "review"
+    """The call failed but has an undo; it runs only if the person confirms it."""
     RETAINED = "retained"
 
 
@@ -160,6 +170,8 @@ class RollbackPlan(BaseModel):
     """Commits on the current git branches that disappear; ``None`` without git."""
     effects: list[PlannedEffect] = Field(default_factory=list)
     """Recorded effects after the target, newest first: the order undos run in."""
+    processes_to_stop: list[int] = Field(default_factory=list)
+    """Background processes the agent started after the target."""
     status: RollbackStatus = RollbackStatus.PLANNED
     created_at: float = Field(default_factory=time.time)
     applied_at: float | None = None
@@ -173,6 +185,8 @@ class RollbackApproval(BaseModel):
     target_id: str
     cancelled_effect_ids: list[str] = Field(default_factory=list)
     """Records whose undo the person struck from the plan."""
+    confirmed_effect_ids: list[str] = Field(default_factory=list)
+    """``review`` records whose undo the person chose to run."""
 
 
 class RollbackResult(BaseModel):
@@ -185,6 +199,7 @@ class RollbackResult(BaseModel):
     status: RollbackStatus = RollbackStatus.COMPLETED
     effects: list[PlannedEffect] = Field(default_factory=list)
     """The plan's effects, each undo with its outcome."""
+    processes_stopped: list[int] = Field(default_factory=list)
     workspace_restored: bool = False
     files_written: list[str] = Field(default_factory=list)
     files_deleted: list[str] = Field(default_factory=list)
