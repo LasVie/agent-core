@@ -166,9 +166,32 @@ class McpToolResult(BaseModel):
     error: Optional[str] = None
 
 
+def mcp_tool_annotations(tool: Any) -> Optional[Dict[str, Any]]:
+    """The hints an MCP server gives about a listed tool, as a dict; ``None`` when it gives none.
+
+    ``tool`` is an MCP SDK ``Tool``; its ``annotations`` are ``ToolAnnotations``
+    (``title``, ``readOnlyHint``, ``destructiveHint``, ``idempotentHint``,
+    ``openWorldHint``) or a plain dict.
+    """
+    annotations = getattr(tool, "annotations", None)
+    if annotations is None:
+        return None
+    if isinstance(annotations, dict):
+        return dict(annotations)
+    dump = getattr(annotations, "model_dump", None)
+    return dump(exclude_none=True) if callable(dump) else None
+
+
 class McpToolCard(ToolCard):
     server_name: str
     server_id: str = ''
+    annotations: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Hints the MCP server gives about the tool (MCP ToolAnnotations, such as readOnlyHint and "
+            "destructiveHint). The server describes itself and may be wrong; treat them as defaults only."
+        ),
+    )
 
     def tool_info(self):
         return McpToolInfo(name=self.name, description=self.description, parameters=self.input_params,

@@ -6,7 +6,12 @@ from typing import Any, List, Optional
 
 from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.tool import McpToolCard
-from openjiuwen.core.foundation.tool.mcp.base import McpServerConfig, NO_TIMEOUT, extract_mcp_tool_result_content
+from openjiuwen.core.foundation.tool.mcp.base import (
+    McpServerConfig,
+    NO_TIMEOUT,
+    extract_mcp_tool_result_content,
+    mcp_tool_annotations,
+)
 from openjiuwen.core.foundation.tool.mcp.client.mcp_client import McpClient
 
 
@@ -91,6 +96,7 @@ class PlaywrightClient(McpClient):
                     server_name=self._name,
                     description=getattr(tool, "description", ""),
                     input_params=getattr(tool, "inputSchema", {}),
+                    annotations=mcp_tool_annotations(tool),
                 )
                 for tool in tools_response.tools
             ]
