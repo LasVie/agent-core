@@ -8,6 +8,7 @@ modules:
 - harness
 files:
 - openjiuwen/harness/recoverable/__init__.py
+- openjiuwen/harness/recoverable/effects.py
 - openjiuwen/harness/recoverable/harness.py
 - openjiuwen/harness/recoverable/manifest.py
 - openjiuwen/harness/recoverable/models.py
@@ -24,18 +25,23 @@ files:
 | 项 | 值 |
 |---|---|
 | 类型 | spec |
-| 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py`） |
-| 最近一次修订日期 | 2026-11-13 |
+| 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py` / `effects.py`） |
+| 最近一次修订日期 | 2026-11-16 |
 | 关联设计 | D-20261113-1506-recoverable-harness |
 | 关联 feature | F_20261113_1706_recoverable-harness.md |
 
 ## 范围 / 边界
 
 本规约定义 DeepAgent 的步级检查点和回退：`RecoverableHarness` 在每个步骤边界记下一个检查点，
-包括上下文、Session 状态和工作区文件；人确认回退计划后，把它们恢复到指定检查点。
+包括上下文、Session 状态和工作区文件；工具调用对工作区以外的影响记在副作用账本里。
+人确认回退计划后，能撤销的外部效果按声明撤销，再把工作区、上下文和状态恢复到指定检查点。
 
-不回退的有三类，回退说明会如实告诉 Agent：依赖目录（`node_modules`、`.venv` 等）、工作区以外的效果，
-以及沙箱中的工作区。只支持单轮模式，不支持任务循环模式。
+不回退的，回退说明会如实告诉 Agent：
+- 依赖目录（`node_modules`、`.venv` 等）、Agent 的记忆目录；
+- 不可逆、无法撤销、结果未知的外部效果，账本里没有的外部效果；
+- 沙箱中的工作区。
+
+只支持单轮模式，不支持任务循环模式。
 
 上下文日志用 `core/session/vcs`（`for_session`、`commit`、`rewind`），vcs 本身的契约见其 `CLAUDE.md`。
 Rail 的事件路由与 priority 规则见 S_04。
@@ -64,25 +70,41 @@ Rail 的事件路由与 priority 规则见 S_04。
 11. **第一份清单先于任何工具。** 会话的第一份清单在 `BEFORE_INVOKE` 时于后台开始建立；每个工具调用的 `BEFORE_TOOL_CALL`
     等它完成，模型调用不等。在它完成前建立的检查点引用这份清单。
 12. **快照范围。** 工作区下的一切，除了：名字在依赖目录名单里的目录（任何深度）；名字在构建产物名单里、并且被 git 忽略的目录；
-    设备、管道、套接字。符号链接记链接本身，不跟随。回退时删除当前存在的构建产物目录；依赖目录不动；
-    比目标多出的空目录删除，非空的（里面只剩依赖目录或构建产物）保留。
+    工作区节点 `memory`、`coding_memory` 所在的目录；设备、管道、套接字。符号链接记链接本身，不跟随。
+    回退时删除当前存在的构建产物目录；依赖目录和记忆目录不动；比目标多出的空目录删除，非空的（里面只剩不进快照的目录）保留。
 13. **文件内容按 sha256 存，相同内容只存一份。** 能克隆就克隆；不能克隆时，超过单文件上限的文件不存，
     清单里记为 `skipped`，它变化后无法恢复，计划和结果里列为无法恢复。`.git` 下的文件不受上限限制。
 14. **用文件属性判断变化。** 修改时间、大小、inode、权限位与上次扫描相同，且修改时间早于上次扫描开始前 2 秒，
     才沿用上次的指纹；否则重新读取。保留原修改时间、大小也不变的改写（例如 `cp -p`）在 2 秒以外发生时会漏掉。
+15. **工具的类别来自声明表。** 宿主的声明覆盖内置表；两者都没有的工具按不可逆处理。类别为"无外部效果"的调用不进账本。
+16. **先登记、后执行。** 进账本的调用在 `BEFORE_TOOL_CALL` 写入意图记录；写入失败时这次调用被跳过，
+    模型收到错误结果，说明副作用无法登记。已被更早的 Rail 跳过的调用不登记。
+17. **调用后补结果。** `AFTER_TOOL_CALL` / `ON_TOOL_EXCEPTION` 在其他 Rail 改写结果之前读取原始结果：
+    抛出异常或结果的 `success` 为 `False` 记为失败；成功且可撤销的，按声明从调用结果或参数中取出撤销参数，取不到时记为无法撤销。
+    调用因中断暂停时保留意图记录，回退时视为结果未知。
+18. **回退时对每条记录的处理。** 目标检查点之后、未被放弃、不是撤销调用本身的记录：
+    "保留"类列为保留；不可逆类列为不可逆；没有成功结果的列为结果未知；可撤销但缺撤销参数的列为无法撤销；其余执行撤销。都不悄悄丢掉。
+19. **执行顺序：撤销 → 恢复工作区 → 放弃记录与检查点。** 撤销从最新的记录往前执行，跳过人在确认时划掉的。
+    第一次撤销失败后，其余撤销不再执行（记为待执行），工作区照常恢复；工作区写回失败的文件重试一次。
+    有撤销失败、待执行或未恢复的文件时，回退状态为 `partial`，否则为 `completed`；人划掉的撤销不算失败。
+20. **撤销调用自己也进账本**，带被撤销记录的 ID 和回退 ID。同一回退里已成功的撤销不再执行；
+    上次执行被中断、结果未知的撤销不自动重试，改为报告。撤销直接调用 Agent 的工具，在 Agent 的执行环境里运行，不经过模型和 Rail。
+21. **`partial` 的回退不自动继续。** `resume_rollback` 重试失败和待执行的撤销，再恢复一次工作区，并在下一轮开始时给 Agent 一条说明；
+    `accept_partial` 接受现状。
 
 ## 接口契约
 
 | 入口 | 说明 |
 |---|---|
-| `RecoverableHarness(*, kv_store=None, storage_dir=None, dependency_dirs=..., build_output_dirs=..., file_size_cap=1 GB, use_clones=True)` | `kv_store` 默认是 `storage_dir/recoverable.db` 上的 SQLite（`DbBasedKVStore`）；`storage_dir` 默认 `~/.openjiuwen/recoverable`，文件内容在 `storage_dir/objects/<工作区键>/`。依赖目录默认 `node_modules`、`.venv`、`venv`、`.tox`；构建产物默认 `dist`、`build`、`target`、`.next` |
+| `RecoverableHarness(*, kv_store=None, storage_dir=None, dependency_dirs=..., build_output_dirs=..., file_size_cap=1 GB, use_clones=True, declarations=None)` | `kv_store` 默认是 `storage_dir/recoverable.db` 上的 SQLite（`DbBasedKVStore`）；`storage_dir` 默认 `~/.openjiuwen/recoverable`，文件内容在 `storage_dir/objects/<工作区键>/`。依赖目录默认 `node_modules`、`.venv`、`venv`、`.tox`；构建产物默认 `dist`、`build`、`target`、`.next`。`declarations` 是宿主工具的 `EffectDeclaration`，按工具名 |
 | `rail() -> CheckpointRail` | 注册到 DeepAgent 的 Rail；一个 harness 服务一个 DeepAgent |
 | `history(session_id, limit=None) -> list[Checkpoint]` | 从 HEAD 沿父检查点往回，最新的在前 |
 | `uncovered_files(session_id) -> list[str]` | 最新清单中超过单文件上限、没有存下的文件 |
-| `plan_rollback(session_id, target_id, *, initiator, source, reason) -> RollbackPlan` | 目标必须在当前历史上，否则报 `DEEPAGENT_INPUT_PARAM_ERROR`；目标可以是 HEAD 本身。计划列出要写回、删除、无法恢复的文件，要删除的构建产物，以及会消失的 git 提交数 |
-| `apply_rollback(RollbackApproval) -> RollbackResult` | 不变量 4、5、6、10；结果列出实际写回、删除、删除的构建产物和没能恢复的文件 |
+| `plan_rollback(session_id, target_id, *, initiator, source, reason) -> RollbackPlan` | 目标必须在当前历史上，否则报 `DEEPAGENT_INPUT_PARAM_ERROR`；目标可以是 HEAD 本身。计划列出要写回、删除、无法恢复的文件，要删除的构建产物，会消失的 git 提交数，以及每条外部效果的处理方式（`effects`，最新的在前） |
+| `apply_rollback(RollbackApproval) -> RollbackResult` | 不变量 4、5、6、10、19；`RollbackApproval.cancelled_effect_ids` 是人划掉的撤销。执行时重新收集账本记录。结果给出状态、每条效果的结果、实际写回、删除、删除的构建产物和没能恢复的文件 |
+| `resume_rollback(plan_id) -> RollbackResult` / `accept_partial(plan_id) -> RollbackPlan` | 只接受 `partial` 的回退，不变量 21 |
 | `check_workspace(root)` / `bind_workspace(root, *, sandboxed)` | 不变量 8；`CheckpointRail` 在拿到工作区或 sys_operation 时调用。sys_operation 是沙箱模式时不做工作区快照 |
-| `begin_round` / `end_round` / `before_tool` / `take_checkpoint` | 只供 `CheckpointRail` 调用 |
+| `begin_round` / `end_round` / `before_tool` / `after_tool` / `take_checkpoint` | 只供 `CheckpointRail` 调用 |
 
 `CheckpointRail` 的回调：
 
@@ -90,7 +112,8 @@ Rail 的事件路由与 priority 规则见 S_04。
 |---|---|---|---|
 | `BEFORE_INVOKE` | 外层 DeepAgent | 10000 | 标记会话运行中；写回待写回的回退或重启后丢失的 Session（不变量 6、7）；会话还没有清单时在后台开始建第一份（不变量 11） |
 | `BEFORE_MODEL_CALL` | 内层 ReAct | 1 | 建检查点：每轮开始，以及没调工具却继续循环的那一步 |
-| `BEFORE_TOOL_CALL` | 内层 ReAct | 1 | 等第一份清单完成 |
+| `BEFORE_TOOL_CALL` | 内层 ReAct | 1 | 等第一份清单完成；登记意图（不变量 16） |
+| `AFTER_TOOL_CALL` / `ON_TOOL_EXCEPTION` | 内层 ReAct | 1000000 | 补上结果和撤销参数（不变量 17） |
 | `AFTER_REACT_ITERATION` | 内层 ReAct | 1 | 建检查点：每步结束 |
 | `AFTER_INVOKE` | 外层 DeepAgent | 1 | 本轮没有异常时建检查点；保存最新扫描供同一工作区的下一个会话复用；标记会话空闲 |
 
@@ -101,8 +124,18 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 - 工作区是否恢复，写回和删除了多少文件；
 - 删除了哪些构建产物，需要重新构建；
 - 哪些文件没能恢复；
-- 依赖目录和工作区以外的效果没有回退；
+- 依赖目录和记忆没有回退；
+- 每条外部效果的去向：已撤销、人要求保留、撤销失败或未执行、不可逆、无法撤销、结果未知、有意保留；账本以外的效果没有处理；
 - 回退理由。
+
+**内置声明表**（`effects.BUILTIN_DECLARATIONS`）：
+
+| 类别 | 工具 |
+|---|---|
+| 无外部效果 | 文件工具（`read_file`、`write_file`、`edit_file`、`glob`、`list_files`、`grep`）、`todo_*`、计划与模式切换、搜索与网页读取、多模态理解、`ask_user`、记忆读取、`cron_get_job` / `cron_list_jobs` / `cron_preview_job`、`subagent_list` |
+| 保留 | `write_memory`、`edit_memory`、`coding_memory_write`、`coding_memory_edit` |
+| 可撤销 | `cron_create_job`：用 `cron_delete_job(job_id=result.id)` 撤销 |
+| 不可逆（未列出的工具都是） | `bash`、`code`、其余 cron 操作、子 Agent 工具、MCP 工具 |
 
 同一轮开始前叠加的多次回退，说明按顺序合在一条消息里。
 
@@ -110,12 +143,14 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 
 | 记录 | 键（`BaseKVStore`） | 内容 |
 |---|---|---|
-| `Checkpoint` | `recoverable:{session_id}:checkpoint:{checkpoint_id}` | `seq`、`parent_id`、vcs `commit_id` 与 `event_id`、`manifest_id`、`kind`（`step` / `rollback`） |
+| `Checkpoint` | `recoverable:{session_id}:checkpoint:{checkpoint_id}` | `seq`、`parent_id`、vcs `commit_id` 与 `event_id`、`manifest_id`、`ledger_seq`（当时账本的最大序号）、`kind`（`step` / `rollback`） |
+| `LedgerRecord` | `recoverable:{session_id}:ledger:{seq:012d}` | 工具名、参数摘要（最多 500 字符）、类别、状态（`intended` / `succeeded` / `failed`）、错误、撤销工具与参数、`reverses` / `rollback_id`（撤销调用）、`abandoned` |
+| 账本序号 | `recoverable:{session_id}:ledger_seq` | 已分配的最大序号；同一会话内用锁串行分配 |
 | HEAD | `recoverable:{session_id}:head` | 当前检查点 ID |
 | 清单 `ManifestRecord` | `recoverable:{session_id}:manifest:{manifest_id}` | 相对 `parent_id` 的变化（路径 → 条目，删除记 `null`）；`parent_id` 为空时是完整清单，每 50 份增量存一份完整的 |
 | 工作区最新扫描 | `recoverable:workspace:{工作区键}:scan` | 完整清单，供同一工作区的新会话复用指纹 |
-| `RollbackPlan` | `recoverable:plan:{plan_id}` | 目标、当时的 HEAD、要丢弃的检查点（最新的在前）、发起方、来源、理由、文件变化、会消失的提交数、`applied_at` |
-| `PendingRollback` | `recoverable:{session_id}:pending` | 目标检查点、恢复后的清单、待写入的回退说明 |
+| `RollbackPlan` | `recoverable:plan:{plan_id}` | 目标、当时的 HEAD、要丢弃的检查点（最新的在前）、发起方、来源、理由、文件变化、会消失的提交数、效果及其结果、状态（`planned` / `completed` / `partial` / `accepted`）、`applied_at`。也是回退的进度记录 |
+| `PendingRollback` | `recoverable:{session_id}:pending` | 目标检查点（为空时只有说明待写入）、恢复后的清单、待写入的回退说明 |
 | vcs 日志 | `{session_id}:vcs:...` | 由 vcs `KvBackend` 维护 |
 
 清单条目是 `[kind, digest, size, mtime_ns, ino, mode, link]`，`kind` 为 `f`（文件）、`l`（链接）、`d`（目录）、`s`（超过上限未存）。

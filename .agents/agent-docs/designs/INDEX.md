@@ -6,7 +6,7 @@ generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-11-13T17:20+08:00 -->
+<!-- generated-at: 2026-11-16T10:34+08:00 -->
 
 # 设计文档索引 (INDEX)
 
@@ -131,7 +131,7 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
-| [D-20261113-1506-recoverable-harness](active/D-20261113-1506-recoverable-harness/design.md) | Recoverable Harness 步级回退设计方案 | in-development | Song Haoran | harness | 2026-11-13 |
+| [D-20261113-1506-recoverable-harness](active/D-20261113-1506-recoverable-harness/design.md) | Recoverable Harness 步级回退设计方案 | in-development | Song Haoran | harness | 2026-11-16 |
 
 <a id="module-7"></a>
 
@@ -141,7 +141,7 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
-| [D-20261113-1506-recoverable-harness](active/D-20261113-1506-recoverable-harness/design.md) | Recoverable Harness 步级回退设计方案 | in-development | Song Haoran | harness | 2026-11-13 |
+| [D-20261113-1506-recoverable-harness](active/D-20261113-1506-recoverable-harness/design.md) | Recoverable Harness 步级回退设计方案 | in-development | Song Haoran | harness | 2026-11-16 |
 
 <a id="module-8"></a>
 
@@ -151,7 +151,7 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
-| [D-20261113-1506-recoverable-harness](active/D-20261113-1506-recoverable-harness/design.md) | Recoverable Harness 步级回退设计方案 | in-development | Song Haoran | harness | 2026-11-13 |
+| [D-20261113-1506-recoverable-harness](active/D-20261113-1506-recoverable-harness/design.md) | Recoverable Harness 步级回退设计方案 | in-development | Song Haoran | harness | 2026-11-16 |
 
 <a id="module-9"></a>
 
@@ -187,7 +187,7 @@ generated: true
 |---|---|---|---|---|---|
 | [D-20261110-1903-team-goal-mode](active/D-20261110-1903-team-goal-mode/design.md) | Team Leader 与成员 Goal 模式设计方案 | in-development | alan_cheng | harness | 2026-11-10 |
 | [D-20261112-1120-goal-assessment-isolation](active/D-20261112-1120-goal-assessment-isolation/design.md) | Goal 独立评估的轨迹与执行上下文隔离 | in-development | alan_cheng | observability | 2026-11-12 |
-| [D-20261113-1506-recoverable-harness](active/D-20261113-1506-recoverable-harness/design.md) | Recoverable Harness 步级回退设计方案 | in-development | Song Haoran | harness | 2026-11-13 |
+| [D-20261113-1506-recoverable-harness](active/D-20261113-1506-recoverable-harness/design.md) | Recoverable Harness 步级回退设计方案 | in-development | Song Haoran | harness | 2026-11-16 |
 
 ### 开发后 (archive)
 
