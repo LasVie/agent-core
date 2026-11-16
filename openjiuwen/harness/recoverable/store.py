@@ -8,6 +8,7 @@ Keys live under ``recoverable:``. vcs keeps its own keys under
 
 from __future__ import annotations
 
+import json
 from typing import TypeVar
 
 from pydantic import BaseModel
@@ -145,6 +146,15 @@ class CheckpointStore:
 
     async def put_workspace_scan(self, workspace_key: str, record: ManifestRecord) -> None:
         await self._kv.set(self._workspace_scan_key(workspace_key), record.to_json())
+
+    async def get_packages(self, session_id: str, packages_id: str) -> dict[str, dict[str, str]] | None:
+        """Package lists by workspace-relative environment path."""
+        raw = await self._kv.get(f"{_PREFIX}:{session_id}:packages:{packages_id}")
+        return json.loads(raw) if raw is not None else None
+
+    async def put_packages(self, session_id: str, packages_id: str, packages: dict[str, dict[str, str]]) -> None:
+        await self._kv.set(f"{_PREFIX}:{session_id}:packages:{packages_id}",
+                           json.dumps(packages, sort_keys=True, separators=(",", ":")))
 
     async def ledger_seq(self, session_id: str) -> int:
         """Highest ``seq`` handed out in the session's side-effect ledger; 0 when empty."""

@@ -54,6 +54,8 @@ class Checkpoint(BaseModel):
     """vcs log position of ``commit_id``; equal positions mean the context did not change."""
     manifest_id: str | None = None
     """Workspace manifest at this checkpoint; ``None`` when the workspace is not snapshotted."""
+    packages_id: str | None = None
+    """Package lists of the workspace's dependency environments at this checkpoint."""
     ledger_seq: int = 0
     """Highest side-effect record ``seq`` at this checkpoint; later records happened after it."""
     kind: CheckpointKind = CheckpointKind.STEP
@@ -99,6 +101,10 @@ class LedgerRecord(BaseModel):
     """Process group of a command started in the background; stopped on rollback."""
     pid_started: str | None = None
     """Start time of ``pid`` as ``ps`` reports it, to tell a reused pid apart."""
+    generated_undo: str | None = None
+    """Shell command reversing the global packages this call changed, worked out by comparing lists."""
+    generated_cannot: list[str] = Field(default_factory=list)
+    """Global package changes that cannot be reversed, such as a brew upgrade."""
     created_at: float = Field(default_factory=time.time)
     completed_at: float | None = None
 
@@ -137,6 +143,17 @@ class PlannedEffect(BaseModel):
     detail: str = ""
 
 
+class PackageChangeInfo(BaseModel):
+    """How one dependency environment is brought back to its list at the target."""
+
+    env: str
+    """Workspace-relative path, such as ``.venv`` or ``web/node_modules``."""
+    remove: list[str] = Field(default_factory=list)
+    install: dict[str, str] = Field(default_factory=dict)
+    error: str | None = None
+    """Set when the environment could not be restored."""
+
+
 class RollbackStatus(str, Enum):
     PLANNED = "planned"
     COMPLETED = "completed"
@@ -172,6 +189,8 @@ class RollbackPlan(BaseModel):
     """Recorded effects after the target, newest first: the order undos run in."""
     processes_to_stop: list[int] = Field(default_factory=list)
     """Background processes the agent started after the target."""
+    package_changes: list[PackageChangeInfo] = Field(default_factory=list)
+    """Dependency environments whose package list differs from the target's."""
     status: RollbackStatus = RollbackStatus.PLANNED
     created_at: float = Field(default_factory=time.time)
     applied_at: float | None = None
@@ -200,6 +219,8 @@ class RollbackResult(BaseModel):
     effects: list[PlannedEffect] = Field(default_factory=list)
     """The plan's effects, each undo with its outcome."""
     processes_stopped: list[int] = Field(default_factory=list)
+    package_changes: list[PackageChangeInfo] = Field(default_factory=list)
+    """Dependency environments restored, with ``error`` set where that failed."""
     workspace_restored: bool = False
     files_written: list[str] = Field(default_factory=list)
     files_deleted: list[str] = Field(default_factory=list)
@@ -224,4 +245,6 @@ class PendingRollback(BaseModel):
     """``None`` when only notes are pending, such as the outcome of a resumed rollback."""
     manifest_id: str | None = None
     """Workspace manifest right after the files were restored."""
+    packages_id: str | None = None
+    """Package lists right after the dependencies were restored."""
     notes: list[str] = Field(default_factory=list)

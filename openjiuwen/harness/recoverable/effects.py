@@ -124,7 +124,7 @@ class CallDeclaration:
     detail: str = ""
 
 
-def _argv_lists(command: str) -> list[list[str]]:
+def simple_commands(command: str) -> list[list[str]]:
     """Each simple command of ``command`` as an argv, best effort."""
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
@@ -145,7 +145,7 @@ def _argv_lists(command: str) -> list[list[str]]:
     return commands
 
 
-def _program(argv: list[str]) -> tuple[str, list[str]]:
+def split_program(argv: list[str]) -> tuple[str, list[str]]:
     """Skip environment assignments and ``sudo`` / ``env``; return the program and its arguments."""
     index = 0
     while index < len(argv) and ("=" in argv[index] and not argv[index].startswith("-")
@@ -158,8 +158,8 @@ def _program(argv: list[str]) -> tuple[str, list[str]]:
 
 def outward_reason(command: str, outward: frozenset[str] = DEFAULT_OUTWARD_COMMANDS) -> str | None:
     """Why ``command`` affects something beyond the workspace, or ``None``."""
-    for argv in _argv_lists(command):
-        program, args = _program(argv)
+    for argv in simple_commands(command):
+        program, args = split_program(argv)
         if program in outward:
             return f"`{program}` acts outside the workspace"
         if program == "git" and "push" in args:

@@ -112,7 +112,9 @@ class WorkspaceSnapshot:
                 rel = full.relative_to(self.root).as_posix()
                 if full.is_symlink():
                     manifest.entries[rel] = self._link_entry(full)
-                elif name in self._dependency_dirs or rel in ignored or rel in self._kept_dirs:
+                elif name in self._dependency_dirs:
+                    manifest.dependency_dirs.append(rel)
+                elif rel in ignored or rel in self._kept_dirs:
                     continue
                 else:
                     manifest.entries[rel] = Entry(EntryKind.DIR, mode=full.lstat().st_mode)

@@ -74,6 +74,8 @@ class Manifest:
     """When the scan that produced this manifest started."""
     build_outputs: list[str] = field(default_factory=list)
     """Build output directories seen by the scan; they are not in ``entries``."""
+    dependency_dirs: list[str] = field(default_factory=list)
+    """Dependency directories seen by the scan; their package lists are kept instead."""
 
     def trusted(self, path: str, size: int, mtime_ns: int, ino: int, mode: int) -> Entry | None:
         """The cached entry for ``path`` when its stat still matches and is not racy."""

@@ -32,10 +32,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import shutil
 import time
 import uuid
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -51,6 +52,18 @@ from openjiuwen.core.foundation.store.kv.db_based_kv_store import DbBasedKVStore
 from openjiuwen.core.session.vcs import VersioningConfig, VersioningManager, for_session
 from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
 from openjiuwen.core.sys_operation.execution_environment import ExecutionEnvironment, execution_environment_scope
+from openjiuwen.harness.recoverable.dependencies import (
+    PackageChange,
+    Packages,
+    diff_packages,
+    env_kind,
+    fingerprint,
+    global_manager,
+    global_undo,
+    list_global,
+    list_packages,
+    restore_environment,
+)
 from openjiuwen.harness.recoverable.effects import (
     DEFAULT_OUTWARD_COMMANDS,
     EXTERNAL_PATHS_ARG,
@@ -75,6 +88,7 @@ from openjiuwen.harness.recoverable.models import (
     EffectStatus,
     Initiator,
     LedgerRecord,
+    PackageChangeInfo,
     PendingRollback,
     PlannedEffect,
     RollbackApproval,
@@ -108,6 +122,7 @@ _DB_FILENAME = "recoverable.db"
 _LIST_LIMIT = 10
 _SUMMARY_LIMIT = 500
 _RECORD_KEY = "_recoverable_ledger_record"
+_GLOBAL_KEY = "_recoverable_global_packages"
 _UNRECORDED = "the side effect of this call could not be recorded, so the call was not run"
 
 
@@ -171,9 +186,22 @@ def _effect_lines(effects: list[PlannedEffect]) -> list[str]:
     return lines
 
 
+def _package_lines(changes: list[PackageChangeInfo]) -> list[str]:
+    lines = []
+    for change in changes:
+        what = ", ".join(
+            [f"removed {name}" for name in change.remove] + [f"installed {n}=={v}" for n, v in change.install.items()]
+        )
+        if change.error:
+            lines.append(f"Dependencies in {change.env} could NOT be restored ({change.error}); still needed: {what}.")
+        else:
+            lines.append(f"Dependencies in {change.env} restored: {what}.")
+    return lines
+
+
 def _rollback_note(
     plan: RollbackPlan, target: Checkpoint, abandoned: int, report: RestoreReport | None,
-    effects: list[PlannedEffect], stopped: dict[int, str],
+    effects: list[PlannedEffect], stopped: dict[int, str], packages: list[PackageChangeInfo],
 ) -> str:
     who = "The user" if plan.initiator == Initiator.HUMAN else (plan.source or "An automatic monitor")
     lines = [
@@ -196,7 +224,8 @@ def _rollback_note(
         unrestored = sorted({*report.unrecoverable, *report.failed})
         if unrestored:
             lines.append(f"These files could NOT be restored and may still hold later content: {_listed(unrestored)}.")
-        lines.append("Dependency directories (such as node_modules or .venv) and memory were NOT rolled back.")
+        lines.extend(_package_lines(packages))
+        lines.append("Memory was kept as it is.")
     lines.extend(_effect_lines(effects))
     if plan.reason:
         lines.append(f"Reason: {plan.reason}")
@@ -212,6 +241,10 @@ class _Files:
     manifest_id: str | None = None
     depth: int = 0
     baseline: asyncio.Task | None = None
+    packages: dict[str, Packages] | None = None
+    """Latest package list of each dependency environment, by workspace-relative path."""
+    fingerprints: dict[str, str] = field(default_factory=dict)
+    packages_id: str | None = None
 
 
 class RecoverableHarness:
@@ -411,14 +444,19 @@ class RecoverableHarness:
                 "build_outputs_to_delete": diff.build_outputs,
                 "lost_commits": lost,
             })
+        changes, created = await self._package_changes(session_id, target, files)
+        plan.package_changes = [
+            *(PackageChangeInfo(env=env, remove=["(the whole environment)"]) for env in created), *changes,
+        ]
         await store.put_plan(plan)
         return plan
 
     async def apply_rollback(self, approval: RollbackApproval) -> RollbackResult:
         """Apply a confirmed plan between rounds; the context follows at the next round.
 
-        Order: undo the recorded effects newest first, then restore the workspace,
-        then discard the later checkpoints. The first undo that fails stops the
+        Order: stop background processes, undo the recorded effects newest first,
+        restore the dependency environments, restore the workspace files, then
+        discard the later checkpoints. The first undo that fails stops the
         remaining undos; the workspace is still restored and the rollback ends as
         ``partial``.
 
@@ -450,13 +488,17 @@ class RecoverableHarness:
             # Recompute: effects recorded after the plan was made are undone too.
             effects = self._apply_choices(await self._planned_effects(session_id, target), approval)
             effects = await self._run_undos(session_id, plan.plan_id, effects)
+            # Dependencies before files: uninstalling can touch files such as package.json.
+            packages = await self._restore_dependencies(session_id, target)
             report, manifest_id = await self._restore_workspace(session_id, target)
             await self._abandon_records(session_id, target)
             pending = await store.get_pending(session_id)
             notes = [*pending.notes] if pending is not None else []
-            notes.append(_rollback_note(plan, target, len(abandoned), report, effects, stopped))
+            notes.append(_rollback_note(plan, target, len(abandoned), report, effects, stopped, packages))
+            files = self._files.get(session_id)
             await store.put_pending(PendingRollback(
-                session_id=session_id, target_id=target.checkpoint_id, manifest_id=manifest_id, notes=notes,
+                session_id=session_id, target_id=target.checkpoint_id, manifest_id=manifest_id,
+                packages_id=files.packages_id if files is not None else None, notes=notes,
             ))
             await store.set_head(session_id, target.checkpoint_id)
             await store.delete(session_id, abandoned)
@@ -466,7 +508,8 @@ class RecoverableHarness:
             )
             unrestored = sorted({*report.unrecoverable, *report.failed}) if report else []
             plan = plan.model_copy(update={
-                "applied_at": time.time(), "effects": effects, "status": self._status(effects, unrestored),
+                "applied_at": time.time(), "effects": effects, "package_changes": packages,
+                "status": self._status(effects, unrestored, packages),
             })
             await store.put_plan(plan)
             self._managers.pop(session_id, None)
@@ -482,6 +525,7 @@ class RecoverableHarness:
             status=plan.status,
             effects=effects,
             processes_stopped=sorted(pid for pid, outcome in stopped.items() if outcome == "stopped"),
+            package_changes=packages,
             workspace_restored=report is not None,
             files_written=report.written if report else [],
             files_deleted=report.deleted if report else [],
@@ -507,12 +551,15 @@ class RecoverableHarness:
                     error_msg=f"checkpoint {plan.target_id} of rollback {plan_id} no longer exists",
                 )
             effects = await self._run_undos(session_id, plan.plan_id, plan.effects)
+            packages = await self._restore_dependencies(session_id, target)
             report, _ = await self._restore_workspace(session_id, target)
             unrestored = sorted({*report.unrecoverable, *report.failed}) if report else []
-            plan = plan.model_copy(update={"effects": effects, "status": self._status(effects, unrestored)})
+            plan = plan.model_copy(update={
+                "effects": effects, "package_changes": packages, "status": self._status(effects, unrestored, packages),
+            })
             await store.put_plan(plan)
             await self._add_note(session_id, "[ROLLBACK] A partial rollback was retried.\n"
-                                 + "\n".join(_effect_lines(effects)))
+                                 + "\n".join(_package_lines(packages) + _effect_lines(effects)))
         return RollbackResult(
             plan_id=plan.plan_id,
             session_id=session_id,
@@ -520,6 +567,7 @@ class RecoverableHarness:
             abandoned_ids=plan.abandoned_ids,
             status=plan.status,
             effects=effects,
+            package_changes=packages,
             workspace_restored=report is not None,
             files_written=report.written if report else [],
             files_deleted=report.deleted if report else [],
@@ -576,10 +624,13 @@ class RecoverableHarness:
             return  # An earlier rail already decided this call does not run.
         args = parse_args(getattr(inputs, "tool_args", None))
         call = self._declarations.for_call(tool_name, args)
-        # A background command is recorded even without effect: rollback stops its process.
+        # Recorded even without effect: rollback stops a background process and reverses global installs.
         background = tool_name == SHELL_TOOL and bool(args.get("run_in_background"))
-        if call.declaration.category == EffectCategory.NONE and not background:
+        manager = global_manager(str(args.get("command") or "")) if tool_name == SHELL_TOOL else None
+        if call.declaration.category == EffectCategory.NONE and not background and manager is None:
             return
+        if manager is not None:
+            ctx.extra[_GLOBAL_KEY] = (manager, await asyncio.to_thread(list_global, manager))
         paths = args.get(EXTERNAL_PATHS_ARG)
         session_id = session.get_session_id()
         try:
@@ -608,6 +659,7 @@ class RecoverableHarness:
     async def after_tool(self, ctx: "AgentCallbackContext", exception: BaseException | None) -> None:
         """Complete the call's ledger record with its outcome and, if reversible, its undo."""
         record: LedgerRecord | None = ctx.extra.pop(_RECORD_KEY, None)
+        global_before = ctx.extra.pop(_GLOBAL_KEY, None)
         if record is None:
             return
         if isinstance(exception, ToolInterruptException):
@@ -630,6 +682,12 @@ class RecoverableHarness:
         data = result_data(result)
         if isinstance(data, dict) and data.get("status") == "started" and isinstance(data.get("pid"), int):
             update.update(pid=data["pid"], pid_started=await asyncio.to_thread(process_start_time, data["pid"]))
+        if global_before is not None and global_before[1] is not None:
+            # Compare what is installed now with before: exact even when the command failed halfway.
+            manager, before = global_before
+            after = await asyncio.to_thread(list_global, manager)
+            if after is not None:
+                update["generated_undo"], update["generated_cannot"] = global_undo(manager, before, after)
         try:
             async with self._ledger_lock(record.session_id):
                 await self._checkpoints().put_record(record.model_copy(update=update))
@@ -648,17 +706,19 @@ class RecoverableHarness:
             manager = self._manager_for(session, context_engine)
             store = self._checkpoints()
             await manager.append()
-            manifest_id = await self._snapshot(session_id)
+            manifest_id, packages_id = await self._snapshot(session_id)
             ledger_seq = await store.ledger_seq(session_id)
             head = await store.head(session_id)
             event_id = manager.current_head().event_id
-            if head is not None and (head.event_id, head.manifest_id, head.ledger_seq) == (
-                event_id, manifest_id, ledger_seq,
+            if head is not None and (head.event_id, head.manifest_id, head.packages_id, head.ledger_seq) == (
+                event_id, manifest_id, packages_id, ledger_seq,
             ):
                 return head
             if head is None and event_id == 0:
                 return None
-            return await self._commit(store, manager, session_id, head, CheckpointKind.STEP, manifest_id, ledger_seq)
+            return await self._commit(
+                store, manager, session_id, head, CheckpointKind.STEP, manifest_id, ledger_seq, packages_id,
+            )
 
     # ------------------------------------------------------------- internals
 
@@ -667,31 +727,49 @@ class RecoverableHarness:
         records = [
             r for r in await self._checkpoints().records(session_id)
             if r.seq > target.ledger_seq and not r.abandoned and r.reverses is None
-            and r.category != EffectCategory.NONE  # Background launches: their processes are stopped instead.
         ]
         effects = []
         for record in sorted(records, key=lambda r: r.seq, reverse=True):
-            detail = record.detail or record.error or ""
-            if record.category == EffectCategory.RETAINED:
-                action = EffectAction.RETAINED
-            elif record.category == EffectCategory.IRREVERSIBLE:
-                action = EffectAction.IRREVERSIBLE
-            elif record.status == EffectStatus.FAILED and record.undo_args is not None:
-                action = EffectAction.REVIEW
-                detail = f"the call failed ({record.error or 'no detail'}); its undo was written for a success"
-            elif record.status != EffectStatus.SUCCEEDED:
-                action = EffectAction.UNKNOWN
-                detail = detail or "the call never reported an outcome"
-            elif record.undo_args is None:
-                action = EffectAction.CANNOT_UNDO
-                detail = "the call result or arguments lacked what the undo needs"
-            else:
-                action = EffectAction.UNDO
-            effects.append(PlannedEffect(
-                record_id=record.record_id, tool_name=record.tool_name, args_summary=record.args_summary,
-                action=action, undo_tool=record.undo_tool, undo_args=record.undo_args, detail=detail,
-            ))
+            if record.category != EffectCategory.NONE:  # A background launch alone: its process is stopped instead.
+                effects.append(self._planned_effect(record))
+            # The harness's own undo of global installs runs after the model's reverse command.
+            if record.generated_undo:
+                effects.append(PlannedEffect(
+                    record_id=f"{record.record_id}:global", tool_name=f"{record.tool_name} (global packages)",
+                    args_summary=record.generated_undo, action=EffectAction.UNDO, undo_tool=SHELL_TOOL,
+                    undo_args={"command": record.generated_undo},
+                ))
+            if record.generated_cannot:
+                effects.append(PlannedEffect(
+                    record_id=f"{record.record_id}:global-cannot", tool_name=f"{record.tool_name} (global packages)",
+                    args_summary="; ".join(record.generated_cannot), action=EffectAction.CANNOT_UNDO,
+                    detail="the old version cannot be installed again",
+                ))
         return effects
+
+    @staticmethod
+    def _planned_effect(record: LedgerRecord) -> PlannedEffect:
+        """What a rollback does about one record's own effect."""
+        detail = record.detail or record.error or ""
+        if record.category == EffectCategory.RETAINED:
+            action = EffectAction.RETAINED
+        elif record.category == EffectCategory.IRREVERSIBLE:
+            action = EffectAction.IRREVERSIBLE
+        elif record.status == EffectStatus.FAILED and record.undo_args is not None:
+            action = EffectAction.REVIEW
+            detail = f"the call failed ({record.error or 'no detail'}); its undo was written for a success"
+        elif record.status != EffectStatus.SUCCEEDED:
+            action = EffectAction.UNKNOWN
+            detail = detail or "the call never reported an outcome"
+        elif record.undo_args is None:
+            action = EffectAction.CANNOT_UNDO
+            detail = "the call result or arguments lacked what the undo needs"
+        else:
+            action = EffectAction.UNDO
+        return PlannedEffect(
+            record_id=record.record_id, tool_name=record.tool_name, args_summary=record.args_summary,
+            action=action, undo_tool=record.undo_tool, undo_args=record.undo_args, detail=detail,
+        )
 
     @staticmethod
     def _apply_choices(effects: list[PlannedEffect], approval: RollbackApproval) -> list[PlannedEffect]:
@@ -847,9 +925,12 @@ class RecoverableHarness:
                     await store.put_record(record.model_copy(update={"abandoned": True}))
 
     @staticmethod
-    def _status(effects: list[PlannedEffect], unrestored: list[str]) -> RollbackStatus:
+    def _status(
+        effects: list[PlannedEffect], unrestored: list[str], packages: list[PackageChangeInfo],
+    ) -> RollbackStatus:
         unfinished = any(e.outcome in (EffectOutcome.FAILED, EffectOutcome.PENDING) for e in effects)
-        return RollbackStatus.PARTIAL if unfinished or unrestored else RollbackStatus.COMPLETED
+        failed_envs = any(change.error for change in packages)
+        return RollbackStatus.PARTIAL if unfinished or unrestored or failed_envs else RollbackStatus.COMPLETED
 
     async def _partial_plan(self, plan_id: str) -> RollbackPlan:
         plan = await self._checkpoints().get_plan(plan_id)
@@ -913,9 +994,10 @@ class RecoverableHarness:
         deep_agent.clear_state(session)
         await self._append_note(session, context_engine, pending.notes)
         manifest_id = pending.manifest_id if pending.manifest_id is not None else target.manifest_id
+        packages_id = pending.packages_id if pending.packages_id is not None else target.packages_id
         await self._commit(
             store, manager, session_id, target, CheckpointKind.ROLLBACK, manifest_id,
-            await store.ledger_seq(session_id),
+            await store.ledger_seq(session_id), packages_id,
         )
         await store.clear_pending(session_id)
         logger.info("rollback written back: session=%s target=#%s", session_id, target.seq)
@@ -946,12 +1028,22 @@ class RecoverableHarness:
         if files.baseline is not None:
             await files.baseline
         if files.manifest is None:
-            head = await self._checkpoints().head(session_id)
-            loaded = await self._load_manifest(session_id, head.manifest_id) if head is not None else None
-            if loaded is not None:
-                files.manifest, files.depth = loaded
-                files.manifest_id = head.manifest_id
+            await self._load_head_files(session_id, files)
         return files
+
+    async def _load_head_files(self, session_id: str, files: _Files) -> bool:
+        """Load HEAD's manifest and package lists into ``files``; False when HEAD has no manifest."""
+        store = self._checkpoints()
+        head = await store.head(session_id)
+        loaded = await self._load_manifest(session_id, head.manifest_id) if head is not None else None
+        if loaded is None:
+            return False
+        files.manifest, files.depth = loaded
+        files.manifest_id = head.manifest_id
+        if head.packages_id is not None:
+            files.packages = await store.get_packages(session_id, head.packages_id)
+            files.packages_id = head.packages_id if files.packages is not None else None
+        return True
 
     async def _prepare_files(self, session_id: str) -> None:
         """Load the session's latest manifest, or start its first snapshot in the background."""
@@ -960,13 +1052,10 @@ class RecoverableHarness:
         files = self._files.setdefault(session_id, _Files())
         if files.manifest is not None or files.baseline is not None:
             return
-        head = await self._checkpoints().head(session_id)
-        loaded = await self._load_manifest(session_id, head.manifest_id) if head is not None else None
-        if loaded is not None:
-            files.manifest, files.depth = loaded
-            files.manifest_id = head.manifest_id
+        if await self._load_head_files(session_id, files):
             return
         files.manifest_id, files.depth = uuid.uuid4().hex, 0
+        files.packages_id = uuid.uuid4().hex
         files.baseline = asyncio.create_task(self._baseline(session_id, files))
 
     async def _baseline(self, session_id: str, files: _Files) -> None:
@@ -978,6 +1067,7 @@ class RecoverableHarness:
             manifest = await asyncio.to_thread(workspace.scan, seed)
             await store.put_manifest(session_id, ManifestRecord.build(files.manifest_id, manifest, None))
             files.manifest = manifest
+            await self._snapshot_packages(session_id, files, manifest.dependency_dirs)
             await store.put_workspace_scan(self._workspace_key, ManifestRecord.build("scan", manifest, None))
             if manifest.skipped():
                 logger.warning(
@@ -986,26 +1076,94 @@ class RecoverableHarness:
                 )
         except Exception:  # The agent keeps working; checkpoints just lack this snapshot.
             logger.exception("recoverable: first workspace snapshot of session %s failed", session_id)
-            files.manifest, files.manifest_id = None, None
+            files.manifest, files.manifest_id, files.packages, files.packages_id = None, None, None, None
         finally:
             files.baseline = None
 
-    async def _snapshot(self, session_id: str) -> str | None:
-        """Scan the workspace and store a manifest when its content changed; return the current id."""
+    async def _snapshot(self, session_id: str) -> tuple[str | None, str | None]:
+        """Scan the workspace; store a manifest and package lists that changed. Return their ids."""
         if self._workspace is None:
-            return None
+            return None, None
         files = self._files.setdefault(session_id, _Files())
         if files.baseline is not None:
-            return files.manifest_id  # Nothing ran yet that could change files; tools wait for it.
+            # Nothing ran yet that could change files; tools wait for it.
+            return files.manifest_id, files.packages_id
         manifest = await asyncio.to_thread(self._workspace.scan, files.manifest)
+        packages_id = await self._snapshot_packages(session_id, files, manifest.dependency_dirs)
         if files.manifest is not None and files.manifest_id is not None and manifest.same_content(files.manifest):
             files.manifest = manifest
-            return files.manifest_id
+            return files.manifest_id, packages_id
         base = (files.manifest_id, files.depth, files.manifest) if files.manifest_id and files.manifest else None
         record = ManifestRecord.build(uuid.uuid4().hex, manifest, base)
         await self._checkpoints().put_manifest(session_id, record)
         files.manifest, files.manifest_id, files.depth = manifest, record.manifest_id, record.depth
-        return record.manifest_id
+        return record.manifest_id, packages_id
+
+    def _environments(self, dependency_dirs: list[str]) -> list[str]:
+        """The dependency directories that are environments whose packages can be listed."""
+        return sorted(d for d in dependency_dirs if env_kind(self._workspace.root / d) is not None)
+
+    async def _snapshot_packages(self, session_id: str, files: _Files, dependency_dirs: list[str]) -> str | None:
+        """Re-list the environments whose fingerprint changed; store the lists when they differ."""
+        root = self._workspace.root
+        envs = self._environments(dependency_dirs)
+        prints = await asyncio.to_thread(lambda: {env: fingerprint(root / env) for env in envs})
+        if files.packages is not None and prints == files.fingerprints:
+            return files.packages_id
+        stale = [env for env in envs if files.packages is None or env not in files.packages
+                 or prints[env] != files.fingerprints.get(env)]
+        listed = await asyncio.to_thread(lambda: {env: list_packages(root / env) for env in stale})
+        packages = {env: listed[env] if env in listed else files.packages[env] for env in envs}
+        files.fingerprints = prints
+        if files.packages is not None and files.packages_id is not None and packages == files.packages:
+            return files.packages_id
+        packages_id = files.packages_id if files.packages is None and files.packages_id else uuid.uuid4().hex
+        await self._checkpoints().put_packages(session_id, packages_id, packages)
+        files.packages, files.packages_id = packages, packages_id
+        return packages_id
+
+    async def _package_changes(
+        self, session_id: str, target: Checkpoint, files: _Files | None,
+    ) -> tuple[list[PackageChangeInfo], list[str]]:
+        """What differs from the target's package lists, and environments created after it."""
+        if self._workspace is None or target.packages_id is None:
+            return [], []
+        wanted = await self._checkpoints().get_packages(session_id, target.packages_id)
+        if wanted is None:
+            return [], []
+        root = self._workspace.root
+        manifest = await asyncio.to_thread(self._workspace.scan, files.manifest if files else None)
+        envs = self._environments(manifest.dependency_dirs)
+        changes, created = [], [env for env in envs if env not in wanted]
+        for env in sorted(wanted):
+            if env not in envs:
+                changes.append(PackageChangeInfo(env=env, install=wanted[env],
+                                                 error="the environment no longer exists; recreate it by hand"))
+                continue
+            diff = diff_packages(env, await asyncio.to_thread(list_packages, root / env), wanted[env])
+            if diff.remove or diff.install:
+                changes.append(PackageChangeInfo(env=env, remove=diff.remove, install=diff.install))
+        return changes, created
+
+    async def _restore_dependencies(self, session_id: str, target: Checkpoint) -> list[PackageChangeInfo]:
+        """Bring every dependency environment back to the target's list; delete environments made after it."""
+        files = await self._files_ready(session_id)
+        changes, created = await self._package_changes(session_id, target, files)
+        root = self._workspace.root if self._workspace is not None else None
+        done = []
+        for env in created:
+            await asyncio.to_thread(shutil.rmtree, root / env, True)
+            done.append(PackageChangeInfo(env=env, remove=["(the whole environment)"]))
+        for change in changes:
+            if change.error is None:
+                step = PackageChange(env=change.env, remove=change.remove, install=change.install)
+                change = change.model_copy(update={"error": await asyncio.to_thread(restore_environment, root, step)})
+            done.append(change)
+        if files is not None and done:
+            manifest = await asyncio.to_thread(self._workspace.scan, files.manifest)
+            files.fingerprints = {"": "changed"}  # Matches no real fingerprint: re-list every environment.
+            await self._snapshot_packages(session_id, files, manifest.dependency_dirs)
+        return done
 
     async def _restore_workspace(self, session_id: str, target: Checkpoint) -> tuple[RestoreReport | None, str | None]:
         """Make the workspace match ``target``; return the report and the manifest id afterwards."""
@@ -1045,6 +1203,7 @@ class RecoverableHarness:
         kind: CheckpointKind,
         manifest_id: str | None,
         ledger_seq: int,
+        packages_id: str | None,
     ) -> Checkpoint:
         commit_id = await manager.commit(kind.value)
         checkpoint = Checkpoint(
@@ -1055,6 +1214,7 @@ class RecoverableHarness:
             commit_id=commit_id,
             event_id=manager.current_head().event_id,
             manifest_id=manifest_id,
+            packages_id=packages_id,
             ledger_seq=ledger_seq,
             kind=kind,
         )
