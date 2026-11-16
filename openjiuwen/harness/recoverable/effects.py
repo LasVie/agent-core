@@ -230,24 +230,36 @@ def declaration_schema(language: str) -> dict[str, dict[str, Any]]:
     """JSON-schema properties the model fills to declare a shell or code call."""
     if language == "en":
         texts = (
-            "What this call changes OUTSIDE the workspace. Workspace files, installed dependencies and the "
-            "files listed in external_paths are restored by rollback, so changing only them is 'none'. "
-            "'reversible': it only CREATES something outside (a container, a cloud resource, a scheduled job) "
-            "and reverse_command removes it. 'irreversible': it sends, publishes, deploys, or overwrites or "
-            "deletes anything else outside.",
-            "For 'reversible' only: the shell command that removes what this call created, for example "
-            "`docker rm -f db` for `docker run -d --name db postgres`.",
-            "Absolute paths OUTSIDE the workspace that this call creates, changes or deletes, for example "
-            "~/.zshrc. They are backed up before the call and put back on rollback. Empty if none.",
+            "What this call leaves OUTSIDE the workspace. Take the first that fits. "
+            "1) 'none': it only reads; or it only changes the workspace (its files, git commits, dependencies in "
+            "its .venv or node_modules); or it only changes local files you list in external_paths. Rollback "
+            "restores all of these by itself: do not pick 'reversible' just because the change could be undone. "
+            "2) 'reversible': it CREATES a separate thing, locally or remotely (a container, a namespace, a cloud "
+            "resource, a remote repository, a scheduled job), and reverse_command deletes it. "
+            "3) 'irreversible': anything else, such as sending, pushing (git push), publishing, deploying, or "
+            "changing or deleting something that already exists in a remote service, database or cloud.",
+            "Required when side_effect is 'reversible', empty otherwise: one command that deletes what this call "
+            "created, for example `docker rm -f db` for `docker run -d --name db postgres`, or "
+            "`gh repo delete x --yes` for `gh repo create x`.",
+            "Paths on this machine OUTSIDE the workspace that this call writes, appends to, copies to or deletes, "
+            "for example ~/.zshrc or ~/.config/app/. They are backed up before the call and put back on rollback, "
+            "so a call that only changes them is 'none' and needs no reverse_command. Empty if none.",
         )
     else:
         texts = (
-            "这次调用对工作区以外的影响。工作区里的文件、安装的依赖和 external_paths 里列出的文件回退时会自动恢复，"
-            "只改它们填 none。reversible：只在工作区外新建了东西（容器、云资源、定时任务），并能用 reverse_command 删掉。"
-            "irreversible：会发送、发布、部署，或覆盖、删除工作区外的其他东西。",
-            "仅 reversible 时填写：删掉这次调用新建的东西的 shell 命令，例如 `docker run -d --name db postgres` "
-            "对应 `docker rm -f db`。",
-            "这次调用会新建、修改或删除的工作区以外的绝对路径，例如 ~/.zshrc。执行前会备份，回退时恢复；没有就留空。",
+            "这次调用在工作区以外留下什么。按顺序判断，选第一个符合的："
+            "1) none：只读；或只改工作区里的东西（文件、git 提交、工作区 .venv 或 node_modules 里的依赖）；"
+            "或只改 external_paths 里列出的本机文件。这些回退时会自动恢复，不要因为改动\"能撤销\"就选 reversible。"
+            "2) reversible：在本机或远程新建了一个独立的东西（容器、命名空间、云资源、远程仓库、定时任务），"
+            "并且 reverse_command 能把它删掉。"
+            "3) irreversible：其余一切，例如发送、推送（git push）、发布、部署，"
+            "或修改、删除远程服务、数据库、云上已有的东西。",
+            "side_effect 为 reversible 时必填，其他情况留空：删除这次新建的东西的一条命令，例如 "
+            "`docker run -d --name db postgres` 对应 `docker rm -f db`，"
+            "`gh repo create x` 对应 `gh repo delete x --yes`。",
+            "这次调用会写入、追加、复制到或删除的本机工作区以外的路径，例如 ~/.zshrc、~/.config/app/。"
+            "执行前会自动备份，回退时恢复，所以只改这些路径时 side_effect 填 none，"
+            "也不用写 reverse_command。没有就留空。",
         )
     return {
         SIDE_EFFECT_ARG: {"type": "string", "enum": [c.value for c in (
