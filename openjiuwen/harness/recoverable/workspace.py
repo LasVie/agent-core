@@ -2,11 +2,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Scan a workspace into a manifest, and make the workspace match a manifest again.
 
-Two kinds of directory stay out of the snapshot:
+Three kinds of directory stay out of the snapshot:
 
 - dependency directories, named in ``dependency_dirs`` at any depth;
 - build outputs, named in ``build_output_dirs`` **and** ignored by git, so a
-  ``build/`` that holds sources is still snapshotted. Rollback deletes them.
+  ``build/`` that holds sources is still snapshotted. Rollback deletes them;
+- kept directories, given as paths in ``kept_dirs``, such as the agent's memory.
+  Rollback leaves them alone.
 
 ``.git`` is snapshotted like any other directory and is exempt from the size cap.
 Everything here is synchronous; callers run it in a worker thread.
@@ -80,11 +82,13 @@ class WorkspaceSnapshot:
         *,
         dependency_dirs: frozenset[str] = DEFAULT_DEPENDENCY_DIRS,
         build_output_dirs: frozenset[str] = DEFAULT_BUILD_OUTPUT_DIRS,
+        kept_dirs: frozenset[str] = frozenset(),
     ):
         self.root = root
         self.objects = objects
         self._dependency_dirs = dependency_dirs
         self._build_output_dirs = build_output_dirs
+        self._kept_dirs = kept_dirs
 
     # --------------------------------------------------------------------- scan
 
@@ -108,7 +112,7 @@ class WorkspaceSnapshot:
                 rel = full.relative_to(self.root).as_posix()
                 if full.is_symlink():
                     manifest.entries[rel] = self._link_entry(full)
-                elif name in self._dependency_dirs or rel in ignored:
+                elif name in self._dependency_dirs or rel in ignored or rel in self._kept_dirs:
                     continue
                 else:
                     manifest.entries[rel] = Entry(EntryKind.DIR, mode=full.lstat().st_mode)

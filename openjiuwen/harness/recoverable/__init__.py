@@ -5,6 +5,7 @@
 Design: ``.agents/agent-docs/designs/active/D-20261113-1506-recoverable-harness``.
 """
 
+from openjiuwen.harness.recoverable.effects import EffectCategory, EffectDeclaration
 from openjiuwen.harness.recoverable.harness import (
     DEFAULT_STORAGE_DIR,
     ROLLBACK_NOTE_SOURCE_KIND,
@@ -13,10 +14,14 @@ from openjiuwen.harness.recoverable.harness import (
 from openjiuwen.harness.recoverable.models import (
     Checkpoint,
     CheckpointKind,
+    EffectAction,
+    EffectOutcome,
     Initiator,
+    PlannedEffect,
     RollbackApproval,
     RollbackPlan,
     RollbackResult,
+    RollbackStatus,
 )
 from openjiuwen.harness.recoverable.rail import CheckpointRail
 
@@ -25,10 +30,16 @@ __all__ = [
     "CheckpointKind",
     "CheckpointRail",
     "DEFAULT_STORAGE_DIR",
+    "EffectAction",
+    "EffectCategory",
+    "EffectDeclaration",
+    "EffectOutcome",
     "Initiator",
+    "PlannedEffect",
     "ROLLBACK_NOTE_SOURCE_KIND",
     "RecoverableHarness",
     "RollbackApproval",
     "RollbackPlan",
     "RollbackResult",
+    "RollbackStatus",
 ]

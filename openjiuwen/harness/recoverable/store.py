@@ -19,6 +19,7 @@ from openjiuwen.harness.recoverable.manifest import ManifestRecord
 from openjiuwen.harness.recoverable.models import (
     SCHEMA_VERSION,
     Checkpoint,
+    LedgerRecord,
     PendingRollback,
     RollbackPlan,
 )
@@ -69,6 +70,14 @@ class CheckpointStore:
     @staticmethod
     def _workspace_scan_key(workspace_key: str) -> str:
         return f"{_PREFIX}:workspace:{workspace_key}:scan"
+
+    @staticmethod
+    def _ledger_prefix(session_id: str) -> str:
+        return f"{_PREFIX}:{session_id}:ledger:"
+
+    @staticmethod
+    def _ledger_seq_key(session_id: str) -> str:
+        return f"{_PREFIX}:{session_id}:ledger_seq"
 
     async def get(self, session_id: str, checkpoint_id: str) -> Checkpoint | None:
         return _load(Checkpoint, await self._kv.get(self._checkpoint_key(session_id, checkpoint_id)))
@@ -136,3 +145,23 @@ class CheckpointStore:
 
     async def put_workspace_scan(self, workspace_key: str, record: ManifestRecord) -> None:
         await self._kv.set(self._workspace_scan_key(workspace_key), record.to_json())
+
+    async def ledger_seq(self, session_id: str) -> int:
+        """Highest ``seq`` handed out in the session's side-effect ledger; 0 when empty."""
+        raw = await self._kv.get(self._ledger_seq_key(session_id))
+        return int(raw) if raw is not None else 0
+
+    async def next_ledger_seq(self, session_id: str) -> int:
+        """Reserve the next ``seq``. Callers serialize this per session."""
+        seq = await self.ledger_seq(session_id) + 1
+        await self._kv.set(self._ledger_seq_key(session_id), str(seq))
+        return seq
+
+    async def put_record(self, record: LedgerRecord) -> None:
+        await self._kv.set(f"{self._ledger_prefix(record.session_id)}{record.seq:012d}", record.model_dump_json())
+
+    async def records(self, session_id: str) -> list[LedgerRecord]:
+        """The session's side-effect records in registration order."""
+        raw = await self._kv.get_by_prefix(self._ledger_prefix(session_id))
+        loaded = [_load(LedgerRecord, value) for _, value in sorted(raw.items())]
+        return [record for record in loaded if record is not None]
