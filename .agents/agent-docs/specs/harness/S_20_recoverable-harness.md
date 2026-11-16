@@ -121,10 +121,12 @@ Rail 的事件路由与 priority 规则见 S_04。
     与 `.package-lock.json` 的修改时间，有变化才重读。包列表没变时，新检查点沿用上一个的 `packages_id`。
     从本地路径、压缩包地址或 git 提交装的 Python 包，按 PEP 610 的 `direct_url.json` 连同来源一起记下
     （`<版本> @ <来源>`，可编辑安装为 `<版本> @ editable <地址>`），恢复时从这个来源装回，不按名字去包索引里找：
-    同名的包可能是别人发布的另一个包。
+    同名的包可能是别人发布的另一个包。npm 包同理：不是从仓库压缩包装的（git、本地路径），按 npm 的隐藏锁文件
+    `node_modules/.package-lock.json` 里的 `resolved` 记下来源，本地路径相对项目目录。
 25. **依赖按列表恢复，不管是谁装的。** 回退时在撤销之后、写回文件之前，把每个环境恢复成目标检查点的列表：
     多出来的卸载，少了的或版本不同的安装目标版本。Python 用环境自己的 `pip`，没有时用 `uv pip --python`；
-    Node 只处理 npm 项目，用 `npm uninstall/install --no-save`，不改 `package.json`；pnpm、yarn 项目只报告。
+    Node 只处理 npm 项目：先把目标检查点的 `package.json` 和 `package-lock.json` 写回（npm 即使 `--no-save` 也会按
+    `package.json` 把 Agent 加进去的包再装回来），再用 `npm uninstall/install --no-save` 按列表恢复；pnpm、yarn 项目只报告。
     目标之后新建的环境整个删除；目标时有、现在已不存在的环境只报告。安装或卸载失败的环境记下错误，回退为 `partial`。
 26. **全局安装只撤 Agent 做的。** `bash` 命令里认出 `npm -g`、`brew install/uninstall/upgrade/reinstall`、不在虚拟环境中的
     `pip` / `python -m pip` 时，不论声明什么都进账本，执行前后各取一次全局包列表，比较后生成反向命令

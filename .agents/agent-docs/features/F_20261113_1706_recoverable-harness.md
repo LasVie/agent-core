@@ -336,6 +336,8 @@ U8 新增的做法：
 | 2026-11-16 / U8 测试有效性 | 同上 | 临时分别让客户端不带提示、让 ④ 取不到服务器的卡片、忽略只读提示、让服务器提示先于宿主声明 | 对应用例都失败（分别 3、2、2、1 个），恢复后都通过 | — |
 | 2026-11-16 / V8、V9 实测（pip、uv） | 同上；PyPI 联网；pip 24.0（`venv` 自带）、uv 0.13.8；虚拟环境都在临时目录，"全局 pip"用一个临时虚拟环境代替系统 Python | `RECOVERABLE_REAL_PACKAGES=1 .venv/bin/python -m pytest tests/system_tests/harness/recoverable/test_real_package_managers.py -q -p no:cacheprovider` | 第一次运行发现两个问题（见"实施演进与修订"），修正后 5 个用例通过；单元测试 68 个通过 | npm、pnpm、yarn、brew、conda 本机没有 |
 | 2026-11-16 / V8、V9 修正的测试有效性 | 同上 | 临时分别改回"按名字和版本装回"、改回"把错误输出一起解析" | 对应用例都失败（分别 2、1 个），恢复后都通过 | — |
+| 2026-11-16 / V8、V9 实测（npm） | 同上；Node v26.13.0、npm 11.20.0（官方安装包，SHA256 核对后解压到 `~/.local/node`，未改 PATH）；全局 npm 用临时目录作 `NPM_CONFIG_PREFIX` | `RECOVERABLE_REAL_PACKAGES=1 .venv/bin/python -m pytest tests/system_tests/harness/recoverable/test_real_package_managers.py -q -p no:cacheprovider` | 先手工试出 npm 会按改过的 `package.json` 把卸掉的包装回来；修正后 8 个用例通过（pip/uv 5 个、npm 3 个）；单元测试 69 个通过 | pnpm、yarn 没有测 |
+| 2026-11-16 / npm 修正的测试有效性 | 同上 | 临时分别去掉"先写回 package.json 和锁文件"、去掉 npm 来源 | 对应用例各失败 1 个，恢复后都通过。另试过在按列表恢复前先跑一次不带参数的 `npm install`：去掉它测试照样通过，说明多余，已删除 | — |
 | 2026-11-16 / U6 测试有效性 | 同上 | 临时分别去掉"之后又被改过"的比对、不记调用结束时的内容、去掉与工作区重叠的检查、让恢复什么都不做、去掉大小上限 | 对应用例都失败（分别 1、4、1、5、1 个），恢复后都通过 | — |
 | 2026-11-13 / V4、V7 实测 | 本仓库工作目录（8,527 个文件，218 MB，含 `.git`），APFS | 直接调用 `WorkspaceSnapshot.scan`，各测克隆和复制 | 第一份清单：克隆 2.52 秒、复制 2.24 秒；之后每步扫描约 170 毫秒 | 系统缓存为空时、更大的仓库上没有测。克隆没有更快，因为时间主要花在算指纹 |
 
@@ -436,9 +438,11 @@ U8 新增的做法：
 - **U4 已证明的范围：** `bash` 的逐条声明、对外命令判断、失败命令的确认、反向命令复检、后台进程停止。
 - **U4 未覆盖的：** `code` 工具（同一套逻辑，没有端到端测试）；模型实际会不会认真填写声明（需要真实模型评估）；Windows。
 - **U5 已证明的范围：** 包列表的记录和按列表恢复、新建环境的删除、失败时 `partial`、全局 npm 安装的反向命令，都是在假的包管理器上。
-  2026-11-16 起在真实的 pip、uv 上验证了：装包、升级都会改变指纹，读出的列表正确；按列表卸载和装回指定版本；
-  没有 pip 的 uv 环境用 `uv pip` 恢复；从本地路径、git 提交装的包和可编辑安装按原来源装回；全局 pip 的安装和升级按反向命令撤回。
-- **U5 未覆盖的：** npm、pnpm、yarn、brew、conda（本机没有安装，见下表）；装回已下架的版本。
+  2026-11-16 起在真实的 pip、uv、npm 上验证了：装包、升级都会改变指纹，读出的列表正确；按列表卸载和装回指定版本；
+  没有 pip 的 uv 环境用 `uv pip` 恢复；从本地路径、git 提交装的包和可编辑安装按原来源装回；Agent 用 `npm install`
+  （写进 `package.json`）改过的 npm 项目，回退后 node_modules、`package.json`、`package-lock.json` 都和目标一致；
+  全局 pip、全局 npm 的安装和升级按反向命令撤回。
+- **U5 未覆盖的：** pnpm、yarn、brew、conda（本机没有）；装回已下架的版本。
 - **U6 已证明的范围：** 声明过的工作区外文件和目录的备份与恢复、新建的删除、删除的复原（含权限位）、之后被改过的保留、
   同一文件多次修改的倒序恢复、无法备份时列为不可逆、写回失败与重试。
 - **U6 未覆盖的：** 真实的用户主目录和需要 sudo 的系统路径；`code` 工具；另一个卷上的文件（复制路径）；恢复到一半进程崩溃。
@@ -474,8 +478,7 @@ U8 新增的做法：
 | 模型漏写的工作区外路径 | 已知限制 | 不会备份，回退说明提示"没有声明的工作区外文件没有处理" | 靠声明；无更好办法 |
 | 命令顺带建的上级目录 | 有意取舍 | 声明 `~/.config/new/x` 而 `new/` 原来不存在时，回退只删 `x`，留下空的 `new/` | 让模型声明最上面一级新建的目录 |
 | 工作区外的目录恢复到一半进程崩溃 | 已知限制 | 继续时这个目录既不是备份的样子、也不是调用结束时的样子，会被当成"之后又被改过"而保留并报告，不会被覆盖。单个文件的写回是原子的，没有这个问题 | 需要时在写回前登记意图 |
-| 真实包管理器上的依赖恢复（V8、V9） | 部分验证 | pip、uv 和全局 pip 已在真实环境验证（`tests/system_tests/harness/recoverable/test_real_package_managers.py`，需联网，设 `RECOVERABLE_REAL_PACKAGES=1` 才运行）；本机没有 npm、pnpm、yarn、brew、conda，未验证 | 装好 Node 后补 npm；brew 只能在愿意改动全局环境的机器上测 |
-| npm 包的直接来源 | 未处理 | 从 git、本地路径装的 npm 包，恢复时按名字和版本去 npm 仓库找，可能装错同名的包；Python 已改为按来源装回 | 补 npm 验证时一起处理（`package-lock.json` 的 `resolved`） |
+| 真实包管理器上的依赖恢复（V8、V9） | 部分验证 | pip、uv、npm 和全局 pip、全局 npm 已在真实环境验证（`tests/system_tests/harness/recoverable/test_real_package_managers.py`，需联网，设 `RECOVERABLE_REAL_PACKAGES=1` 才运行；npm 测试找不到 npm 时跳过，本机用的是 `~/.local/node` 下的 Node）；pnpm、yarn、brew、conda 未验证 | brew 只能在愿意改动全局环境的机器上测 |
 | pnpm、yarn、conda 环境 | 未实现 | 记下包列表，恢复时只报告 | 有需要再加 |
 | 全局 `pip` 的识别 | 已知限制 | 按 ④ 所在进程的 `VIRTUAL_ENV` 判断是不是全局；命令里先激活虚拟环境再装包时，前后比较的是全局 pip，差异为空 | 需要时改为解析命令实际用的解释器 |
 | Node 只看顶层包 | 有意取舍 | 嵌套依赖随顶层包一起装卸，不单独记 | — |
@@ -545,3 +548,14 @@ U8 新增的做法：
 - 变化：Python 包按 PEP 610 `direct_url.json` 记下来源，从来源装回（git 地址直接交给 pip，可编辑安装用 `-e`）；
   列包时只解析标准输出，pip 加 `--disable-pip-version-check`。npm 的同类问题还没处理（见"已知遗留"）。
 - 旧结论的效力：从索引安装的包不受影响。
+
+### 2026-11-16 V8、V9 实测（npm）：先写回项目文件，记下 npm 包的来源
+
+- 原结论：npm 项目按列表用 `npm uninstall/install --no-save` 恢复，在恢复文件之前做，按"包名@版本"装回。
+- 新证据：用真实的 npm 试出：恢复依赖时 `package.json` 还是 Agent 改过的样子，`npm install --no-save left-pad@1.1.0`
+  会把 `package.json` 里写着的 `is-odd` 一起装回来。Agent 用 `npm install` 装包默认就会写进 `package.json`，所以这是常见情况。
+  另外 npm 包同样有"按名字装错同名包"的问题。
+- 变化：恢复 npm 项目的依赖前，先从目标检查点的清单把这个项目的 `package.json`、`package-lock.json` 写回，再按列表恢复；
+  文件阶段随后照常恢复所有文件，顺序仍是"先依赖、后文件"。不是从仓库压缩包装的 npm 包按隐藏锁文件里的 `resolved` 记下来源，
+  从来源装回。
+- 旧结论的效力：没有被 Agent 改过 `package.json` 的项目不受影响。
