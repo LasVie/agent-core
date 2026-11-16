@@ -76,6 +76,40 @@ class ObjectStore:
         self._tmp = root / "tmp"
         self._size_cap = size_cap
         self._clones = use_clones
+        self.added_bytes = 0
+        """Size of the objects this instance stored, so the total can be kept without walking the store."""
+
+    @property
+    def root(self) -> Path:
+        return self._root
+
+    def _objects(self):
+        """Every stored object as ``(digest, path, size)``."""
+        if not self._root.is_dir():
+            return
+        for prefix in os.scandir(self._root):
+            if prefix.name == self._tmp.name or not prefix.is_dir(follow_symlinks=False):
+                continue
+            for item in os.scandir(prefix.path):
+                if item.is_file(follow_symlinks=False):
+                    yield prefix.name + item.name, Path(item.path), item.stat(follow_symlinks=False).st_size
+
+    def usage(self) -> int:
+        """Total size of the stored objects. Clones may share blocks, so the disk may hold less."""
+        return sum(size for _, _, size in self._objects())
+
+    def sweep(self, live: set[str]) -> int:
+        """Delete the objects not in ``live``; return the bytes freed.
+
+        Only call it while nothing is being stored: an object stored but not yet
+        referenced by a record would look unused.
+        """
+        freed = 0
+        for digest, path, size in list(self._objects()):
+            if digest not in live:
+                path.unlink(missing_ok=True)
+                freed += size
+        return freed
 
     def path(self, digest: str) -> Path:
         return self._root / digest[:2] / digest[2:]
@@ -102,6 +136,7 @@ class ObjectStore:
                 final.parent.mkdir(parents=True, exist_ok=True)
                 os.chmod(tmp, 0o444)
                 os.replace(tmp, final)
+                self.added_bytes += size
             return digest
         finally:
             tmp.unlink(missing_ok=True)

@@ -337,6 +337,8 @@ class EventKind(str, Enum):
     ROLLBACK_INVALIDATED = "rollback_invalidated"
     ROLLBACK_APPLIED = "rollback_applied"
     ROLLBACK_PARTIAL = "rollback_partial"
+    CHECKPOINTS_DROPPED = "checkpoints_dropped"
+    """The oldest checkpoints were deleted to keep storage under its limits; they are no longer targets."""
 
 
 class RecoverableEvent(BaseModel):

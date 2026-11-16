@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.core.foundation.store.base_kv_store import BaseKVStore
+from openjiuwen.core.session.vcs.constants import VCS_NAMESPACE
 from openjiuwen.harness.recoverable.manifest import ManifestRecord
 from openjiuwen.harness.recoverable.models import (
     SCHEMA_VERSION,
@@ -203,3 +204,41 @@ class CheckpointStore:
         raw = await self._kv.get_by_prefix(self._ledger_prefix(session_id))
         loaded = [_load(LedgerRecord, value) for _, value in sorted(raw.items())]
         return [record for record in loaded if record is not None]
+
+    # ------------------------------------------------------------------ cleanup
+
+    async def workspace_sessions(self, workspace_key: str) -> list[str]:
+        """Sessions whose records reference this workspace's stored file content."""
+        raw = await self._kv.get(f"{_PREFIX}:workspace:{workspace_key}:sessions")
+        return json.loads(raw) if raw is not None else []
+
+    async def set_workspace_sessions(self, workspace_key: str, session_ids: list[str]) -> None:
+        await self._kv.set(f"{_PREFIX}:workspace:{workspace_key}:sessions", json.dumps(sorted(set(session_ids))))
+
+    async def manifests(self, session_id: str) -> dict[str, ManifestRecord]:
+        """Every stored manifest record of the session, by id."""
+        prefix = f"{_PREFIX}:{session_id}:manifest:"
+        raw = await self._kv.get_by_prefix(prefix)
+        return {key[len(prefix):]: ManifestRecord.from_json(value) for key, value in raw.items()}
+
+    async def packages_ids(self, session_id: str) -> list[str]:
+        prefix = f"{_PREFIX}:{session_id}:packages:"
+        return [key[len(prefix):] for key in await self._kv.get_by_prefix(prefix)]
+
+    async def delete_packages(self, session_id: str, packages_ids: list[str]) -> None:
+        if packages_ids:
+            await self._kv.batch_delete([f"{_PREFIX}:{session_id}:packages:{pid}" for pid in packages_ids])
+
+    async def plans(self) -> list[RollbackPlan]:
+        """Every stored rollback plan, of all sessions."""
+        raw = await self._kv.get_by_prefix(f"{_PREFIX}:plan:")
+        return [plan for plan in (_load(RollbackPlan, value) for value in raw.values()) if plan is not None]
+
+    async def delete_plans(self, plan_ids: list[str]) -> None:
+        if plan_ids:
+            await self._kv.batch_delete([self._plan_key(pid) for pid in plan_ids])
+
+    async def delete_session(self, session_id: str) -> None:
+        """Delete every record of the session, its vcs log included."""
+        await self._kv.delete_by_prefix(f"{_PREFIX}:{session_id}:")
+        await self._kv.delete_by_prefix(f"{session_id}:{VCS_NAMESPACE}:")
