@@ -74,26 +74,43 @@ async def test_a_rollback_frees_the_content_only_the_discarded_steps_held(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_over_the_cap_the_oldest_checkpoints_go_first_and_it_is_announced(tmp_path, runner):
+async def test_over_the_cap_the_user_is_told_once_and_prunes_old_checkpoints(tmp_path, runner):
     events = []
     versions = _versions(5, 200 * _KB)
     _, harness, agent = _setup(tmp_path, storage_cap=450 * _KB, on_event=events.append)
-    with scripted(_model(*_writes(versions))):
+    with scripted(_model(*_writes(versions), create_text_response("nothing more"))):
         await run(agent, "edit", "s1")
+        await run(agent, "anything else?", "s1")
 
-    history = await harness.history("s1")
-    # Round start, five step ends, round end. Dropping C0..C3 frees v1..v3 and brings it under 450 KB.
-    assert [c.seq for c in reversed(history)] == [4, 5, 6]
-    assert [_stored(tmp_path, v) for v in versions] == [False, False, False, True, True]
-    dropped = [e for e in events if e.kind == EventKind.CHECKPOINTS_DROPPED]
-    assert len(dropped) == 1 and dropped[0].detail.startswith("4 oldest checkpoint(s) deleted because stored")
+    # Two rounds over the cap: nothing is deleted, and the user is told once.
+    assert [c.seq for c in reversed(await harness.history("s1"))] == list(range(9))
+    assert all(_stored(tmp_path, v) for v in versions)
+    low = [e for e in events if e.kind == EventKind.STORAGE_LOW]
+    assert len(low) == 1 and "over the cap" in low[0].detail and "prune_checkpoints" in low[0].detail
+    assert "over the cap" in (await harness.storage_status()).over_limit
 
-    await _rollback(harness, "s1", 4)
-    assert (tmp_path / "ws" / "a.txt").read_text() == versions[3], "the oldest remaining checkpoint still works"
+    # Keeping the latest 3 (round two's start and end, round one's end) leaves only v5.
+    preview = await harness.prune_checkpoints(3, dry_run=True)
+    assert (preview.checkpoints, preview.freed_bytes) == ({"s1": 6}, 4 * 200 * _KB)
+    assert len(await harness.history("s1")) == 9, "a dry run deletes nothing"
+
+    pruned = await harness.prune_checkpoints(3)
+    assert (pruned.checkpoints, pruned.freed_bytes) == (preview.checkpoints, preview.freed_bytes)
+    assert [c.seq for c in reversed(await harness.history("s1"))] == [6, 7, 8]
+    assert [_stored(tmp_path, v) for v in versions] == [False, False, False, False, True]
+    assert [e.detail for e in events if e.kind == EventKind.CHECKPOINTS_DROPPED] == [
+        "6 oldest checkpoint(s) deleted at the user's request"
+    ]
+    assert (await harness.storage_status()).over_limit is None
+
+    await _rollback(harness, "s1", 6)
+    assert (tmp_path / "ws" / "a.txt").read_text() == versions[4], "the oldest remaining checkpoint still works"
+    with pytest.raises(BaseError):
+        await harness.prune_checkpoints(0)
 
 
 @pytest.mark.asyncio
-async def test_a_nearly_full_disk_keeps_only_the_latest_checkpoint(tmp_path, runner, monkeypatch):
+async def test_a_nearly_full_disk_is_reported_and_nothing_is_deleted(tmp_path, runner, monkeypatch):
     real = shutil.disk_usage
     monkeypatch.setattr(shutil, "disk_usage", lambda path: real(path)._replace(free=real(path).total // 10))
     events = []
@@ -101,11 +118,12 @@ async def test_a_nearly_full_disk_keeps_only_the_latest_checkpoint(tmp_path, run
     with scripted(_model(*_writes(["x", "y"]))):
         await run(agent, "edit", "s1")
 
-    [head] = await harness.history("s1")
-    assert head.seq == 3
-    assert "less than 20% of the disk is free" in next(
-        e.detail for e in events if e.kind == EventKind.CHECKPOINTS_DROPPED
-    )
+    assert len(await harness.history("s1")) == 4
+    [low] = [e for e in events if e.kind == EventKind.STORAGE_LOW]
+    assert low.detail.startswith("less than 20% of the disk is free. Nothing was deleted")
+
+    harness.set_storage_limits(storage_cap=None, min_free_ratio=0.05)  # The user gives rollback more room.
+    assert (await harness.storage_status()).over_limit is None
 
 
 @pytest.mark.asyncio
