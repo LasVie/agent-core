@@ -12,6 +12,7 @@ files:
 - openjiuwen/harness/recoverable/effects.py
 - openjiuwen/harness/recoverable/external.py
 - openjiuwen/harness/recoverable/harness.py
+- openjiuwen/harness/recoverable/lock.py
 - openjiuwen/harness/recoverable/manifest.py
 - openjiuwen/harness/recoverable/models.py
 - openjiuwen/harness/recoverable/objects.py
@@ -28,7 +29,7 @@ files:
 | 项 | 值 |
 |---|---|
 | 类型 | spec |
-| 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py` / `effects.py` / `processes.py` / `dependencies.py` / `external.py`） |
+| 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py` / `effects.py` / `processes.py` / `dependencies.py` / `external.py` / `lock.py`） |
 | 最近一次修订日期 | 2026-11-16 |
 | 关联设计 | D-20261113-1506-recoverable-harness |
 | 关联 feature | F_20261113_1706_recoverable-harness.md |
@@ -146,6 +147,13 @@ Rail 的事件路由与 priority 规则见 S_04。
 32. **检查点和回退都发出事件。** `on_event` 收到：检查点已建立（含 `checkpoint_id`、`seq`、轮次；回退检查点也算）、建立失败；
     回退已接收、已拒绝、等待确认、已作废、已执行、部分完成（`resume_rollback` 的结果同样发出）。
     事件只是通知，事实以检查点库和回退计划为准；监听方出错只记日志。
+33. **同一工作区同一时间只有一个会话开启回退。** 会话第一轮开始时（`BEFORE_INVOKE`）占住工作区，执行或继续回退时也要占住；
+    占住的会话调用 `release_session`，或它所在的进程退出，才释放。被别的会话占住时，本轮不开始、回退不执行，报
+    `DEEPAGENT_RUNTIME_ERROR`。同一进程内按会话 ID 判断；跨进程用存储目录下锁文件上的 `flock`，进程崩溃时由系统释放。
+    沙箱中的工作区不占。没有 `fcntl` 的平台只做进程内的判断。
+34. **本轮开始时的准备失败就不开始本轮。** `BEFORE_INVOKE` 里占住工作区、写回回退、重启后恢复 Session 任何一步失败，
+    `CheckpointRail` 抛出 `AbortError`，调用方收到原来的错误，模型不会被调用。普通回调异常只会被记日志，
+    本轮会在没恢复的上下文上照常运行。待写回的回退保留，下一轮再写。
 
 ## 接口契约
 
@@ -160,6 +168,7 @@ Rail 的事件路由与 priority 规则见 S_04。
 | `request_rollback(RollbackSignal) -> RollbackTicket` | 不变量 29～31。`RollbackSignal` 含 `signal_id`、`session_id`、`target_id`、`initiator`（`human` / `auto`）、`source`、`reason`；回执的 `status` 为 `waiting`、`awaiting_approval`、`rejected`、`invalidated`、`applied`，等待确认时带 `plan_id`，被拒绝或作废时 `detail` 写明原因 |
 | `get_ticket(session_id, signal_id) -> RollbackTicket \| None` | 查询回执；进程退出时还在等待的信号，此时生成计划 |
 | `decline_rollback(plan_id, reason="") -> RollbackPlan` | 人拒绝一份等待确认的计划；计划状态变为 `invalidated`，信号作废 |
+| `release_session(session_id) -> bool` | 不变量 33；宿主在同一进程里关闭一个会话、开始另一个时调用。被释放会话的检查点保留，以后回退它时会重新占住工作区 |
 | `add_declaration_params(deep_agent)` | 不变量 23，`CheckpointRail` 调用 |
 | `resume_rollback(plan_id) -> RollbackResult` / `accept_partial(plan_id) -> RollbackPlan` | 只接受 `partial` 的回退，不变量 21 |
 | `check_workspace(root)` / `bind_workspace(root, *, sandboxed)` | 不变量 8；`CheckpointRail` 在拿到工作区或 sys_operation 时调用。sys_operation 是沙箱模式时不做工作区快照 |
@@ -169,7 +178,7 @@ Rail 的事件路由与 priority 规则见 S_04。
 
 | 事件 | 路由 | callback priority | 做什么 |
 |---|---|---|---|
-| `BEFORE_INVOKE` | 外层 DeepAgent | 10000 | 标记会话运行中；写回待写回的回退或重启后丢失的 Session（不变量 6、7）；会话还没有清单时在后台开始建第一份（不变量 11） |
+| `BEFORE_INVOKE` | 外层 DeepAgent | 10000 | 占住工作区（不变量 33）；标记会话运行中；写回待写回的回退或重启后丢失的 Session（不变量 6、7）；会话还没有清单时在后台开始建第一份（不变量 11） |
 | `BEFORE_MODEL_CALL` | 内层 ReAct | 1 | 建检查点：每轮开始，以及没调工具却继续循环的那一步；有等待中的信号时结束本轮（不变量 30） |
 | `BEFORE_TOOL_CALL` | 内层 ReAct | 1 | 等第一份清单完成；登记意图（不变量 16） |
 | `AFTER_TOOL_CALL` / `ON_TOOL_EXCEPTION` | 内层 ReAct | 1000000 | 补上结果和撤销参数（不变量 17） |
@@ -217,6 +226,7 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 | `RollbackCounts` | `recoverable:{session_id}:counts` | 轮次、本轮被接受的自动信号数、每个目标被接受的自动信号数 |
 | `PendingRollback` | `recoverable:{session_id}:pending` | 目标检查点（为空时只有说明待写入）、恢复后的清单、待写入的回退说明 |
 | vcs 日志 | `{session_id}:vcs:...` | 由 vcs `KvBackend` 维护 |
+| 工作区锁 | 文件 `storage_dir/locks/{工作区键}.lock`，不在 `BaseKVStore` 里 | 占住时写入 `session {session_id}, pid {pid}`，被拒绝的一方在报错里看到 |
 
 清单条目是 `[kind, digest, size, mtime_ns, ino, mode, link]`，`kind` 为 `f`（文件）、`l`（链接）、`d`（目录）、`s`（超过上限未存）。
 工作区键是工作区绝对路径 sha256 的前 16 位。持久化的记录都带 `schema_version`，读到未知版本报 `DEEPAGENT_RUNTIME_ERROR`。

@@ -12,6 +12,7 @@ files:
 - openjiuwen/harness/recoverable/effects.py
 - openjiuwen/harness/recoverable/external.py
 - openjiuwen/harness/recoverable/harness.py
+- openjiuwen/harness/recoverable/lock.py
 - openjiuwen/harness/recoverable/manifest.py
 - openjiuwen/harness/recoverable/models.py
 - openjiuwen/harness/recoverable/objects.py
@@ -23,6 +24,7 @@ files:
 - tests/unit_tests/harness/recoverable/test_external.py
 - tests/unit_tests/harness/recoverable/test_harness.py
 - tests/unit_tests/harness/recoverable/test_ledger.py
+- tests/unit_tests/harness/recoverable/test_lock.py
 - tests/unit_tests/harness/recoverable/test_shell.py
 - tests/unit_tests/harness/recoverable/test_signals.py
 - tests/unit_tests/harness/recoverable/test_workspace.py
@@ -55,8 +57,10 @@ design_note: null
     原来不存在的删除，Agent 之后又被改过的不覆盖、只报告；太大或读不了的不备份，列为不可逆。
   - **U7a 回退信号与事件**：`request_rollback` 接收人或自动发起方的信号；运行中的信号在下一个步骤边界结束本轮，
     本轮结束时生成计划；同一会话只有一个未结信号，人发起的取代自动的；人可以拒绝计划；自动信号的次数上限；检查点和回退事件。
+  - **U7b 一个工作区一个会话**：会话第一轮开始时占住工作区，到 `release_session` 或进程退出为止；
+    别的会话（同一进程或其他进程）开始一轮、执行回退时被拒绝。顺带修正：本轮开始时写回回退失败会中止本轮。
 
-  U7 的其余部分（同一工作区只允许一个会话、总量上限与清理、回退进度记录）和 MCP 提示（U8）尚未实现。
+  U7 的其余部分（总量上限与清理、回退进度记录）和 MCP 提示（U8）尚未实现。
 
 ## 决策归属与关系
 
@@ -202,6 +206,18 @@ U7a 新增的做法：
 - **人拒绝计划：** 新增 `decline_rollback`，计划状态新增 `invalidated`。直接用 `plan_rollback` 做的计划（不经信号）仍可执行，
   用于预览和测试；执行后同一会话其他未结的信号作废。
 
+U7b 新增的做法：
+
+- **新增 `lock.py`。** 进程内记下占住工作区的会话 ID；跨进程在 `storage_dir/locks/<工作区键>.lock` 上加 `flock`，
+  文件里写着占住它的会话和 pid，被拒绝的一方在报错里能看到。`flock` 跟着打开的文件走，同一进程里另一个 harness
+  再打开同一个锁文件也会被拒绝；进程退出（包括崩溃）时系统自动释放，不会留下死锁文件。
+- **什么时候占住：** 会话第一轮的 `BEFORE_INVOKE`，以及 `apply_rollback`、`resume_rollback`。只看计划（`plan_rollback`）不占。
+  沙箱中的工作区不在本机上，不占。
+- **什么时候释放：** 宿主调用 `release_session`，或进程退出。宿主在同一进程里换会话（例如 CLI 开新对话）时要调用它，
+  否则新会话的第一轮会被拒绝。
+- **拒绝怎样传给宿主：** 回调框架只记录普通回调异常的日志，不往外抛，本轮照样运行。所以 `CheckpointRail` 把本轮开始时的
+  失败包成 `AbortError`，调用方收到原来的错误（`DEEPAGENT_RUNTIME_ERROR`），模型不会被调用。
+
 ## 与设计的偏差
 
 | 设计 | 实际 | 原因与影响 |
@@ -243,6 +259,8 @@ U7a 新增的做法：
 | 2026-11-16 / U6：V-11 的一部分 | 同上；真实的 `bash` 工具；用测试目录下的 `outside/` 代替用户主目录，测试代码直接改文件模拟用户 | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable/ tests/unit_tests/harness/test_deep_agent_rail_event_routing.py -q -p no:cacheprovider` | 通过：43 个用例（U1～U5 33 个、U6 7 个、路由契约 3 个）；`tests/unit_tests/harness/prompts/` 83 个用例通过 | 没有在真实的 `~/.zshrc`、需要 sudo 的系统路径上测；root 用户下写回失败的用例跳过 |
 | 2026-11-16 / U7a：V-02、V-05、V-03 的一部分 | 同上；信号由工具在执行中发出，模拟运行中的 JEV | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable/ tests/unit_tests/harness/test_deep_agent_rail_event_routing.py -q -p no:cacheprovider` | 通过：49 个用例（U1～U6 40 个、U7a 6 个、路由契约 3 个） | 停在确认中断上时收到信号、进程在信号等待期间退出，没有测试 |
 | 2026-11-16 / U7a 测试有效性 | 同上 | 临时分别去掉步骤边界的结束、去掉"只有一个未结信号"、去掉次数上限、让每轮都清零计数、不发事件、允许执行作废的计划 | 对应用例都失败（分别 1、2、2、1、1、2 个），恢复后都通过 | — |
+| 2026-11-16 / U7b：V-20 | 同上；另一个进程用 `python -c` 启动，持有同一个锁文件 | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable/ tests/unit_tests/harness/test_deep_agent_rail_event_routing.py -q -p no:cacheprovider` | 通过：52 个用例（U1～U7a 46 个、U7b 3 个、路由契约 3 个）；两个模拟重启的旧用例改为先释放旧会话 | Windows 没有测试 |
+| 2026-11-16 / U7b 测试有效性 | 同上 | 临时分别让占住总是成功、去掉 `flock`、让本轮开始时的异常被吞掉、执行回退时不占住、释放时不关文件 | 对应用例都失败（分别 2、1、3、1、1 个），恢复后都通过 | — |
 | 2026-11-16 / U6 测试有效性 | 同上 | 临时分别去掉"之后又被改过"的比对、不记调用结束时的内容、去掉与工作区重叠的检查、让恢复什么都不做、去掉大小上限 | 对应用例都失败（分别 1、4、1、5、1 个），恢复后都通过 | — |
 | 2026-11-13 / V4、V7 实测 | 本仓库工作目录（8,527 个文件，218 MB，含 `.git`），APFS | 直接调用 `WorkspaceSnapshot.scan`，各测克隆和复制 | 第一份清单：克隆 2.52 秒、复制 2.24 秒；之后每步扫描约 170 毫秒 | 系统缓存为空时、更大的仓库上没有测。克隆没有更快，因为时间主要花在算指纹 |
 
@@ -306,12 +324,17 @@ U7a 新增的做法：
   - 人发起的信号取代未结的自动信号，被取代的计划不能执行；自动信号不能取代人发起的；
   - 同一目标第 3 次自动信号、同一轮超过上限的自动信号被拒绝；新的一轮重新计数；以写回回退开始的一轮继续计数；
   - 事件依次为已接收、等待确认、已执行，以及已接收、已拒绝；检查点事件带 `checkpoint_id`、`seq` 和轮次。
+- **一个工作区一个会话（U7b）：**
+  - s1 跑过一轮后，同一个 Agent 上 s2 的一轮报错"session s1 already has rollback on"，s1 照常运行；
+    `release_session("s2")` 返回 False，释放 s1 后 s2 能运行；这时执行 s1 的回退被拒绝，s1 的历史不变；
+  - 另一个进程持有锁文件时，本轮报错并写出那个进程的 pid；那个进程退出后，本轮正常运行；
+  - 写回回退失败时本轮报错、模型没有被调用；故障消失后下一轮正常写回，模型收到回退后的上下文。
 
 ## 验证结论
 
 - **已证明的范围：** 单轮模式下，检查点在步骤边界建立并能去重；确认后的上下文回退和回退说明；同一进程内和"新 harness + 空 Session"两种情况下的恢复；
   不匹配或已执行过的确认被拒绝；存储在工作区内时被拒绝。
-- **未覆盖的：** 任务循环模式；回退写回失败时本轮报错的路径；正在运行时拒绝回退的路径（`_running` 只在进程内有效）；真实 CLI 的重启流程。
+- **未覆盖的：** 任务循环模式；正在运行时拒绝回退的路径（`_running` 只在进程内有效）；真实 CLI 的重启流程。
 - **U2 已证明的范围：** 本机 APFS 上的工作区快照与恢复，包括上面列出的各种情况。
 - **U2 未覆盖的：** Linux（reflink、inotify 上限都不涉及，但复制路径只是模拟的）、Windows；文件属主和目录权限的恢复；
   写回失败后的重试；回退时有其他进程正在写工作区。
@@ -327,7 +350,9 @@ U7a 新增的做法：
 - **U6 未覆盖的：** 真实的用户主目录和需要 sudo 的系统路径；`code` 工具；另一个卷上的文件（复制路径）；恢复到一半进程崩溃。
 - **U7a 已证明的范围：** 运行中和空闲时的信号、去重、只有一个未结信号、人取代自动、人拒绝、自动次数上限、事件。
 - **U7a 未覆盖的：** 停在确认中断上时收到信号；进程在信号等待期间退出后查询回执；建立检查点失败的事件。
-- **交付判断：** U1～U6、U7a 满足各自范围；整个特性尚未交付。
+- **U7b 已证明的范围：** 同一进程两个会话、两个进程之间的互斥，释放后可以使用，进程退出后锁自动释放；本轮开始时失败会中止本轮。
+- **U7b 未覆盖的：** Windows（只有进程内的判断）；网络文件系统上的 `flock`；CLI 换会话时是否调用 `release_session`。
+- **交付判断：** U1～U6、U7a、U7b 满足各自范围；整个特性尚未交付。
 
 ### 覆盖与资料同步
 
@@ -354,6 +379,8 @@ U7a 新增的做法：
 | 全局 `pip` 的识别 | 已知限制 | 按 ④ 所在进程的 `VIRTUAL_ENV` 判断是不是全局；命令里先激活虚拟环境再装包时，前后比较的是全局 pip，差异为空 | 需要时改为解析命令实际用的解释器 |
 | Node 只看顶层包 | 有意取舍 | 嵌套依赖随顶层包一起装卸，不单独记 | — |
 | 人拒绝 JEV 的计划后，下一轮清零"同一轮"的计数 | 已知限制（需求方 2026-11-16 接受） | JEV 发信号、人拒绝，反复下去不受"同一轮"上限限制；"同一目标"上限仍然有效 | 需要时由宿主标记新需求 |
+| CLI 换会话时释放工作区 | 未接入 | CLI 在同一进程里开新对话时不调用 `release_session` 的话，新会话的第一轮会被拒绝 | 接入 CLI 时处理 |
+| Windows 上跨进程的互斥 | 未实现 | 没有 `fcntl`，只在进程内判断 | 有需要时用 `msvcrt.locking` |
 | 名单以外的对外命令（如 `python deploy.py`） | 已知限制 | 以模型的声明为准，确认时有提示 | 无更好办法，靠声明和名单补漏 |
 | 模型是否认真填写声明 | 未验证 | 没填的按不可逆，回退说明会多出"撤不回"的条目 | 用真实模型评估 |
 | MCP 工具 | 未实现 | 按不可逆处理 | U8（取 MCP 服务器给的提示） |
@@ -386,3 +413,11 @@ U7a 新增的做法：
 
 - 原结论：U2 写回失败不重试，列为遗留。
 - 变化：失败的文件重新扫描后再写一次，仍失败的列为未恢复，回退状态为 `partial`。
+
+### 2026-11-16 U7b：本轮开始时写回失败改为中止本轮
+
+- 原结论：U1 在 `BEFORE_INVOKE` 写回回退或恢复 Session 失败时抛出异常，以为本轮会报错停下（验证结论里列为"未覆盖"）。
+- 新证据：回调框架只记录普通回调异常的日志、不往外抛（`core/runner/callback/framework.py` 的 `trigger`），
+  只有 `AbortError` 会传给调用方。所以写回失败时，本轮其实在没有回退的上下文上照常运行了。
+- 变化：`CheckpointRail.before_invoke` 把失败包成 `AbortError`，调用方收到原来的错误，模型不会被调用；待写回的回退保留，下一轮再写。
+- 旧结论的效力：不再适用。
