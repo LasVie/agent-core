@@ -291,3 +291,29 @@ async def test_a_global_install_by_the_agent_is_reversed(tmp_path, runner, monke
     assert result.status == RollbackStatus.COMPLETED
     assert sorted(p.name for p in global_dir.iterdir()) == ["kept", "typescript"]
     assert (global_dir / "typescript").read_text().strip() == "5.0.0", "the upgrade is undone"
+
+
+def test_a_package_from_a_direct_source_keeps_where_it_came_from(tmp_path):
+    env = tmp_path / ".venv"
+    site = env / "lib" / "python3.11" / "site-packages"
+    site.mkdir(parents=True)
+    (env / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    sources = {
+        "gitpkg": {"url": "https://example.com/r.git", "vcs_info": {"vcs": "git", "commit_id": "abc123"}},
+        "localpkg": {"url": "file:///src/localpkg", "dir_info": {}},
+        "myproject": {"url": "file:///ws", "dir_info": {"editable": True}},
+        "fromindex": None,
+    }
+    for name, source in sources.items():
+        info = site / f"{name}-1.0.dist-info"
+        info.mkdir()
+        (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n")
+        if source is not None:
+            (info / "direct_url.json").write_text(json.dumps(source))
+
+    assert list_packages(env) == {
+        "gitpkg": "1.0 @ git+https://example.com/r.git@abc123",
+        "localpkg": "1.0 @ file:///src/localpkg",
+        "myproject": "1.0 @ editable file:///ws",
+        "fromindex": "1.0",
+    }, "reinstalling by name alone could fetch an unrelated package of the same name from an index"
