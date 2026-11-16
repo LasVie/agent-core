@@ -23,20 +23,21 @@ generated: true
 | [core/context_engine](#module-6) |
 | [core/controller](#module-7) |
 | [core/foundation/llm](#module-8) |
-| [core/foundation/tool/mcp](#module-9) |
-| [core/runner/drunner/dmessage_queue](#module-10) |
-| [core/session](#module-11) |
-| [core/session/vcs](#module-12) |
-| [core/sys_operation](#module-13) |
-| [extensions/a2a](#module-14) |
-| [extensions/observability](#module-15) |
-| [harness](#module-16) |
-| [harness/subagents](#module-17) |
-| [harness/tools/browser_move](#module-18) |
-| [harness/tools/browser_move/decision](#module-19) |
-| [harness/tools/subagent](#module-20) |
-| [harness_providers](#module-21) |
-| [未分类](#module-22) |
+| [core/foundation/tool](#module-9) |
+| [core/foundation/tool/mcp](#module-10) |
+| [core/runner/drunner/dmessage_queue](#module-11) |
+| [core/session](#module-12) |
+| [core/session/vcs](#module-13) |
+| [core/sys_operation](#module-14) |
+| [extensions/a2a](#module-15) |
+| [extensions/observability](#module-16) |
+| [harness](#module-17) |
+| [harness/subagents](#module-18) |
+| [harness/tools/browser_move](#module-19) |
+| [harness/tools/browser_move/decision](#module-20) |
+| [harness/tools/subagent](#module-21) |
+| [harness_providers](#module-22) |
+| [未分类](#module-23) |
 
 <a id="module-1"></a>
 
@@ -341,13 +342,21 @@ generated: true
 
 <a id="module-9"></a>
 
+## core/foundation/tool
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261113_1706_recoverable-harness](features/F_20261113_1706_recoverable-harness.md) | F | Recoverable Harness 实施与决策归档 | Song Haoran | harness, core/foundation/tool | openjiuwen/harness/recoverable/__init__.py, openjiuwen/harness/recoverable/cleanup.py, openjiuwen/harness/recoverable/dependencies.py, openjiuwen/harness/recoverable/effects.py, openjiuwen/harness/recoverable/external.py, openjiuwen/harness/recoverable/harness.py, openjiuwen/harness/recoverable/lock.py, openjiuwen/harness/recoverable/manifest.py, openjiuwen/harness/recoverable/models.py, openjiuwen/harness/recoverable/objects.py, openjiuwen/harness/recoverable/processes.py, openjiuwen/harness/recoverable/rail.py, openjiuwen/harness/recoverable/store.py, openjiuwen/harness/recoverable/workspace.py, tests/unit_tests/harness/recoverable/conftest.py, tests/unit_tests/harness/recoverable/test_cleanup.py, tests/unit_tests/harness/recoverable/test_crash.py, tests/unit_tests/harness/recoverable/test_dependencies.py, tests/unit_tests/harness/recoverable/test_external.py, tests/unit_tests/harness/recoverable/test_harness.py, tests/unit_tests/harness/recoverable/test_ledger.py, tests/unit_tests/harness/recoverable/test_lock.py, tests/unit_tests/harness/recoverable/test_shell.py, tests/unit_tests/harness/recoverable/test_signals.py, tests/unit_tests/harness/recoverable/test_workspace.py, openjiuwen/harness/rails/security/tool_security_rail.py, openjiuwen/core/foundation/tool/mcp/base.py, openjiuwen/core/foundation/tool/mcp/client/stdio_client.py, openjiuwen/core/foundation/tool/mcp/client/sse_client.py, openjiuwen/core/foundation/tool/mcp/client/playwright_client.py, openjiuwen/core/foundation/tool/mcp/client/streamable_http_client.py, tests/unit_tests/harness/recoverable/test_mcp.py, tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py | [D-20261113-1506-recoverable-harness](designs/active/D-20261113-1506-recoverable-harness/design.md) |
+
+<a id="module-10"></a>
+
 ## core/foundation/tool/mcp
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [D-20261113-1506-recoverable-harness](designs/active/D-20261113-1506-recoverable-harness/design.md) | D | Recoverable Harness 步级回退设计方案 | Song Haoran | harness, core/session/vcs, core/foundation/tool/mcp, core/sys_operation | — | — |
 
-<a id="module-10"></a>
+<a id="module-11"></a>
 
 ## core/runner/drunner/dmessage_queue
 
@@ -356,7 +365,7 @@ generated: true
 | [B_20261103_1050_grandocean-review-feedback](bugfix/core_runtime/B_20261103_1050_grandocean-review-feedback.md) | B | grandocean 七项检视意见的兼容性修复 | alan_cheng | openjiuwen/core/session, openjiuwen/core/context_engine, openjiuwen/core/controller, openjiuwen/core/runner/drunner/dmessage_queue, openjiuwen/extensions/a2a | openjiuwen/core/session/session_controller/scope.py, openjiuwen/core/session/session_controller/chain_session.py, openjiuwen/core/session/vcs/models.py, openjiuwen/core/session/vcs/delta.py, openjiuwen/core/session/vcs/adapter.py, openjiuwen/core/context_engine/context_engine.py, openjiuwen/core/controller/modules/intent_recognizer.py, openjiuwen/core/runner/drunner/dmessage_queue/message_serializer.py, openjiuwen/core/runner/runner_config.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_factory.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_fake.py, openjiuwen/extensions/message_queue/message_queue_pulsar.py, openjiuwen/extensions/a2a/a2a_agent_executor.py | 无独立 D：用户明确要求按已有七条检视意见直接开发并补测试，无独立设计文档。 |
 | [S_01_runtime-data-compatibility](specs/core_runtime/S_01_runtime-data-compatibility.md) | S | 运行时身份、持久化与流式结束兼容规约 | alan_cheng | openjiuwen/core/session, openjiuwen/core/context_engine, openjiuwen/core/controller, openjiuwen/core/runner/drunner/dmessage_queue, openjiuwen/extensions/a2a | openjiuwen/core/session/session_controller/scope.py, openjiuwen/core/session/session_controller/chain_session.py, openjiuwen/core/session/vcs/models.py, openjiuwen/core/session/vcs/delta.py, openjiuwen/core/session/vcs/adapter.py, openjiuwen/core/context_engine/context_engine.py, openjiuwen/core/controller/modules/intent_recognizer.py, openjiuwen/core/runner/drunner/dmessage_queue/message_serializer.py, openjiuwen/core/runner/runner_config.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_factory.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_fake.py, openjiuwen/extensions/message_queue/message_queue_pulsar.py, openjiuwen/extensions/a2a/a2a_agent_executor.py | — |
 
-<a id="module-11"></a>
+<a id="module-12"></a>
 
 ## core/session
 
@@ -365,7 +374,7 @@ generated: true
 | [B_20261103_1050_grandocean-review-feedback](bugfix/core_runtime/B_20261103_1050_grandocean-review-feedback.md) | B | grandocean 七项检视意见的兼容性修复 | alan_cheng | openjiuwen/core/session, openjiuwen/core/context_engine, openjiuwen/core/controller, openjiuwen/core/runner/drunner/dmessage_queue, openjiuwen/extensions/a2a | openjiuwen/core/session/session_controller/scope.py, openjiuwen/core/session/session_controller/chain_session.py, openjiuwen/core/session/vcs/models.py, openjiuwen/core/session/vcs/delta.py, openjiuwen/core/session/vcs/adapter.py, openjiuwen/core/context_engine/context_engine.py, openjiuwen/core/controller/modules/intent_recognizer.py, openjiuwen/core/runner/drunner/dmessage_queue/message_serializer.py, openjiuwen/core/runner/runner_config.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_factory.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_fake.py, openjiuwen/extensions/message_queue/message_queue_pulsar.py, openjiuwen/extensions/a2a/a2a_agent_executor.py | 无独立 D：用户明确要求按已有七条检视意见直接开发并补测试，无独立设计文档。 |
 | [S_01_runtime-data-compatibility](specs/core_runtime/S_01_runtime-data-compatibility.md) | S | 运行时身份、持久化与流式结束兼容规约 | alan_cheng | openjiuwen/core/session, openjiuwen/core/context_engine, openjiuwen/core/controller, openjiuwen/core/runner/drunner/dmessage_queue, openjiuwen/extensions/a2a | openjiuwen/core/session/session_controller/scope.py, openjiuwen/core/session/session_controller/chain_session.py, openjiuwen/core/session/vcs/models.py, openjiuwen/core/session/vcs/delta.py, openjiuwen/core/session/vcs/adapter.py, openjiuwen/core/context_engine/context_engine.py, openjiuwen/core/controller/modules/intent_recognizer.py, openjiuwen/core/runner/drunner/dmessage_queue/message_serializer.py, openjiuwen/core/runner/runner_config.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_factory.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_fake.py, openjiuwen/extensions/message_queue/message_queue_pulsar.py, openjiuwen/extensions/a2a/a2a_agent_executor.py | — |
 
-<a id="module-12"></a>
+<a id="module-13"></a>
 
 ## core/session/vcs
 
@@ -373,7 +382,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [D-20261113-1506-recoverable-harness](designs/active/D-20261113-1506-recoverable-harness/design.md) | D | Recoverable Harness 步级回退设计方案 | Song Haoran | harness, core/session/vcs, core/foundation/tool/mcp, core/sys_operation | — | — |
 
-<a id="module-13"></a>
+<a id="module-14"></a>
 
 ## core/sys_operation
 
@@ -383,7 +392,7 @@ generated: true
 | [F_20261104_1720_tool-execution-environment](features/F_20261104_1720_tool-execution-environment.md) | F | 工具执行环境作用域 | alan_cheng | core/sys_operation, harness | openjiuwen/core/sys_operation/execution_environment.py, openjiuwen/core/single_agent/ability_manager.py, openjiuwen/harness/schema/build_context.py, openjiuwen/core/sys_operation/local/shell_operation.py, openjiuwen/core/sys_operation/sandbox/shell_operation.py | 无独立 D：无独立 D；在现有 harness 工具调用与 team 会话存储契约上的小范围扩展。 |
 | [B_20261104_2054_recovered-context-seed-and-execution-environment](bugfix/agent_teams/B_20261104_2054_recovered-context-seed-and-execution-environment.md) | B | 冷恢复后成员策略 seed 与执行环境传递修复 | alan_cheng | agent_teams, core/sys_operation | openjiuwen/agent_teams/agent/team_agent.py, openjiuwen/core/sys_operation/execution_environment.py, openjiuwen/core/sys_operation/sandbox/providers/base_provider.py, openjiuwen/core/sys_operation/sandbox/code_operation.py, openjiuwen/core/sys_operation/local/code_operation.py | 无独立 D：无独立 D；修复 F_20261104_1720_tool-execution-environment / F_20261104_1721_session-execution-settings 在冷恢复与远程调用路径上的遗漏。 |
 
-<a id="module-14"></a>
+<a id="module-15"></a>
 
 ## extensions/a2a
 
@@ -392,7 +401,7 @@ generated: true
 | [B_20261103_1050_grandocean-review-feedback](bugfix/core_runtime/B_20261103_1050_grandocean-review-feedback.md) | B | grandocean 七项检视意见的兼容性修复 | alan_cheng | openjiuwen/core/session, openjiuwen/core/context_engine, openjiuwen/core/controller, openjiuwen/core/runner/drunner/dmessage_queue, openjiuwen/extensions/a2a | openjiuwen/core/session/session_controller/scope.py, openjiuwen/core/session/session_controller/chain_session.py, openjiuwen/core/session/vcs/models.py, openjiuwen/core/session/vcs/delta.py, openjiuwen/core/session/vcs/adapter.py, openjiuwen/core/context_engine/context_engine.py, openjiuwen/core/controller/modules/intent_recognizer.py, openjiuwen/core/runner/drunner/dmessage_queue/message_serializer.py, openjiuwen/core/runner/runner_config.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_factory.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_fake.py, openjiuwen/extensions/message_queue/message_queue_pulsar.py, openjiuwen/extensions/a2a/a2a_agent_executor.py | 无独立 D：用户明确要求按已有七条检视意见直接开发并补测试，无独立设计文档。 |
 | [S_01_runtime-data-compatibility](specs/core_runtime/S_01_runtime-data-compatibility.md) | S | 运行时身份、持久化与流式结束兼容规约 | alan_cheng | openjiuwen/core/session, openjiuwen/core/context_engine, openjiuwen/core/controller, openjiuwen/core/runner/drunner/dmessage_queue, openjiuwen/extensions/a2a | openjiuwen/core/session/session_controller/scope.py, openjiuwen/core/session/session_controller/chain_session.py, openjiuwen/core/session/vcs/models.py, openjiuwen/core/session/vcs/delta.py, openjiuwen/core/session/vcs/adapter.py, openjiuwen/core/context_engine/context_engine.py, openjiuwen/core/controller/modules/intent_recognizer.py, openjiuwen/core/runner/drunner/dmessage_queue/message_serializer.py, openjiuwen/core/runner/runner_config.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_factory.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_fake.py, openjiuwen/extensions/message_queue/message_queue_pulsar.py, openjiuwen/extensions/a2a/a2a_agent_executor.py | — |
 
-<a id="module-15"></a>
+<a id="module-16"></a>
 
 ## extensions/observability
 
@@ -405,7 +414,7 @@ generated: true
 | [F_20261112_1120_goal-assessment-isolation](features/F_20261112_1120_goal-assessment-isolation.md) | F | Goal 评估调用的观测隔离实施 | alan_cheng | core/foundation/llm, extensions/observability, harness, agent_evolving/trajectory | openjiuwen/core/foundation/llm/call_scope.py, openjiuwen/extensions/observability/callback_handler.py, openjiuwen/extensions/observability/semconv.py, openjiuwen/extensions/observability/trajectory_events.py, openjiuwen/harness/rails/task_completion_rail.py, openjiuwen/harness/observability/rail.py, openjiuwen/agent_evolving/trajectory/messages.py, openjiuwen/agent_evolving/trajectory/spans.py | [D-20261112-1120-goal-assessment-isolation](designs/active/D-20261112-1120-goal-assessment-isolation/design.md) |
 | [B_20261102_1120_avatar-child-session-trace-root](bugfix/agent_teams/B_20261102_1120_avatar-child-session-trace-root.md) | B | Swarmflow avatar child session 找不到 Team 轨迹 root | wangcan103 | openjiuwen/agent_teams/workflow, openjiuwen/extensions/observability | openjiuwen/agent_teams/workflow/backends/avatar_session_backend.py, openjiuwen/extensions/observability/span_context.py, tests/unit_tests/agent_teams/workflow/test_avatar_session_backend.py, tests/unit_tests/extensions/observability/test_span_context.py | 无独立 D：普通缺陷修复；沿用 S_18 的 session 隔离契约，无独立设计 |
 
-<a id="module-16"></a>
+<a id="module-17"></a>
 
 ## harness
 
@@ -451,7 +460,7 @@ generated: true
 | [F_20261104_1720_tool-execution-environment](features/F_20261104_1720_tool-execution-environment.md) | F | 工具执行环境作用域 | alan_cheng | core/sys_operation, harness | openjiuwen/core/sys_operation/execution_environment.py, openjiuwen/core/single_agent/ability_manager.py, openjiuwen/harness/schema/build_context.py, openjiuwen/core/sys_operation/local/shell_operation.py, openjiuwen/core/sys_operation/sandbox/shell_operation.py | 无独立 D：无独立 D；在现有 harness 工具调用与 team 会话存储契约上的小范围扩展。 |
 | [F_20261110_1922_team-goal-mode](features/F_20261110_1922_team-goal-mode.md) | F | Team Leader 与成员 Goal 模式实施与决策归档 | alan_cheng | agent_teams, harness | openjiuwen/agent_teams/goal.py, openjiuwen/agent_teams/agent/goal_coordinator.py, openjiuwen/agent_teams/rails/team_goal_rail.py, openjiuwen/agent_teams/rails/elements.py, openjiuwen/agent_teams/harness/native_harness.py, openjiuwen/agent_teams/harness/team_harness.py, openjiuwen/agent_teams/harness/control.py, openjiuwen/agent_teams/harness/state.py, openjiuwen/agent_teams/agent/team_agent.py, openjiuwen/agent_teams/agent/agent_configurator.py, openjiuwen/agent_teams/agent/stream_controller.py, openjiuwen/agent_teams/agent/member_activity.py, openjiuwen/agent_teams/agent/spawn_manager.py, openjiuwen/agent_teams/agent/coordination/handlers/agent_lifecycle.py, openjiuwen/agent_teams/agent/coordination/handlers/team_completion.py, openjiuwen/agent_teams/schema/team.py, openjiuwen/agent_teams/schema/blueprint.py, openjiuwen/agent_teams/tools/member_options.py, openjiuwen/agent_teams/tools/team.py, openjiuwen/agent_teams/tools/tool_member.py, openjiuwen/agent_teams/i18n.py, openjiuwen/harness/rails/task_completion_rail.py, tests/system_tests/agent_swarm/goal/agent_team_goal_mode_e2e.py | [D-20261110-1903-team-goal-mode](designs/active/D-20261110-1903-team-goal-mode/design.md) |
 | [F_20261112_1120_goal-assessment-isolation](features/F_20261112_1120_goal-assessment-isolation.md) | F | Goal 评估调用的观测隔离实施 | alan_cheng | core/foundation/llm, extensions/observability, harness, agent_evolving/trajectory | openjiuwen/core/foundation/llm/call_scope.py, openjiuwen/extensions/observability/callback_handler.py, openjiuwen/extensions/observability/semconv.py, openjiuwen/extensions/observability/trajectory_events.py, openjiuwen/harness/rails/task_completion_rail.py, openjiuwen/harness/observability/rail.py, openjiuwen/agent_evolving/trajectory/messages.py, openjiuwen/agent_evolving/trajectory/spans.py | [D-20261112-1120-goal-assessment-isolation](designs/active/D-20261112-1120-goal-assessment-isolation/design.md) |
-| [F_20261113_1706_recoverable-harness](features/F_20261113_1706_recoverable-harness.md) | F | Recoverable Harness 实施与决策归档 | Song Haoran | harness | openjiuwen/harness/recoverable/__init__.py, openjiuwen/harness/recoverable/cleanup.py, openjiuwen/harness/recoverable/dependencies.py, openjiuwen/harness/recoverable/effects.py, openjiuwen/harness/recoverable/external.py, openjiuwen/harness/recoverable/harness.py, openjiuwen/harness/recoverable/lock.py, openjiuwen/harness/recoverable/manifest.py, openjiuwen/harness/recoverable/models.py, openjiuwen/harness/recoverable/objects.py, openjiuwen/harness/recoverable/processes.py, openjiuwen/harness/recoverable/rail.py, openjiuwen/harness/recoverable/store.py, openjiuwen/harness/recoverable/workspace.py, tests/unit_tests/harness/recoverable/conftest.py, tests/unit_tests/harness/recoverable/test_cleanup.py, tests/unit_tests/harness/recoverable/test_crash.py, tests/unit_tests/harness/recoverable/test_dependencies.py, tests/unit_tests/harness/recoverable/test_external.py, tests/unit_tests/harness/recoverable/test_harness.py, tests/unit_tests/harness/recoverable/test_ledger.py, tests/unit_tests/harness/recoverable/test_lock.py, tests/unit_tests/harness/recoverable/test_shell.py, tests/unit_tests/harness/recoverable/test_signals.py, tests/unit_tests/harness/recoverable/test_workspace.py, openjiuwen/harness/rails/security/tool_security_rail.py | [D-20261113-1506-recoverable-harness](designs/active/D-20261113-1506-recoverable-harness/design.md) |
+| [F_20261113_1706_recoverable-harness](features/F_20261113_1706_recoverable-harness.md) | F | Recoverable Harness 实施与决策归档 | Song Haoran | harness, core/foundation/tool | openjiuwen/harness/recoverable/__init__.py, openjiuwen/harness/recoverable/cleanup.py, openjiuwen/harness/recoverable/dependencies.py, openjiuwen/harness/recoverable/effects.py, openjiuwen/harness/recoverable/external.py, openjiuwen/harness/recoverable/harness.py, openjiuwen/harness/recoverable/lock.py, openjiuwen/harness/recoverable/manifest.py, openjiuwen/harness/recoverable/models.py, openjiuwen/harness/recoverable/objects.py, openjiuwen/harness/recoverable/processes.py, openjiuwen/harness/recoverable/rail.py, openjiuwen/harness/recoverable/store.py, openjiuwen/harness/recoverable/workspace.py, tests/unit_tests/harness/recoverable/conftest.py, tests/unit_tests/harness/recoverable/test_cleanup.py, tests/unit_tests/harness/recoverable/test_crash.py, tests/unit_tests/harness/recoverable/test_dependencies.py, tests/unit_tests/harness/recoverable/test_external.py, tests/unit_tests/harness/recoverable/test_harness.py, tests/unit_tests/harness/recoverable/test_ledger.py, tests/unit_tests/harness/recoverable/test_lock.py, tests/unit_tests/harness/recoverable/test_shell.py, tests/unit_tests/harness/recoverable/test_signals.py, tests/unit_tests/harness/recoverable/test_workspace.py, openjiuwen/harness/rails/security/tool_security_rail.py, openjiuwen/core/foundation/tool/mcp/base.py, openjiuwen/core/foundation/tool/mcp/client/stdio_client.py, openjiuwen/core/foundation/tool/mcp/client/sse_client.py, openjiuwen/core/foundation/tool/mcp/client/playwright_client.py, openjiuwen/core/foundation/tool/mcp/client/streamable_http_client.py, tests/unit_tests/harness/recoverable/test_mcp.py, tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py | [D-20261113-1506-recoverable-harness](designs/active/D-20261113-1506-recoverable-harness/design.md) |
 | [F_20_react-iteration-limit](features/harness/F_20_react-iteration-limit.md) | F | F_20 ReAct 迭代耗尽后的结构化结果 | openJiuwen-bot | openjiuwen/harness | — | 待核实 |
 | [F_21_browser-decision-observation-handoff](features/harness/F_21_browser-decision-observation-handoff.md) | F | Browser decision observation and local handoff | 待确认 | openjiuwen/harness | — | 待核实 |
 | [F_21_cua-desktop-subagent](features/harness/F_21_cua-desktop-subagent.md) | F | cua_agent desktop subagent | kwangyyinc | openjiuwen/harness | — | 待核实 |
@@ -489,7 +498,7 @@ generated: true
 | [S_19_harness-providers](specs/harness/S_19_harness-providers.md) | S | S_19 Harness Providers（协议实现、IO Adapter 与 Manifest 工厂） | alan_cheng | openjiuwen/harness | — | — |
 | [S_20_recoverable-harness](specs/harness/S_20_recoverable-harness.md) | S | S_20 Recoverable Harness（步级检查点与回退） | Song Haoran | harness | openjiuwen/harness/recoverable/__init__.py, openjiuwen/harness/recoverable/cleanup.py, openjiuwen/harness/recoverable/dependencies.py, openjiuwen/harness/recoverable/effects.py, openjiuwen/harness/recoverable/external.py, openjiuwen/harness/recoverable/harness.py, openjiuwen/harness/recoverable/lock.py, openjiuwen/harness/recoverable/manifest.py, openjiuwen/harness/recoverable/models.py, openjiuwen/harness/recoverable/objects.py, openjiuwen/harness/recoverable/processes.py, openjiuwen/harness/recoverable/rail.py, openjiuwen/harness/recoverable/store.py, openjiuwen/harness/recoverable/workspace.py | — |
 
-<a id="module-17"></a>
+<a id="module-18"></a>
 
 ## harness/subagents
 
@@ -498,7 +507,7 @@ generated: true
 | [F_20261029_1852_optional-handoff-and-resume](features/F_20261029_1852_optional-handoff-and-resume.md) | F | Optional browser handoff recovery and invocation-exit lifecycle | ShowHsiang | openjiuwen/harness/subagents, openjiuwen/harness/tools/browser_move | openjiuwen/harness/subagents/browser_agent.py, openjiuwen/harness/tools/browser_move/decision/policy_model.py, openjiuwen/harness/tools/browser_move/playwright_runtime/phase_contract.py, openjiuwen/harness/tools/browser_move/playwright_runtime/runtime.py, openjiuwen/harness/tools/browser_move/controllers/action.py, openjiuwen/harness/tools/browser_move/playwright_runtime/execution_journal.py, openjiuwen/harness/tools/browser_move/playwright_runtime/browser_logging.py, tests/unit_tests/harness/tools/browser_move/test_browser_optional_handoff_recovery.py, tests/unit_tests/harness/tools/browser_move/test_browser_receipt_diagnostics.py, tests/unit_tests/harness/tools/browser_move/test_browser_decision_observation_handoff.py | 无独立 D：Implements the approved consolidated multiversion report section 22 using existing browser contracts. |
 | [B_20261102_1733_browser-pr-contract-review](bugfix/harness/B_20261102_1733_browser-pr-contract-review.md) | B | Browser PR budget and exception contract corrections | ShowHsiang | openjiuwen/harness/subagents, openjiuwen/harness/tools/subagent, openjiuwen/harness/tools/browser_move/decision | openjiuwen/harness/subagents/browser_agent.py, openjiuwen/harness/tools/subagent/task_tool.py, tests/unit_tests/harness/test_deep_agent_terminal_stream.py, tests/unit_tests/harness/tools/browser_move/test_browser_fact_handoff.py, tests/unit_tests/harness/tools/browser_move/test_browser_shared_state_delivery.py, tests/unit_tests/harness/tools/browser_move/test_browser_local_intent_readers.py | 无独立 D：Local corrections to the existing explicit-budget and fact-retention contracts; no new architecture or feature. |
 
-<a id="module-18"></a>
+<a id="module-19"></a>
 
 ## harness/tools/browser_move
 
@@ -506,7 +515,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261029_1852_optional-handoff-and-resume](features/F_20261029_1852_optional-handoff-and-resume.md) | F | Optional browser handoff recovery and invocation-exit lifecycle | ShowHsiang | openjiuwen/harness/subagents, openjiuwen/harness/tools/browser_move | openjiuwen/harness/subagents/browser_agent.py, openjiuwen/harness/tools/browser_move/decision/policy_model.py, openjiuwen/harness/tools/browser_move/playwright_runtime/phase_contract.py, openjiuwen/harness/tools/browser_move/playwright_runtime/runtime.py, openjiuwen/harness/tools/browser_move/controllers/action.py, openjiuwen/harness/tools/browser_move/playwright_runtime/execution_journal.py, openjiuwen/harness/tools/browser_move/playwright_runtime/browser_logging.py, tests/unit_tests/harness/tools/browser_move/test_browser_optional_handoff_recovery.py, tests/unit_tests/harness/tools/browser_move/test_browser_receipt_diagnostics.py, tests/unit_tests/harness/tools/browser_move/test_browser_decision_observation_handoff.py | 无独立 D：Implements the approved consolidated multiversion report section 22 using existing browser contracts. |
 
-<a id="module-19"></a>
+<a id="module-20"></a>
 
 ## harness/tools/browser_move/decision
 
@@ -514,7 +523,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261102_1733_browser-pr-contract-review](bugfix/harness/B_20261102_1733_browser-pr-contract-review.md) | B | Browser PR budget and exception contract corrections | ShowHsiang | openjiuwen/harness/subagents, openjiuwen/harness/tools/subagent, openjiuwen/harness/tools/browser_move/decision | openjiuwen/harness/subagents/browser_agent.py, openjiuwen/harness/tools/subagent/task_tool.py, tests/unit_tests/harness/test_deep_agent_terminal_stream.py, tests/unit_tests/harness/tools/browser_move/test_browser_fact_handoff.py, tests/unit_tests/harness/tools/browser_move/test_browser_shared_state_delivery.py, tests/unit_tests/harness/tools/browser_move/test_browser_local_intent_readers.py | 无独立 D：Local corrections to the existing explicit-budget and fact-retention contracts; no new architecture or feature. |
 
-<a id="module-20"></a>
+<a id="module-21"></a>
 
 ## harness/tools/subagent
 
@@ -522,7 +531,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261102_1733_browser-pr-contract-review](bugfix/harness/B_20261102_1733_browser-pr-contract-review.md) | B | Browser PR budget and exception contract corrections | ShowHsiang | openjiuwen/harness/subagents, openjiuwen/harness/tools/subagent, openjiuwen/harness/tools/browser_move/decision | openjiuwen/harness/subagents/browser_agent.py, openjiuwen/harness/tools/subagent/task_tool.py, tests/unit_tests/harness/test_deep_agent_terminal_stream.py, tests/unit_tests/harness/tools/browser_move/test_browser_fact_handoff.py, tests/unit_tests/harness/tools/browser_move/test_browser_shared_state_delivery.py, tests/unit_tests/harness/tools/browser_move/test_browser_local_intent_readers.py | 无独立 D：Local corrections to the existing explicit-budget and fact-retention contracts; no new architecture or feature. |
 
-<a id="module-21"></a>
+<a id="module-22"></a>
 
 ## harness_providers
 
@@ -530,7 +539,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [D-20261110-1839-leader-external-harness](designs/active/D-20261110-1839-leader-external-harness/design.md) | D | Leader 三方 Harness 插拔设计方案 | alan_cheng | agent_teams, harness_providers | — | — |
 
-<a id="module-22"></a>
+<a id="module-23"></a>
 
 ## 未分类
 

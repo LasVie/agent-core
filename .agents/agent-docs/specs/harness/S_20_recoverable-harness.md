@@ -85,6 +85,8 @@ Rail 的事件路由与 priority 规则见 S_04。
 14. **用文件属性判断变化。** 修改时间、大小、inode、权限位与上次扫描相同，且修改时间早于上次扫描开始前 2 秒，
     才沿用上次的指纹；否则重新读取。保留原修改时间、大小也不变的改写（例如 `cp -p`）在 2 秒以外发生时会漏掉。
 15. **工具的类别来自声明表，shell 和执行代码逐条声明。** 宿主的声明覆盖内置表；两者都没有的工具按不可逆处理。
+    例外是两者都没有的 MCP 工具：它的服务器在 `annotations` 里标了 `readOnlyHint: true` 的按无外部效果，其余按不可逆，
+    原因写进记录。MCP 工具在声明表里用模型看到的名字 `mcp_<服务器>_<工具>`。
     `bash`、`code` 的每次调用由模型在参数里声明：`side_effect`（`none` / `reversible` / `irreversible`）、
     `reverse_command`（`reversible` 时的反向 shell 命令）、`external_paths`（会写的工作区外路径）。
     没有声明的按不可逆；声明为 `none`、但 shell 命令命中对外命令名单（`outward_commands`、`git push`、写请求的 `curl` / `wget`）的，
@@ -232,7 +234,8 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 | 保留 | `write_memory`、`edit_memory`、`coding_memory_write`、`coding_memory_edit` |
 | 可撤销 | `cron_create_job`：用 `cron_delete_job(job_id=result.id)` 撤销 |
 | 逐条声明 | `bash`、`code`（不变量 15） |
-| 不可逆（未列出的工具都是） | 其余 cron 操作、子 Agent 工具、MCP 工具 |
+| 按服务器提示 | 声明表里没有的 MCP 工具：标了 `readOnlyHint` 的无外部效果，其余不可逆 |
+| 不可逆（未列出的工具都是） | 其余 cron 操作、子 Agent 工具 |
 
 同一轮开始前叠加的多次回退，说明按顺序合在一条消息里。
 
@@ -267,3 +270,6 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 - S_09：工作区根目录取自 `Workspace.root_path`。
 - S_08：反向命令的复检用 `PermissionInterruptRail.engine` 的 `evaluate_global_policy_directly`，以及 bash 工具层的注入检查。
 - S_05：`bash`、`code` 工具的参数定义不变，声明参数只加在开启 ④ 的 Agent 的工具卡片上。
+- core 的 MCP 工具卡片：`McpToolCard.annotations`（可选，默认 `None`）保存服务器给的 `ToolAnnotations`，由 stdio、sse、
+  playwright、streamable-http 客户端在 `list_tools` 时填入；模型看到的工具信息不变。Agent 注册的是名为
+  `mcp_<服务器>_<工具>` 的普通卡片，④ 按它的 id 从 `Runner.resource_mgr` 取回服务器列出的卡片。core 中这部分目前没有 spec。

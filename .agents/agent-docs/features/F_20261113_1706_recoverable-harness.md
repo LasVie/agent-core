@@ -6,6 +6,7 @@ author: Song Haoran
 author_email: song.haoran@h-partners.com
 modules:
 - harness
+- core/foundation/tool
 files:
 - openjiuwen/harness/recoverable/__init__.py
 - openjiuwen/harness/recoverable/cleanup.py
@@ -33,6 +34,13 @@ files:
 - tests/unit_tests/harness/recoverable/test_signals.py
 - tests/unit_tests/harness/recoverable/test_workspace.py
 - openjiuwen/harness/rails/security/tool_security_rail.py
+- openjiuwen/core/foundation/tool/mcp/base.py
+- openjiuwen/core/foundation/tool/mcp/client/stdio_client.py
+- openjiuwen/core/foundation/tool/mcp/client/sse_client.py
+- openjiuwen/core/foundation/tool/mcp/client/playwright_client.py
+- openjiuwen/core/foundation/tool/mcp/client/streamable_http_client.py
+- tests/unit_tests/harness/recoverable/test_mcp.py
+- tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py
 designs:
 - D-20261113-1506-recoverable-harness
 design_note: null
@@ -69,7 +77,10 @@ design_note: null
   - **U7d 回退进度记录**：回退按阶段记进度；中途进程崩溃时，会话不能开始新一轮，重启后 `resume_rollback` 从中断处接着做，
     已成功的撤销不重复执行，回退说明只写一次。
 
-  MCP 提示（U8）尚未实现。
+  - **U8 MCP 提示**：core 的 MCP 工具卡片保留服务器给的提示（`annotations`）；声明表里没有的 MCP 工具，服务器标了只读的
+    按无外部效果，其余按不可逆，宿主的声明优先。
+
+  开发单元 U1～U8 都已完成。
 
 ## 决策归属与关系
 
@@ -257,6 +268,18 @@ U7d 新增的做法：
   里记下来自哪个计划，已写过就不再写。原来在回退里删除被丢弃检查点的清单，改由随后的清理处理（U7c），提交阶段少一步。
 - **崩溃发生在提交的最后一步**（计划已定稿、标记还没清除）：下一轮开始时发现计划不是 `applying`，直接清除标记。
 
+U8 新增的做法：
+
+- **core 的改动（增量）：** `McpToolCard` 新增可选字段 `annotations`，默认 `None`；`mcp/base.py` 新增 `mcp_tool_annotations`，
+  把 MCP SDK 的 `ToolAnnotations` 转成字典，没给的提示不放进去；stdio、sse、playwright、streamable-http 四个客户端在
+  `list_tools` 时填入。`tool_info()` 不变，模型看到的内容不变。按设计这部分要由 core 中 MCP 的维护者评审。
+- **④ 怎样拿到提示：** Agent 把 MCP 工具注册成名为 `mcp_<服务器>_<工具>` 的普通 `ToolCard`，提示不在上面；
+  但它的 id（`<服务器 ID>.<服务器名>.<工具>`）就是 `Runner.resource_mgr` 里那个 `MCPTool` 的 id，那个工具的卡片正是客户端列出的
+  `McpToolCard`。所以登记时按名字取 Agent 的卡片，再按 id 取回服务器的卡片。只在声明表里没有这个工具、名字以 `mcp_` 开头时才查。
+- **只用 `readOnlyHint`：** 标了只读的按无外部效果，其余按不可逆。`destructiveHint` 等提示不改变结论：没有撤销工具就撤不回，
+  不论是否"破坏性"。服务器的提示是它对自己的描述，可能不实，所以只作默认值，宿主的声明优先。
+
+
 
 ## 与设计的偏差
 
@@ -308,6 +331,8 @@ U7d 新增的做法：
 | 2026-11-16 / U7c 测试有效性 | 同上 | 临时分别让回退后不清理、把清单记录里出现过的内容都当成还要用、去掉磁盘剩余空间规则、不保留工作区外备份、删除会话时不删记录，以及把"最老的先删"改成"最新的先删" | 对应用例各失败 1 个（不保留备份时是 U6 的"写回失败后继续"用例：备份被清理，重试失败），恢复后都通过 | — |
 | 2026-11-16 / U7d：V-16 | 同上；崩溃用不被任何处理器捕获的异常模拟，重启用同一存储上的新 harness 和新 Agent 模拟 | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable/ tests/unit_tests/harness/test_deep_agent_rail_event_routing.py -q -p no:cacheprovider` | 通过：63 个用例（U1～U7c 54 个、U7d 6 个、路由契约 3 个） | 真实进程被杀死、依赖安装到一半时崩溃没有测 |
 | 2026-11-16 / U7d 测试有效性 | 同上 | 临时分别让回退说明重复写入、去掉新一轮前的检查、让继续时从头做起、在回退执行中仍接受信号 | 对应用例都失败（分别 1、5、1、5 个），恢复后都通过。只按"以 [ROLLBACK] 开头的消息"计数时漏掉了重复的说明（多条说明合在一条消息里），已改为数标记 | — |
+| 2026-11-16 / U8：I-06 | 同上；真实的 stdio MCP 服务器（测试里用 FastMCP 写的脚本，`lookup` 标了只读，`write` 没标） | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable/ tests/unit_tests/harness/test_deep_agent_rail_event_routing.py tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py -q -p no:cacheprovider`；core 回归：`.venv/bin/python -m pytest tests/unit_tests/core/foundation/tool tests/unit_tests/core/runner tests/unit_tests/core/single_agent -q -p no:cacheprovider` | 通过：67 个用例（U1～U7d 60 个、U8 ④ 侧 2 个、core 侧 2 个、路由契约 3 个）；core 回归 973 个通过、3 个跳过 | sse、playwright、streamable-http 客户端没有接真实服务器测，改动与 stdio 相同 |
+| 2026-11-16 / U8 测试有效性 | 同上 | 临时分别让客户端不带提示、让 ④ 取不到服务器的卡片、忽略只读提示、让服务器提示先于宿主声明 | 对应用例都失败（分别 3、2、2、1 个），恢复后都通过 | — |
 | 2026-11-16 / U6 测试有效性 | 同上 | 临时分别去掉"之后又被改过"的比对、不记调用结束时的内容、去掉与工作区重叠的检查、让恢复什么都不做、去掉大小上限 | 对应用例都失败（分别 1、4、1、5、1 个），恢复后都通过 | — |
 | 2026-11-13 / V4、V7 实测 | 本仓库工作目录（8,527 个文件，218 MB，含 `.git`），APFS | 直接调用 `WorkspaceSnapshot.scan`，各测克隆和复制 | 第一份清单：克隆 2.52 秒、复制 2.24 秒；之后每步扫描约 170 毫秒 | 系统缓存为空时、更大的仓库上没有测。克隆没有更快，因为时间主要花在算指纹 |
 
@@ -388,6 +413,11 @@ U7d 新增的做法：
     "was interrupted"、模型没有被调用，新的回退信号被拒绝；`resume_rollback` 之后状态 `completed`，两张工单按 T-2、T-1 各关闭一次，
     文件被删除，HEAD 是目标；下一轮里回退说明只出现一次，并写着"0 written back, 1 deleted"；
   - 撤销工具已执行、记录还没补上时崩溃：继续后这一项记为失败（"check it by hand"），回退为 `partial`，工单没有被再关闭一次。
+- **MCP 工具（U8）**，Agent 通过真实的 stdio MCP 服务器调用：
+  - 服务器列出的卡片带着提示：`lookup` 是 `{"readOnlyHint": true}`，`write` 是 `{"destructiveHint": false}`；模型看到的工具信息里没有提示；
+  - `mcp_notes_lookup` 和 `mcp_notes_write` 都真的执行了（服务器写了日志）；回退计划里只有 `mcp_notes_write`，列为不可逆，
+    原因写着"an MCP tool its server does not mark read-only"，只读的 `lookup` 没进账本；
+  - 宿主在声明表里把 `mcp_notes_write` 写成无外部效果后，计划里没有任何外部效果。
 
 ## 验证结论
 
@@ -415,7 +445,10 @@ U7d 新增的做法：
 - **U7c 未覆盖的：** 多个会话共用一个工作区时的清理（只有删除会话的用例涉及）；上百 GB 时遍历内容目录的耗时；网络文件系统。
 - **U7d 已证明的范围：** 五个位置崩溃后的继续、不重复撤销、说明只写一次且数字准确、崩溃期间拒绝新一轮和新信号、结果未知的撤销只报告。
 - **U7d 未覆盖的：** 真实的进程被杀死（用异常模拟）；依赖安装、文件写回进行到一半时崩溃。
-- **交付判断：** U1～U6、U7a～U7d 满足各自范围；整个特性尚未交付。
+- **U8 已证明的范围：** stdio 客户端带上服务器的提示；④ 按 `readOnlyHint` 给声明表里没有的 MCP 工具定默认类别；宿主声明优先。
+- **U8 未覆盖的：** 其他三种连接方式接真实服务器；服务器提示不实时的后果（只能靠宿主覆盖）。
+- **交付判断：** U1～U8 都满足各自范围。整个特性还不能算交付：真实包管理器（V8、V9）、真实模型是否认真声明、
+  CLI 接入（按 session_id 重新打开会话、换会话时 `release_session`）、停在中断上回退后又收到恢复输入，都还没有验证或处理。
 
 ### 覆盖与资料同步
 
@@ -445,7 +478,8 @@ U7d 新增的做法：
 | Windows 上跨进程的互斥 | 未实现 | 没有 `fcntl`，只在进程内判断 | 有需要时用 `msvcrt.locking` |
 | 名单以外的对外命令（如 `python deploy.py`） | 已知限制 | 以模型的声明为准，确认时有提示 | 无更好办法，靠声明和名单补漏 |
 | 模型是否认真填写声明 | 未验证 | 没填的按不可逆，回退说明会多出"撤不回"的条目 | 用真实模型评估 |
-| MCP 工具 | 未实现 | 按不可逆处理 | U8（取 MCP 服务器给的提示） |
+| MCP 服务器的提示不实 | 已知风险 | 服务器把会写东西的工具标成只读时，这个工具不进账本，回退说明里看不到它 | 宿主在声明表里覆盖；服务器的提示只作默认值 |
+| 其他 MCP 来源 | 未改 | OpenAPI 转成的 MCP 工具（`openapi_client`）没有提示，按不可逆；`harness/tools/browser_move` 自带的两个客户端没有带上提示 | 有需要时同样加上 |
 | "经用户批准过的调用"标记 | 未实现（P7） | 计划里不能标出 | 待 rails 维护者 |
 | 账本的参数摘要可能含密钥 | 已知风险（P20） | 摘要最多 500 字符，存在本机存储里 | 和敏感内容处理一起做 |
 | vcs 里早期的上下文日志不删 | 已知限制 | 被删的老检查点的上下文还留在 vcs 日志里，随会话删除才删 | 需要时给 vcs 加删除前面日志的操作 |
