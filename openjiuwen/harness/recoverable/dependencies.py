@@ -11,7 +11,10 @@ Two kinds of environment are read straight from disk, without running a package
 manager:
 
 - a Python virtual environment (a directory with ``pyvenv.cfg``): the
-  ``*.dist-info`` entries of its ``site-packages``;
+  ``*.dist-info`` entries of its ``site-packages``. A package installed from a
+  local path, an archive URL or a git commit keeps that source (PEP 610
+  ``direct_url.json``) and is reinstalled from it: asking an index for the same
+  name could fetch an unrelated package;
 - a Node ``node_modules`` next to a ``package.json``: the ``package.json`` of each
   top-level package. Only npm projects are restored; pnpm and yarn are reported.
 
@@ -38,7 +41,10 @@ _RUN_TIMEOUT_S = 600
 _LIST_TIMEOUT_S = 60
 
 Packages = dict[str, str]
-"""Package name to version."""
+"""Package name to version. A package installed from a direct source has ``"<version> @ <source>"``,
+where the source is a pip requirement URL, or ``editable <URL>`` for an editable install."""
+_SOURCE = " @ "
+_EDITABLE = "editable "
 
 
 def _normalize(name: str) -> str:
@@ -46,12 +52,22 @@ def _normalize(name: str) -> str:
 
 
 def _run(argv: list[str], cwd: Path | None = None, timeout: int = _RUN_TIMEOUT_S) -> tuple[bool, str]:
+    """Run a command; return whether it succeeded and the tail of its output, for error messages."""
+    ok, stdout, stderr = _capture(argv, cwd, timeout)
+    return ok, (stdout + stderr).strip()[-500:]
+
+
+def _capture(argv: list[str], cwd: Path | None = None, timeout: int = _RUN_TIMEOUT_S) -> tuple[bool, str, str]:
+    """Run a command; return whether it succeeded, its standard output and its error output apart.
+
+    Listings parse the standard output only: package managers print notices,
+    such as a newer version being available, on the error output.
+    """
     try:
         completed = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, str(exc)
-    output = (completed.stdout + completed.stderr).strip()
-    return completed.returncode == 0, output[-500:]
+        return False, "", str(exc)
+    return completed.returncode == 0, completed.stdout, completed.stderr
 
 
 # ---------------------------------------------------------------- environments
@@ -83,6 +99,36 @@ def fingerprint(path: Path) -> str:
     return ",".join(f"{p.stat().st_mtime_ns}" if p.exists() else "-" for p in marks)
 
 
+def _direct_source(dist: metadata.Distribution) -> str | None:
+    """Where a package installed from a path, a URL or a VCS came from (PEP 610); ``None`` for an index install."""
+    try:
+        data = json.loads(dist.read_text("direct_url.json") or "null")
+    except ValueError:
+        return None
+    url = data.get("url") if isinstance(data, dict) else None
+    if not isinstance(url, str):
+        return None
+    vcs = data.get("vcs_info")
+    if isinstance(vcs, dict) and vcs.get("vcs") and vcs.get("commit_id"):
+        return f"{vcs['vcs']}+{url}@{vcs['commit_id']}"
+    dir_info = data.get("dir_info")
+    if isinstance(dir_info, dict) and dir_info.get("editable"):
+        return _EDITABLE + url
+    return url
+
+
+def _requirement(name: str, version: str) -> list[str]:
+    """pip arguments that install ``name`` at ``version``, from its direct source when it has one."""
+    if _SOURCE not in version:
+        return [f"{name}=={version}"]
+    source = version.split(_SOURCE, 1)[1]
+    if source.startswith(_EDITABLE):
+        return ["-e", source[len(_EDITABLE):]]
+    if re.match(r"^[a-z]+\+", source):  # A VCS URL; pip rejects "name @ git+file:///..." but takes it bare.
+        return [source]
+    return [f"{name} @ {source}"]
+
+
 def list_packages(path: Path) -> Packages:
     """What the environment at ``path`` holds, read from disk."""
     kind = env_kind(path)
@@ -91,7 +137,8 @@ def list_packages(path: Path) -> Packages:
         for dist in metadata.distributions(path=[str(p) for p in _site_packages(path)]):
             name = dist.metadata.get("Name")
             if name:
-                packages[_normalize(name)] = dist.version
+                source = _direct_source(dist)
+                packages[_normalize(name)] = dist.version + (_SOURCE + source if source else "")
     elif kind == "node":
         manifests = list(path.glob("*/package.json")) + list(path.glob("@*/*/package.json"))
         for manifest in manifests:
@@ -132,7 +179,7 @@ def _python_steps(path: Path, change: PackageChange) -> list[list[str]] | None:
         python = path / "Scripts" / "python.exe"
     if not python.exists():
         return None
-    installs = [f"{n}=={v}" for n, v in change.install.items()]
+    installs = [arg for n, v in change.install.items() for arg in _requirement(n, v)]
     ok, _ = _run([str(python), "-m", "pip", "--version"], timeout=_LIST_TIMEOUT_S)
     if ok:
         pip = [str(python), "-m", "pip"]
@@ -200,20 +247,21 @@ def global_manager(command: str) -> str | None:
 def list_global(manager: str) -> Packages | None:
     """Globally installed packages of ``manager``; ``None`` when it cannot be listed."""
     if manager == "npm":
-        ok, output = _run(["npm", "ls", "-g", "--depth=0", "--json"], timeout=_LIST_TIMEOUT_S)
+        ok, output, _ = _capture(["npm", "ls", "-g", "--depth=0", "--json"], timeout=_LIST_TIMEOUT_S)
         try:
             deps = json.loads(output).get("dependencies", {}) if output else {}
         except ValueError:
             return None
         return {name: str(info.get("version", "")) for name, info in deps.items()} if ok or deps else None
     if manager == "brew":
-        ok, output = _run(["brew", "list", "--versions"], timeout=_LIST_TIMEOUT_S)
+        ok, output, _ = _capture(["brew", "list", "--versions"], timeout=_LIST_TIMEOUT_S)
         if not ok:
             return None
         return {line.split()[0]: line.split()[-1] for line in output.splitlines() if len(line.split()) >= 2}
     if manager.startswith("pip:"):
         program = shlex.split(manager[4:])
-        ok, output = _run([*program, "list", "--format=json"], timeout=_LIST_TIMEOUT_S)
+        ok, output, _ = _capture([*program, "list", "--format=json", "--disable-pip-version-check"],
+                                 timeout=_LIST_TIMEOUT_S)
         if not ok:
             return None
         try:
