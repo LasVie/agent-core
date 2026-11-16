@@ -98,6 +98,10 @@ class ObjectStore:
         """Total size of the stored objects. Clones may share blocks, so the disk may hold less."""
         return sum(size for _, _, size in self._objects())
 
+    def unused_bytes(self, live: set[str]) -> int:
+        """Size of the objects not in ``live``: what :meth:`sweep` would free."""
+        return sum(size for digest, _, size in self._objects() if digest not in live)
+
     def sweep(self, live: set[str]) -> int:
         """Delete the objects not in ``live``; return the bytes freed.
 

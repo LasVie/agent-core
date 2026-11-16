@@ -19,8 +19,9 @@ the end of its process.
 
 Stored data no rollback can use any more is deleted after each rollback. When
 the stored file content passes ``storage_cap``, or the disk has less than
-``min_free_ratio`` free, the oldest checkpoints of the workspace's sessions are
-deleted at the end of a round.
+``min_free_ratio`` free, a round end tells the user once (``storage_low``) and
+deletes nothing; the user frees space, raises the limit, or deletes old
+checkpoints with :meth:`RecoverableHarness.prune_checkpoints`.
 
 Rollbacks usually arrive as signals (:meth:`RecoverableHarness.request_rollback`).
 A signal received while the agent runs ends the round at the next step boundary;
@@ -47,6 +48,7 @@ rollback as partial.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import inspect
 import json
@@ -114,6 +116,7 @@ from openjiuwen.harness.recoverable.models import (
     PathBackup,
     PendingRollback,
     PlannedEffect,
+    PruneReport,
     RecoverableEvent,
     RollbackApproval,
     RollbackPlan,
@@ -122,6 +125,7 @@ from openjiuwen.harness.recoverable.models import (
     RollbackStatus,
     RollbackTicket,
     SignalStatus,
+    StorageStatus,
 )
 from openjiuwen.harness.recoverable.objects import ObjectStore
 from openjiuwen.harness.recoverable.processes import process_start_time, stop_process_group
@@ -155,6 +159,8 @@ _RECORD_KEY = "_recoverable_ledger_record"
 _GLOBAL_KEY = "_recoverable_global_packages"
 _UNRECORDED = "the side effect of this call could not be recorded, so the call was not run"
 _OPEN = (SignalStatus.WAITING, SignalStatus.AWAITING_APPROVAL)
+_MAINTENANCE = "(maintenance)"
+"""Holds the workspace while old checkpoints are deleted and no session holds it."""
 EventListener = Callable[[RecoverableEvent], Any]
 """Receives checkpoint and rollback events; may be async. Its errors are logged, never raised."""
 
@@ -269,6 +275,16 @@ def _rollback_note(
 
 
 @dataclass
+class _Needs:
+    """What one session still needs from storage."""
+
+    digests: set[str]
+    unneeded_manifests: set[str]
+    packages: set[str]
+    stale_plans: list[RollbackPlan]
+
+
+@dataclass
 class _Files:
     """Workspace snapshot state of one session."""
 
@@ -311,10 +327,10 @@ class RecoverableHarness:
         auto_limit_per_target: Automatic signals accepted per target checkpoint,
             over the session's lifetime.
         auto_limit_per_round: Automatic signals accepted per round.
-        storage_cap: Most file content stored for the workspace, in bytes;
-            ``None`` for no cap. Over it, the oldest checkpoints are deleted.
-        min_free_ratio: Share of the disk to keep free; below it, the oldest
-            checkpoints are deleted too. ``0`` turns this off.
+        storage_cap: File content stored for the workspace, in bytes, above which
+            the user is told; ``None`` for no cap.
+        min_free_ratio: Share of free disk below which the user is told; ``0``
+            turns this off. Nothing is deleted without the user.
     """
 
     def __init__(
@@ -363,6 +379,8 @@ class RecoverableHarness:
         self._stored_bytes: int | None = None
         """Size of the stored file content at the last measurement; objects added since are counted apart."""
         self._registered: set[str] = set()
+        self._storage_low = False
+        """A limit is passed and the user was told; told again only after it clears."""
 
     @property
     def storage_dir(self) -> Path:
@@ -457,6 +475,59 @@ class RecoverableHarness:
                 finally:
                     self._workspace_lock.release(session_id)
         logger.info("recoverable: session %s deleted", session_id)
+
+    async def storage_status(self) -> StorageStatus:
+        """How much the workspace's rollback data takes, the disk's room, and which limit is passed."""
+        root = self._workspace.objects.root if self._workspace is not None else self._storage_dir
+        existing = next(p for p in (root, *root.parents) if p.exists())
+        usage = await asyncio.to_thread(shutil.disk_usage, existing)
+        stored = await self._stored_size()
+        over = None
+        if self._min_free_ratio > 0 and usage.free < usage.total * self._min_free_ratio:
+            over = f"less than {self._min_free_ratio:.0%} of the disk is free"
+        elif self._storage_cap is not None and stored > self._storage_cap:
+            over = f"stored file content takes {stored} bytes, over the cap of {self._storage_cap}"
+        return StorageStatus(stored_bytes=stored, storage_cap=self._storage_cap, disk_free=usage.free,
+                             disk_total=usage.total, min_free_ratio=self._min_free_ratio, over_limit=over)
+
+    def set_storage_limits(self, storage_cap: int | None, min_free_ratio: float) -> None:
+        """Change the storage limits, for example after the user chose to give rollback more room."""
+        self._storage_cap, self._min_free_ratio = storage_cap, min_free_ratio
+
+    async def prune_checkpoints(self, keep_latest: int, *, dry_run: bool = False) -> PruneReport:
+        """Delete all but the latest ``keep_latest`` checkpoints of every session in the workspace.
+
+        With ``dry_run`` nothing is deleted; the report says what would be freed, to
+        show the user before they decide. Deleted checkpoints can no longer be
+        rollback targets.
+
+        Raises:
+            BaseError: ``keep_latest`` is below 1; a round is running; or another
+                process holds the workspace.
+        """
+        if keep_latest < 1:
+            raise build_error(StatusCode.DEEPAGENT_INPUT_PARAM_ERROR, error_msg="keep_latest must be at least 1")
+        if self._workspace is None:
+            return PruneReport(keep_latest=keep_latest, dry_run=dry_run)
+        store = self._checkpoints()
+        chains = {sid: await store.chain(sid) for sid in await store.workspace_sessions(self._workspace_key)}
+        doomed = {sid: chain[keep_latest:] for sid, chain in chains.items() if len(chain) > keep_latest}
+        counts = {sid: len(checkpoints) for sid, checkpoints in doomed.items()}
+        if dry_run:
+            live: set[str] = set()
+            for session_id, chain in chains.items():
+                live |= (await self._session_needs(session_id, chain[:keep_latest])).digests
+            freed = await asyncio.to_thread(self._workspace.objects.unused_bytes, live)
+            return PruneReport(keep_latest=keep_latest, dry_run=True, checkpoints=counts, freed_bytes=freed)
+        async with self._workspace_quiet():
+            for session_id, checkpoints in doomed.items():
+                await store.delete(session_id, [c.checkpoint_id for c in checkpoints])
+            freed = await self._collect_garbage()
+        for session_id, count in counts.items():
+            await self._emit(EventKind.CHECKPOINTS_DROPPED, session_id,
+                             detail=f"{count} oldest checkpoint(s) deleted at the user's request")
+        logger.info("recoverable: pruned to %s checkpoint(s) per session, freed %s bytes", keep_latest, freed)
+        return PruneReport(keep_latest=keep_latest, dry_run=False, checkpoints=counts, freed_bytes=freed)
 
     def _claim(self, session_id: str) -> None:
         """Hold the workspace for ``session_id`` or refuse: a rollback would undo another session's work."""
@@ -816,9 +887,9 @@ class RecoverableHarness:
                 except Exception:  # get_ticket plans it later.
                     logger.exception("recoverable: cannot plan the rollback signal of session %s", session_id)
             try:
-                await self._enforce_limits()
-            except Exception:  # Storage stays over its limits until the next round end.
-                logger.exception("recoverable: cannot free storage after the round of session %s", session_id)
+                await self._check_limits(session_id)
+            except Exception:  # Only a notice; the next round end checks again.
+                logger.exception("recoverable: cannot check the storage limits after session %s", session_id)
 
     async def before_tool(self, session: "Session", ctx: "AgentCallbackContext") -> None:
         """Hold a tool call until the first workspace snapshot exists, then record its intent.
@@ -1101,24 +1172,15 @@ class RecoverableHarness:
             logger.info("recoverable: freed %s bytes of stored file content", freed)
         return freed
 
-    async def _prune_session(self, session_id: str) -> set[str]:
-        """Delete the session's manifests, package lists and plans nothing refers to; return the digests it needs."""
+    async def _session_needs(self, session_id: str, chain: list[Checkpoint]) -> "_Needs":
+        """What the session still needs when ``chain`` is its history. Reads only."""
         store = self._checkpoints()
-        chain = await store.chain(session_id)
         holders = [*chain, await store.get_pending(session_id), self._files.get(session_id)]
         roots = {h.manifest_id for h in holders if h is not None and h.manifest_id is not None}
-        package_roots = {h.packages_id for h in holders if h is not None and h.packages_id is not None}
         records = await store.manifests(session_id)
         needed = reachable_manifests(records, roots)
-        await store.delete_manifests(session_id, sorted(set(records) - needed))
-        await store.delete_packages(session_id, sorted(set(await store.packages_ids(session_id)) - package_roots))
         on_line = {checkpoint.checkpoint_id for checkpoint in chain}
         plans = [plan for plan in await store.plans() if plan.session_id == session_id]
-        stale = [plan for plan in plans if plan.status == RollbackStatus.INVALIDATED or plan.target_id not in on_line]
-        for plan in stale:
-            if plan.status == RollbackStatus.PLANNED:  # Close its signal too, or it would stay open for good.
-                await self._invalidate(plan, "its target checkpoint was deleted to free storage")
-        await store.delete_plans([plan.plan_id for plan in stale])
         retried = {
             effect.record_id.split(":", 1)[0]
             for plan in plans if plan.status == RollbackStatus.PARTIAL and plan.target_id in on_line
@@ -1126,58 +1188,69 @@ class RecoverableHarness:
         }
         floor = chain[-1].ledger_seq if chain else 0
         digests = await asyncio.to_thread(manifest_digests, {mid: records[mid] for mid in needed}, roots)
-        return digests | backup_digests(await store.records(session_id), floor, retried)
+        return _Needs(
+            digests=digests | backup_digests(await store.records(session_id), floor, retried),
+            unneeded_manifests=set(records) - needed,
+            packages={h.packages_id for h in holders if h is not None and h.packages_id is not None},
+            stale_plans=[p for p in plans if p.status == RollbackStatus.INVALIDATED or p.target_id not in on_line],
+        )
 
-    async def _over_limits(self) -> str | None:
-        """Why storage must shrink, or ``None``."""
-        if self._workspace is None:
-            return None
-        objects = self._workspace.objects
-        if self._min_free_ratio > 0:
-            existing = next(p for p in (objects.root, *objects.root.parents) if p.exists())
-            usage = await asyncio.to_thread(shutil.disk_usage, existing)
-            if usage.free < usage.total * self._min_free_ratio:
-                return f"less than {self._min_free_ratio:.0%} of the disk is free"
-        if self._storage_cap is not None:
-            stores = [store for store in (objects, self._outside_objects) if store is not None]
-            if self._stored_bytes is None:
-                self._stored_bytes = await asyncio.to_thread(objects.usage)
-                for store in stores:
-                    store.added_bytes = 0
-            total = self._stored_bytes + sum(store.added_bytes for store in stores)
-            if total > self._storage_cap:
-                return f"stored file content takes {total} bytes, over the cap of {self._storage_cap}"
-        return None
-
-    async def _enforce_limits(self) -> None:
-        """Delete the oldest checkpoints of the workspace's sessions until storage is within its limits.
-
-        A session's latest checkpoint is never deleted. Runs at the end of a round,
-        while this process holds the workspace.
-        """
-        reason = await self._over_limits()
-        if reason is None:
-            return
+    async def _prune_session(self, session_id: str) -> set[str]:
+        """Delete the session's manifests, package lists and plans nothing refers to; return the digests it needs."""
         store = self._checkpoints()
-        dropped: dict[str, int] = {}
-        pending = reason
-        while pending is not None:
-            candidates = []
-            for session_id in await store.workspace_sessions(self._workspace_key):
-                candidates.extend((await store.chain(session_id))[1:])
-            if not candidates:
-                logger.warning("recoverable: %s, and every session is down to its latest checkpoint", pending)
-                break
-            candidates.sort(key=lambda checkpoint: checkpoint.created_at)
-            for checkpoint in candidates[:max(1, len(candidates) // 4)]:
-                await store.delete(checkpoint.session_id, [checkpoint.checkpoint_id])
-                dropped[checkpoint.session_id] = dropped.get(checkpoint.session_id, 0) + 1
-            await self._collect_garbage()
-            pending = await self._over_limits()
-        for session_id, count in dropped.items():
-            detail = f"{count} oldest checkpoint(s) deleted because {reason}; they can no longer be rollback targets"
-            logger.warning("recoverable: session %s: %s", session_id, detail)
-            await self._emit(EventKind.CHECKPOINTS_DROPPED, session_id, detail=detail)
+        needs = await self._session_needs(session_id, await store.chain(session_id))
+        await store.delete_manifests(session_id, sorted(needs.unneeded_manifests))
+        await store.delete_packages(session_id, sorted(set(await store.packages_ids(session_id)) - needs.packages))
+        for plan in needs.stale_plans:
+            if plan.status == RollbackStatus.PLANNED:  # Close its signal too, or it would stay open for good.
+                await self._invalidate(plan, "its target checkpoint was deleted")
+        await store.delete_plans([plan.plan_id for plan in needs.stale_plans])
+        return needs.digests
+
+    async def _stored_size(self) -> int:
+        """Stored file content: measured once, then counted as objects are added, until the next cleanup."""
+        if self._workspace is None:
+            return 0
+        stores = [store for store in (self._workspace.objects, self._outside_objects) if store is not None]
+        if self._stored_bytes is None:
+            self._stored_bytes = await asyncio.to_thread(self._workspace.objects.usage)
+            for store in stores:
+                store.added_bytes = 0
+        return self._stored_bytes + sum(store.added_bytes for store in stores)
+
+    async def _check_limits(self, session_id: str) -> None:
+        """At a round end, tell the user once when storage passes a limit; nothing is deleted."""
+        status = await self.storage_status()
+        if status.over_limit is None:
+            self._storage_low = False
+            return
+        if self._storage_low:
+            return
+        self._storage_low = True
+        detail = (f"{status.over_limit}. Nothing was deleted: free disk space or raise the limit "
+                  "(set_storage_limits), or delete old checkpoints (prune_checkpoints; dry_run=True shows "
+                  "what it frees)")
+        logger.warning("recoverable: %s", detail)
+        await self._emit(EventKind.STORAGE_LOW, session_id, detail=detail)
+
+    @contextlib.asynccontextmanager
+    async def _workspace_quiet(self):
+        """Hold the workspace with no round running, so a cleanup cannot race with stored content."""
+        if self._running:
+            raise build_error(StatusCode.DEEPAGENT_RUNTIME_ERROR,
+                              error_msg="a round is running; delete checkpoints between rounds")
+        lock = self._workspace_lock
+        borrowed = lock is not None and lock.holder is None
+        if borrowed:
+            refusal = lock.claim(_MAINTENANCE)
+            if refusal is not None:
+                raise build_error(StatusCode.DEEPAGENT_RUNTIME_ERROR,
+                                  error_msg=f"checkpoints cannot be deleted now: {refusal}")
+        try:
+            yield
+        finally:
+            if borrowed:
+                lock.release(_MAINTENANCE)
 
     async def _count_round(self, session_id: str, rolled_back: bool) -> None:
         """Start a round in the counts; one that begins by writing back a rollback keeps the automatic count."""

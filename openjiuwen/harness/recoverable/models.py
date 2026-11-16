@@ -337,8 +337,10 @@ class EventKind(str, Enum):
     ROLLBACK_INVALIDATED = "rollback_invalidated"
     ROLLBACK_APPLIED = "rollback_applied"
     ROLLBACK_PARTIAL = "rollback_partial"
+    STORAGE_LOW = "storage_low"
+    """Storage passed a limit. Nothing is deleted: the user frees space, raises the limit or prunes checkpoints."""
     CHECKPOINTS_DROPPED = "checkpoints_dropped"
-    """The oldest checkpoints were deleted to keep storage under its limits; they are no longer targets."""
+    """Old checkpoints were deleted at the user's request; they are no longer rollback targets."""
 
 
 class RecoverableEvent(BaseModel):
@@ -354,3 +356,26 @@ class RecoverableEvent(BaseModel):
     plan_id: str | None = None
     detail: str = ""
     created_at: float = Field(default_factory=time.time)
+
+
+class StorageStatus(BaseModel):
+    """How much room the workspace's rollback data takes, and whether a limit is passed."""
+
+    stored_bytes: int
+    """File content stored for the workspace. Clones share disk blocks, so the disk may hold less."""
+    storage_cap: int | None
+    disk_free: int
+    disk_total: int
+    min_free_ratio: float
+    over_limit: str | None = None
+    """Which limit is passed, or ``None``."""
+
+
+class PruneReport(BaseModel):
+    """What deleting old checkpoints frees, or would free with ``dry_run``."""
+
+    keep_latest: int
+    dry_run: bool
+    checkpoints: dict[str, int] = Field(default_factory=dict)
+    """Checkpoints deleted per session."""
+    freed_bytes: int = 0

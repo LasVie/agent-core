@@ -19,6 +19,7 @@ from openjiuwen.harness.recoverable.models import (
     EventKind,
     Initiator,
     PlannedEffect,
+    PruneReport,
     RecoverableEvent,
     RollbackApproval,
     RollbackPlan,
@@ -27,6 +28,7 @@ from openjiuwen.harness.recoverable.models import (
     RollbackStatus,
     RollbackTicket,
     SignalStatus,
+    StorageStatus,
 )
 from openjiuwen.harness.recoverable.rail import ROLLBACK_RESULT_TYPE, CheckpointRail
 
@@ -42,6 +44,7 @@ __all__ = [
     "EventKind",
     "Initiator",
     "PlannedEffect",
+    "PruneReport",
     "ROLLBACK_NOTE_SOURCE_KIND",
     "ROLLBACK_RESULT_TYPE",
     "RecoverableEvent",
@@ -53,4 +56,5 @@ __all__ = [
     "RollbackStatus",
     "RollbackTicket",
     "SignalStatus",
+    "StorageStatus",
 ]
