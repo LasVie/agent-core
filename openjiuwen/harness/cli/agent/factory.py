@@ -491,6 +491,8 @@ class AgentBackend(Protocol):
 
 def create_agent(
     cfg: CLIConfig,
+    *,
+    recoverable: Any = None,
 ) -> tuple[Any, TokenTrackingRail]:
     """Create a :class:`DeepAgent` and its :class:`TokenTrackingRail`.
 
@@ -518,6 +520,8 @@ def create_agent(
 
     Args:
         cfg: CLI configuration.
+        recoverable: A ``RecoverableHarness`` whose rail checkpoints every
+            step, or ``None``.
 
     Returns:
         ``(agent, tracker)`` tuple.
@@ -542,6 +546,8 @@ def create_agent(
 
     # Build rails list
     rails: list[Any] = [tracker, tool_tracker, fs_rail]
+    if recoverable is not None:  # A RecoverableHarness: checkpoints every step for rollback.
+        rails.append(recoverable.rail())
 
     # --- Interrupt rails ---
     # AskUserRail: intercepts ask_user tool calls and
@@ -662,7 +668,12 @@ def create_agent(
 
 
 class LocalBackend:
-    """Backend that calls the SDK Runner directly."""
+    """Backend that calls the SDK Runner directly.
+
+    With ``cfg.recoverable`` it owns a :class:`RecoverableHarness` that
+    snapshots the working directory (``cfg.cwd``), the directory the agent
+    edits; the REPL's rollback commands use it through :attr:`recoverable`.
+    """
 
     def __init__(self, cfg: CLIConfig) -> None:
         self.cfg = cfg
@@ -670,10 +681,40 @@ class LocalBackend:
         self.tracker: Optional[TokenTrackingRail] = None
         self._session_id: str = f"cli-{uuid4().hex[:8]}"
         self._loaded_extensions: set[str] = set()
+        self.notices: list[str] = []
+        """Messages for the user that arrived outside a turn, such as low storage; the REPL prints them."""
+        self.recoverable: Any = None
+        if cfg.recoverable:
+            from openjiuwen.harness.recoverable import RecoverableHarness
+
+            self.recoverable = RecoverableHarness(workspace_root=cfg.cwd, on_event=self._on_event)
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    def use_session(self, session_id: str) -> None:
+        """Send the next messages to ``session_id``; the current session lets go of the working directory."""
+        if self.recoverable is not None and session_id != self._session_id:
+            self.recoverable.release_session(self._session_id)
+        self._session_id = session_id
+
+    def _on_event(self, event: Any) -> None:
+        from openjiuwen.harness.recoverable import EventKind
+
+        if event.kind == EventKind.STORAGE_LOW:
+            self.notices.append(f"Rollback storage: {event.detail}")
 
     async def start(self) -> None:
         """Create the agent and start the Runner."""
-        self.agent, self.tracker = create_agent(self.cfg)
+        if self.recoverable is not None:
+            from openjiuwen.core.common.exception.errors import BaseError
+
+            try:
+                self.recoverable.check_workspace(self.cfg.cwd)
+            except BaseError as exc:
+                raise ValueError(f"--recoverable cannot be used in {self.cfg.cwd}: {exc}") from exc
+        self.agent, self.tracker = create_agent(self.cfg, recoverable=self.recoverable)
         await Runner.start()
 
     async def stop(self) -> None:

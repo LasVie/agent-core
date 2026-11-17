@@ -74,6 +74,20 @@ class SessionStore:
             created_at=datetime.now(tz=timezone.utc).isoformat(),
         )
 
+    def resume_session(self, session_id: str, model: str) -> None:
+        """Continue a stored session: later messages append to its file; a missing file starts it anew."""
+        path = self.store_dir / f"{session_id}.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self._current = StoredSession(
+                session_id=session_id,
+                model=str(data.get("model") or model),
+                created_at=str(data["created_at"]),
+                messages=[StoredMessage(**m) for m in data.get("messages", [])],
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            self.new_session(session_id, model)
+
     def add_message(self, role: str, content: str) -> None:
         """Append a message to the current session and persist."""
         if self._current is None:

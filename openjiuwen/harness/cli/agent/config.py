@@ -88,6 +88,8 @@ class CLIConfig:
         workspace: Agent workspace directory for rail state
             (memory, todo, skills, etc.).
         verbose: Enable verbose logging.
+        recoverable: Checkpoint every step and allow rollback of the
+            working directory (``chat --recoverable``).
     """
 
     provider: str = "OpenAI"
@@ -100,6 +102,7 @@ class CLIConfig:
     cwd: str = field(default_factory=os.getcwd)
     workspace: str = field(default_factory=_default_workspace)
     verbose: bool = False
+    recoverable: bool = False
 
     def validate(self) -> None:
         """Validate configuration values.
@@ -147,6 +150,7 @@ def load_config(
     server_url: Optional[str] = None,
     workspace: Optional[str] = None,
     verbose: bool = False,
+    recoverable: bool = False,
 ) -> CLIConfig:
     """Build a :class:`CLIConfig` by merging three layers.
 
@@ -162,6 +166,7 @@ def load_config(
         server_url: Override for ``OPENJIUWEN_SERVER_URL``.
         workspace: Override for ``OPENJIUWEN_WORKSPACE``.
         verbose: Enable verbose logging.
+        recoverable: Turn on rollback; ``OPENJIUWEN_RECOVERABLE=1`` does too.
 
     Returns:
         Validated :class:`CLIConfig` instance.
@@ -222,6 +227,7 @@ def load_config(
             or _default_workspace()
         ),
         verbose=verbose,
+        recoverable=recoverable or os.getenv("OPENJIUWEN_RECOVERABLE", "").lower() in ("1", "true", "yes"),
     )
     cfg.validate()
     return cfg

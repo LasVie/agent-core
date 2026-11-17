@@ -9,6 +9,7 @@ Commands:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import sys
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -184,6 +185,8 @@ class CLIOptions:
         remote: Remote agent-server URL.
         verbose: Verbose logging flag.
         workspace: Agent workspace directory.
+        recoverable: Checkpoint every step and allow rollback.
+        resume: Session to continue (needs ``recoverable``).
     """
 
     provider: Optional[str] = None
@@ -193,6 +196,8 @@ class CLIOptions:
     remote: Optional[str] = None
     verbose: bool = False
     workspace: Optional[str] = None
+    recoverable: bool = False
+    resume: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -214,14 +219,25 @@ async def _run_chat(opts: CLIOptions) -> None:
         server_url=opts.remote,
         workspace=opts.workspace,
         verbose=opts.verbose,
+        recoverable=opts.recoverable,
     )
+    if opts.resume and not cfg.recoverable:
+        raise ValueError("--resume needs --recoverable: the context of a session is kept only with rollback on")
 
     backend = create_backend(cfg)
     store = SessionStore()
-    store.new_session(getattr(backend, "_session_id", "cli"), cfg.model)
+    if opts.resume:
+        backend.use_session(opts.resume)
+        store.resume_session(opts.resume, cfg.model)
+    else:
+        store.new_session(getattr(backend, "_session_id", "cli"), cfg.model)
 
     try:
         await backend.start()
+        if opts.resume:
+            from openjiuwen.harness.cli.ui.recoverable_commands import resume_note
+
+            backend.notices.append(await resume_note(backend, opts.resume))
         await run_repl(backend, cfg, store)
     finally:
         await backend.stop()
@@ -293,10 +309,24 @@ def cli(ctx: click.Context, **kwargs: Any) -> None:
 
 
 @cli.command()
+@click.option(
+    "--recoverable",
+    is_flag=True,
+    help="Checkpoint every step so /rollback can return the directory and the conversation to one.",
+)
+@click.option(
+    "--resume",
+    "resume",
+    default=None,
+    metavar="SESSION_ID",
+    help="Continue an earlier session (see /sessions); needs --recoverable.",
+)
 @click.pass_context
-def chat(ctx: click.Context) -> None:
+def chat(ctx: click.Context, recoverable: bool = False, resume: Optional[str] = None) -> None:
     """Interactive REPL mode (default)."""
-    opts: CLIOptions = ctx.obj["opts"]
+    opts: CLIOptions = dataclasses.replace(
+        ctx.obj["opts"], recoverable=recoverable, resume=resume,
+    )
     try:
         asyncio.run(_run_chat(opts))
     except ValueError as exc:
@@ -311,6 +341,8 @@ def chat(ctx: click.Context) -> None:
                 remote=opts.remote,
                 verbose=opts.verbose,
                 workspace=opts.workspace,
+                recoverable=opts.recoverable,
+                resume=opts.resume,
             )
             asyncio.run(_run_chat(patched))
         else:

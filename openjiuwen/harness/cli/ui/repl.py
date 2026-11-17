@@ -2,7 +2,8 @@
 
 Features:
 - Multi-turn conversation with context
-- Slash commands (/help, /exit, /clear, /status, /cost, /compact, /sessions)
+- Slash commands (/help, /exit, /clear, /status, /cost, /compact, /sessions,
+  and with ``chat --recoverable`` /checkpoints, /rollback, /resume, /prune)
 - Shell passthrough (``! <command>``)
 - Ctrl+C three-layer interrupt
 - HITL interaction support
@@ -33,6 +34,8 @@ from openjiuwen.harness.cli.rails.token_tracker import (
 from openjiuwen.harness.cli.storage.session_store import (
     SessionStore,
 )
+from openjiuwen.harness.cli.ui.recoverable_commands import COMMANDS as _RECOVERABLE_COMMANDS
+from openjiuwen.harness.cli.ui.recoverable_commands import print_notices
 from openjiuwen.harness.cli.ui.renderer import render_stream
 
 if TYPE_CHECKING:
@@ -97,6 +100,8 @@ async def _cmd_help(console: Console, **_: Any) -> None:
     table.add_row("/cost", "Show token cost summary")
     table.add_row("/compact", "Compact conversation history")
     table.add_row("/sessions", "List saved sessions")
+    for name, (_, description) in _RECOVERABLE_COMMANDS.items():
+        table.add_row(name, description)
     table.add_row(
         "/auto-harness",
         "Run auto-harness optimization",
@@ -663,6 +668,7 @@ SLASH_COMMANDS: dict[str, Any] = {
     "/compact": _cmd_compact,
     "/sessions": _cmd_sessions,
     "/auto-harness": _cmd_auto_harness,
+    **{name: handler for name, (handler, _) in _RECOVERABLE_COMMANDS.items()},
 }
 
 #: Human-readable descriptions shown as completion meta text.
@@ -677,6 +683,7 @@ _SLASH_DESCRIPTIONS: dict[str, str] = {
     "/sessions": "List saved sessions",
     "/config": "Show current configuration",
     "/auto-harness": "Run auto-harness optimization",
+    **{name: description for name, (_, description) in _RECOVERABLE_COMMANDS.items()},
 }
 
 #: Skill commands registered dynamically at startup.
@@ -892,6 +899,7 @@ async def _handle_slash(
     *,
     tracker: Any = None,
     cfg: Any = None,
+    prompt_session: Any = None,
 ) -> Optional[str]:
     """Dispatch a slash command.
 
@@ -928,6 +936,7 @@ async def _handle_slash(
         tracker=tracker,
         cfg=cfg,
         text=text,
+        prompt_session=prompt_session,  # For commands that ask, such as /rollback.
     )
     return None
 
@@ -1230,6 +1239,7 @@ async def run_repl(
     _scan_skills()
 
     _print_welcome(console, cfg)
+    print_notices(console, backend)
 
     while True:
         try:
@@ -1254,6 +1264,7 @@ async def run_repl(
                     session_store,
                     tracker=tracker,
                     cfg=cfg,
+                    prompt_session=prompt_session,
                 )
             except _ExitREPL:
                 console.print("[dim]Goodbye![/dim]")
@@ -1311,6 +1322,7 @@ async def run_repl(
                 )
 
             session_store.add_message("assistant", render_result.text)
+            print_notices(console, backend)
         except KeyboardInterrupt:
             action = interrupt_mgr.handle(backend)
             if action == "abort":
