@@ -188,3 +188,53 @@ def test_storage_inside_the_workspace_is_refused(tmp_path):
     with pytest.raises(BaseError):
         harness.check_workspace(tmp_path / "ws")
     harness.check_workspace(tmp_path / "elsewhere")
+
+
+@pytest.mark.asyncio
+async def test_each_checkpoint_is_labelled_with_what_its_step_did(tmp_path, runner):
+    harness = _harness(tmp_path)
+    agent = _agent(tmp_path, harness, CountingTool("work"))
+    with scripted(_model(
+        create_tool_call_response("work", '{"x": "1"}', tool_call_id="call_1"),
+        create_tool_call_response("bash", '{"command": "ls -la", "side_effect": "none"}', tool_call_id="call_2"),
+        create_text_response("round one done"),
+        create_text_response("round two done"),
+    )):
+        await run(agent, "do the work", "s1")
+        c2 = list(reversed(await harness.history("s1")))[2]
+        plan = await harness.plan_rollback("s1", c2.checkpoint_id)
+        await harness.apply_rollback(RollbackApproval(plan_id=plan.plan_id, target_id=c2.checkpoint_id))
+        await run(agent, "try again", "s1")
+
+    assert [c.label for c in reversed(await harness.history("s1"))] == [
+        "user: do the work", "work", "bash: ls -la", "rolled back to #2", "user: try again", "reply: round two done",
+    ], "a call is labelled by the argument that says what it did; a call without one by its name"
+
+
+@pytest.mark.asyncio
+async def test_task_loop_mode_checkpoints_and_rolls_back(tmp_path, runner):
+    from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+    from openjiuwen.harness.factory import create_deep_agent
+    from tests.unit_tests.fixtures.deep_agent_interrupts import fake_model
+
+    harness = _harness(tmp_path)
+    agent = create_deep_agent(
+        model=fake_model(), card=AgentCard(id="recoverable_task_loop", name="RecoverableTaskLoop"),
+        workspace=str(tmp_path / "ws"), tools=[CountingTool("work")], rails=[harness.rail()],
+        enable_task_loop=True, max_iterations=10, system_prompt="Follow the scripted model.",
+    )
+    llm = _model(*_two_tool_round(), create_text_response("round two done"))
+    with scripted(llm):
+        await run(agent, "do the work", "s1")
+        c0, c1, c2, c3 = reversed(await harness.history("s1"))
+        plan = await harness.plan_rollback("s1", c1.checkpoint_id, reason="second step was wrong")
+        await harness.apply_rollback(RollbackApproval(plan_id=plan.plan_id, target_id=c1.checkpoint_id))
+        await run(agent, "try again", "s1")
+
+    seen = _contents(messages_seen(llm))
+    assert any(text.startswith("[ROLLBACK]") for text in seen)
+    assert not any("round one done" in text for text in seen)
+    assert sum("call_2" in str(m) for m in messages_seen(llm)) == 0
+    assert [c.kind for c in reversed(await harness.history("s1"))][:3] == [
+        CheckpointKind.STEP, CheckpointKind.STEP, CheckpointKind.ROLLBACK,
+    ]
