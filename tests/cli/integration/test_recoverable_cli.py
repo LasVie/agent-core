@@ -280,3 +280,20 @@ def test_rollback_can_be_turned_on_by_environment(monkeypatch):
     assert load_config().recoverable is False
     monkeypatch.setenv("OPENJIUWEN_RECOVERABLE", "1")
     assert load_config().recoverable is True
+
+
+def test_the_plan_names_a_call_waiting_for_confirmation_that_it_cancels():
+    """The REPL answers confirmations within the turn; other hosts' sessions reach /rollback paused."""
+    import time
+    from types import SimpleNamespace
+
+    from openjiuwen.harness.cli.ui.recoverable_commands import _show_plan
+    from openjiuwen.harness.recoverable import PausedCall, RollbackPlan
+
+    plan = RollbackPlan(plan_id="p", session_id="cli-test", target_id="c1", head_id="c1", abandoned_ids=[],
+                        cancelled_calls=[PausedCall(tool_call_id="call_1", interrupt_id="i1", tool_name="deploy",
+                                                    args_summary='{"env": "test"}')])
+    console, out = _console()
+    _show_plan(console, plan, SimpleNamespace(seq=1, label="build", created_at=time.time()))
+
+    assert 'Cancels the call waiting for confirmation: deploy({"env": "test"})' in out.getvalue()
