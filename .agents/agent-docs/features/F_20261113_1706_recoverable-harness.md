@@ -30,6 +30,7 @@ files:
 - tests/unit_tests/harness/recoverable/test_harness.py
 - tests/unit_tests/harness/recoverable/test_ledger.py
 - tests/unit_tests/harness/recoverable/test_lock.py
+- tests/unit_tests/harness/recoverable/test_paused.py
 - tests/unit_tests/harness/recoverable/test_shell.py
 - tests/unit_tests/harness/recoverable/test_signals.py
 - tests/unit_tests/harness/recoverable/test_workspace.py
@@ -291,6 +292,23 @@ CLI 接入的做法（需求方 2026-11-17 决定：默认关闭、四个命令�
 - **存储提醒：** `on_event` 收到 `storage_low` 时存进后端的 `notices`，欢迎界面后和每轮结束后打印一次。
 - **没碰的：** CLI 默认的写文件确认中断（`ConfirmInterruptRail`）照旧；它在 ④ 的登记之前拦下调用，两者不冲突。
 
+停在确认上时回退的做法（需求方 2026-11-17 决定：迟到的回答拒绝并报错；计划里列出要取消的调用）：
+
+- **写回后状态与目标完全一致。** 写回用 vcs `rewind`，它用 `set_state` 写回状态，而 core 的 `InMemoryStateLike.set_state`
+  遇到空字典什么都不做。目标的状态为空时（例如一轮里的头几步），目标之后才加的状态键都留了下来，其中就有等待确认的中断。
+  改为写回后对比：活 Session 的全局状态里有、目标里没有的键（上下文键除外）一律删掉。目标状态不为空时 `set_state` 本来就整体替换，
+  所以这只是让空状态的情况与之一致；目标之后用户选的"始终允许"同样被撤掉。没有改 core。
+- **记下等待确认的调用。** 回合结束时读 Session 的中断状态，按中断处理器的列法记下每个等待确认的调用（工具调用 ID、中断 ID、工具名、参数摘要），
+  存在 `recoverable:{session}:paused`；为等待中的信号生成计划之前记，这样计划里就有它们。计划的 `cancelled_calls` 取自这里；CLI 的计划多一行
+  "Cancels the call waiting for confirmation"。
+- **拒绝迟到的回答。** 本轮开始时，如果输入是 `InteractiveInput`：回退还没写回，就一律拒绝，因为写回之后不会有等待确认的调用；
+  已经写回，就把回答与上次回退丢弃的调用（写回时从 `paused` 移到 `discarded`）比对，也与当前等待确认的调用比对，
+  只匹配前者时拒绝。比对用 core 的 `match_answers`，与中断处理器恢复时的判断一致；先比当前的，是因为模型可能再次调用同一个工具，
+  测试脚本里调用 ID 甚至相同，不能把新的确认当成旧的。拒绝放在写回之前，被拒绝的这一轮什么都不改，回退留给下一轮写回，
+  "同一轮"的自动回退计数也照常（P8）。
+- **为什么不在本轮开始时直接返回一个正常结果：** 外层 `BEFORE_INVOKE` 走 `ctx.lifecycle`，不理会 `request_force_finish`，
+  只有报错能让这一轮不开始。宿主收到的错误与"工作区被占住""回退执行中"一样。
+
 U8 新增的做法：
 
 - **core 的改动（增量）：** `McpToolCard` 新增可选字段 `annotations`，默认 `None`；`mcp/base.py` 新增 `mcp_tool_annotations`，
@@ -365,6 +383,9 @@ U8 新增的做法：
 | 2026-11-17 / 检查点摘要、任务循环模式 | 同上；任务循环模式用 `create_deep_agent(enable_task_loop=True)` | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable/ tests/unit_tests/harness/test_deep_agent_rail_event_routing.py tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py tests/unit_tests/harness/prompts -q -p no:cacheprovider` | 通过：155 个用例（含新增的摘要、任务循环模式各 1 个） | — |
 | 2026-11-17 / CLI 接入 | 同上；CLI 的 `LocalBackend` 和 `CLIConfig(recoverable=True)`，Agent 换成直接写文件的测试 Agent（避开 CLI 默认的写文件确认和本机的 MCP 配置），存储放在测试临时目录，交互回答用脚本代替；开发环境原来没装 `openjiuwen[cli]` 的 `prompt-toolkit`，按锁文件装了 3.0.52 | `.venv/bin/python -m pytest tests/cli/unit tests/cli/integration -q -p no:cacheprovider` | 新增 13 个用例全部通过；CLI 共 187 个通过、5 个失败，失败的 5 个在改动前就失败（工具追踪 3 个、auto-harness 报错 1 个、记忆 rail 挂载 1 个），与本特性无关 | 真实终端交互没有测 |
 | 2026-11-17 / CLI 接入测试有效性 | 同上 | 临时分别让划掉的反向操作照样执行、不经确认就执行、快照 Agent 的状态目录而不是当前目录、切换会话时不释放 | 对应用例都失败（分别 1、1、7、1 个），恢复后都通过 | — |
+| 2026-11-17 / 停在确认上时回退：问题复现 | 同上；`ask_permissions("work")` 让权限 Rail 拦下 `work`，同一轮先执行了一个不用确认的工具 | 修改前，停在 `work` 的确认上时回退到 HEAD 或本轮开始，再分别发来批准和一条新消息 | 发批准：`work` 照样执行，上下文里多了一条没有对应调用的工具结果；发新消息：模型没被调用，又一次要求确认 `work`。原因是写回后中断状态还在 | — |
+| 2026-11-17 / 停在确认上时回退 | 同上 | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable tests/cli/integration/test_recoverable_cli.py tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py tests/unit_tests/core/session/vcs -q -p no:cacheprovider`；另跑用到中断夹具的 5 个测试文件和 Rail 路由契约 | 通过：145 个（含新增的 `test_paused.py` 4 个、CLI 1 个）；中断与路由 148 个通过 | 工作流（`session.interact`）的中断没有测 |
+| 2026-11-17 / 停在确认上时回退测试有效性 | 同上 | 临时分别去掉写回后删状态键、去掉拒绝、不先比对当前等待的调用、不记被丢弃的调用、回合结束时不记等待确认的调用 | 对应用例都失败（分别 3、2、1、1、2 个），恢复后都通过 | — |
 | 2026-11-16 / U6 测试有效性 | 同上 | 临时分别去掉"之后又被改过"的比对、不记调用结束时的内容、去掉与工作区重叠的检查、让恢复什么都不做、去掉大小上限 | 对应用例都失败（分别 1、4、1、5、1 个），恢复后都通过 | — |
 | 2026-11-13 / V4、V7 实测 | 本仓库工作目录（8,527 个文件，218 MB，含 `.git`），APFS | 直接调用 `WorkspaceSnapshot.scan`，各测克隆和复制 | 第一份清单：克隆 2.52 秒、复制 2.24 秒；之后每步扫描约 170 毫秒 | 系统缓存为空时、更大的仓库上没有测。克隆没有更快，因为时间主要花在算指纹 |
 
@@ -487,7 +508,10 @@ U8 新增的做法：
   不确认则什么都不变、可以逐条划掉反向操作；模拟重启后 `/resume` 接回原上下文；同一个 REPL 里来回切换会话；
   `/prune` 先报告再删除；没开回退时命令给出提示；存储在当前目录里时启动报错。
 - **CLI 接入未覆盖的：** 真实终端里的交互（用假的输入框代替）；CLI 默认的写文件确认中断和回退一起出现的情况；`run` 模式。
-- **交付判断：** U1～U8 和 CLI 接入都满足各自范围。还差：pnpm、yarn、brew、conda；停在中断上回退后又收到恢复输入（下一项）。
+- **停在确认上时回退已证明的范围：** 回退到 HEAD 或更早时，被丢弃的调用不再执行；回退写回前后，按工具调用 ID 或中断 ID 发来的迟到回答都被拒绝；
+  新消息照常开始一轮，模型看不到被丢弃调用的痕迹；之后模型再次调用同一工具并停在确认上时，对它的回答照常执行；计划和 CLI 列出要取消的调用。
+- **停在确认上时回退未覆盖的：** 工作流（`session.interact`）的中断和子 Agent 里的中断；任务循环模式下的恢复输入。
+- **交付判断：** U1～U8、CLI 接入、停在确认上时回退都满足各自范围。还差：pnpm、yarn、brew、conda。
 
 ### 覆盖与资料同步
 
@@ -501,7 +525,9 @@ U8 新增的做法：
 
 | 遗留项 | 性质 | 影响与现有处置 | 后续入口 |
 | --- | --- | --- | --- |
-| 会话停在中断上时执行回退，宿主随后又发来恢复中断的输入 | 未实现 | 目标状态里已经没有中断记录，这次恢复的结果没有定义。宿主在回退后应当发新问题，不要发恢复输入 | U7 |
+| 写回之后的轮次里，对被丢弃的工作流中断的回答 | 已知限制 | 只记工具调用的中断（`ToolInterruptionState`）；工作流（`session.interact`）的中断在写回那一轮之后不再识别，回答会被当成普通消息交给模型。写回之前的回答照样拒绝 | 有需要时按 `ai_message` 的调用一并记下 |
+| 子 Agent 自己 Session 里的中断状态 | 不在范围内 | 子 Agent 不在本期范围；父 Agent 一侧的中断随回退清掉 | 做子 Agent 时一起处理 |
+| core vcs 写回空状态不生效 | 已知问题，已绕开 | `InMemoryStateLike.set_state` 遇到空字典不替换，vcs `rewind` 写回空状态时留下后来加的键。④ 写回后自行删除。vcs `rewind` 目前只有 ④ 调用，以后直接用它的代码会遇到同样的问题 | 交 core 中 session / vcs 的维护者 |
 | 宿主用同一个 session_id 开始一段新对话 | 有意取舍 | Session 为空时会恢复旧上下文。同一个 session_id 视为同一段对话 | 写进接入说明 |
 | CLI 的会话记录在回退后保留被丢弃的消息 | 有意取舍 | `~/.openjiuwen/sessions/*.json` 只是对话流水，供 `/sessions` 列出，回退不改它；上下文以 ④ 的历史为准 | — |
 | `openjiuwen run` 不支持回退 | 未接入 | 单轮非交互，没有确认回退的地方 | 有需要再加 |
@@ -621,6 +647,16 @@ U8 新增的做法：
 - 变化：声明说明改为第二版（中英文）；`write_file`、`edit_file` 的 `file_path` 在工作区以外时，按列在 `external_paths` 里处理，
   调用前备份、回退时恢复（`effects.FILE_WRITING_TOOLS`）。
 - 旧结论的效力：U4 的声明参数本身不变，只改说明文字。
+
+### 2026-11-17 停在确认上时回退：被丢弃的调用照样执行
+
+- 原结论：已知遗留里记为"会话停在中断上时回退，宿主随后又发来恢复中断的输入，结果没有定义"，并假定目标状态里已经没有中断记录
+  （设计 V5 也这样预期）。
+- 新证据：实测这一假定不成立。目标的状态为空时，vcs 写回什么都不做，中断状态留在 Session 里：宿主发来批准，被丢弃的调用照样执行，
+  上下文里多出一条没有对应调用的工具结果；宿主发来新消息，新消息被当成对旧确认的回答，Agent 又要求确认那个调用。
+- 变化：写回后删除目标之后的状态键（不变量 6）；记下等待确认的调用，计划里列出，迟到的回答拒绝（不变量 39）。需求方 2026-11-17 决定拒绝并报错，
+  没有采用"当普通消息交给模型"和"忽略内容直接继续"：两者都可能让 Agent 在没有新指令时重做被回退的事。
+- 旧结论的效力：不再适用。
 
 ### 2026-11-17 任务循环模式可用；检查点加摘要
 

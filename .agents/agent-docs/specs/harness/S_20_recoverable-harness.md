@@ -31,7 +31,7 @@ files:
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py` / `effects.py` / `processes.py` / `dependencies.py` / `external.py` / `lock.py` / `cleanup.py`） |
-| 最近一次修订日期 | 2026-11-16 |
+| 最近一次修订日期 | 2026-11-17 |
 | 关联设计 | D-20261113-1506-recoverable-harness |
 | 关联 feature | F_20261113_1706_recoverable-harness.md |
 
@@ -69,6 +69,9 @@ Rail 的事件路由与 priority 规则见 S_04。
 6. **文件立即恢复，上下文在下一轮开始时写回。** `apply_rollback` 先让工作区与目标清单一致，再留下待写回的回退；
    下一轮 `BEFORE_INVOKE` 时把目标的上下文和状态写回 Session，清掉 DeepAgent 的运行状态缓存，追加回退说明，
    并提交一个 `kind=rollback` 的检查点。写回失败时这一轮报错，不在旧路线上继续。
+   写回后 Session 状态与目标完全一致：目标之后才有的状态键全部删掉，包括等待确认的中断（不变量 39），
+   以及目标之后用户在确认中选的"始终允许"。vcs 用 `set_state` 写回状态，而 core 的 `set_state` 遇到空状态什么都不做，
+   所以由 ④ 在写回后删掉这些键。
 7. **重启后恢复。** `BEFORE_INVOKE` 时，若会话有 HEAD 而上下文池和 Session 状态里都没有消息，先把 HEAD 写回 Session，
    再记任何新内容，避免 vcs 把空 Session 记成"清空上下文"。重启后要在第一轮之前回退，宿主先调用
    `DeepAgent.ensure_initialized()`，让 Rail 拿到工作区。
@@ -189,6 +192,13 @@ Rail 的事件路由与 priority 规则见 S_04。
     从最后记下的阶段之后接着做。已成功的撤销按账本不再执行；执行到一半、结果未知的撤销不重试，记为失败，回退为 `partial`。
     回退说明里文件和进程的数字取自各阶段当时的结果，不是重做时的。标记还在、计划却已定稿时（崩溃发生在提交的最后一步），
     下一轮开始时清除标记。
+39. **等待确认的调用随回退作废，对它的回答被拒绝。** 一轮结束时（`AFTER_INVOKE`）停在确认中断上的，记下等待确认的调用
+    （工具调用 ID、中断 ID、工具名、参数摘要），下一轮结束时重记。这一步没走完，任何检查点里都没有它，所以任何回退都丢弃它：
+    计划在 `cancelled_calls` 里列出，写回时中断状态随目标一起还原（不变量 6），这些调用不会再执行。之后宿主发来的回答
+    （`InteractiveInput`，例如界面上没关掉的确认卡片被点了"允许"）在本轮开始时被拒绝，报 `DEEPAGENT_INPUT_PARAM_ERROR`，
+    写明被丢弃的工具，本轮不开始，什么都不执行、什么都不改（不变量 34）：回退写回之前，任何回答都拒绝，因为目标上没有等待确认的调用；
+    写回之后，与上次回退丢弃的调用（按中断 ID 或工具调用 ID）匹配、且与当前等待确认的调用都不匹配的回答被拒绝。
+    新的文字消息照常开始一轮，模型在回退说明之后看到它。
 
 ## 接口契约
 
@@ -198,7 +208,7 @@ Rail 的事件路由与 priority 规则见 S_04。
 | `rail() -> CheckpointRail` | 注册到 DeepAgent 的 Rail；一个 harness 服务一个 DeepAgent |
 | `history(session_id, limit=None) -> list[Checkpoint]` | 从 HEAD 沿父检查点往回，最新的在前 |
 | `uncovered_files(session_id) -> list[str]` | 最新清单中超过单文件上限、没有存下的文件 |
-| `plan_rollback(session_id, target_id, *, initiator, source, reason) -> RollbackPlan` | 目标必须在当前历史上，否则报 `DEEPAGENT_INPUT_PARAM_ERROR`；目标可以是 HEAD 本身。计划列出要写回、删除、无法恢复的文件，要删除的构建产物，会消失的 git 提交数，以及每条外部效果的处理方式（`effects`，最新的在前） |
+| `plan_rollback(session_id, target_id, *, initiator, source, reason) -> RollbackPlan` | 目标必须在当前历史上，否则报 `DEEPAGENT_INPUT_PARAM_ERROR`；目标可以是 HEAD 本身。计划列出要写回、删除、无法恢复的文件，要删除的构建产物，会消失的 git 提交数，每条外部效果的处理方式（`effects`，最新的在前），以及要取消的等待确认的调用（`cancelled_calls`，不变量 39） |
 | `apply_rollback(RollbackApproval) -> RollbackResult` | 不变量 4、5、6、10、19、22、25、28；`RollbackApproval.cancelled_effect_ids` 是人划掉的撤销，`confirmed_effect_ids` 是人确认执行的 `review` 项。执行时重新收集账本记录。结果给出状态、每条效果的结果、停掉的进程、实际写回、删除、删除的构建产物和没能恢复的文件；计划里有 `processes_to_stop` 和 `package_changes`（每个环境要卸载和安装的包），结果里有每个环境的恢复情况 |
 | `request_rollback(RollbackSignal) -> RollbackTicket` | 不变量 29～31。`RollbackSignal` 含 `signal_id`、`session_id`、`target_id`、`initiator`（`human` / `auto`）、`source`、`reason`；回执的 `status` 为 `waiting`、`awaiting_approval`、`rejected`、`invalidated`、`applied`，等待确认时带 `plan_id`，被拒绝或作废时 `detail` 写明原因 |
 | `get_ticket(session_id, signal_id) -> RollbackTicket \| None` | 查询回执；进程退出时还在等待的信号，此时生成计划 |
@@ -217,12 +227,12 @@ Rail 的事件路由与 priority 规则见 S_04。
 
 | 事件 | 路由 | callback priority | 做什么 |
 |---|---|---|---|
-| `BEFORE_INVOKE` | 外层 DeepAgent | 10000 | 占住工作区（不变量 33）；标记会话运行中；写回待写回的回退或重启后丢失的 Session（不变量 6、7）；会话还没有清单时在后台开始建第一份（不变量 11） |
+| `BEFORE_INVOKE` | 外层 DeepAgent | 10000 | 占住工作区（不变量 33）；标记会话运行中；拒绝对已被回退丢弃的调用的回答（不变量 39）；写回待写回的回退或重启后丢失的 Session（不变量 6、7）；会话还没有清单时在后台开始建第一份（不变量 11） |
 | `BEFORE_MODEL_CALL` | 内层 ReAct | 1 | 建检查点：每轮开始，以及没调工具却继续循环的那一步；有等待中的信号时结束本轮（不变量 30） |
 | `BEFORE_TOOL_CALL` | 内层 ReAct | 1 | 等第一份清单完成；登记意图（不变量 16） |
 | `AFTER_TOOL_CALL` / `ON_TOOL_EXCEPTION` | 内层 ReAct | 1000000 | 补上结果和撤销参数（不变量 17） |
 | `AFTER_REACT_ITERATION` | 内层 ReAct | 1 | 建检查点：每步结束；有等待中的信号时结束本轮 |
-| `AFTER_INVOKE` | 外层 DeepAgent | 1 | 本轮没有异常时建检查点；保存最新扫描供同一工作区的下一个会话复用；标记会话空闲；为等待中的信号生成计划 |
+| `AFTER_INVOKE` | 外层 DeepAgent | 1 | 本轮没有异常时建检查点；保存最新扫描供同一工作区的下一个会话复用；标记会话空闲；记下停在确认上的调用；为等待中的信号生成计划 |
 
 Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下同一边界上其他 Rail 处理完的状态。
 
@@ -261,7 +271,9 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 | 包列表 | `recoverable:{session_id}:packages:{packages_id}` | 环境的工作区相对路径 → 包名 → 版本（有直接来源的为 `<版本> @ <来源>`） |
 | 工作区的会话 | `recoverable:workspace:{工作区键}:sessions` | 在这个工作区跑过的会话 ID，清理时据此找出还要用的文件内容 |
 | 工作区最新扫描 | `recoverable:workspace:{工作区键}:scan` | 完整清单，供同一工作区的新会话复用指纹 |
-| `RollbackPlan` | `recoverable:plan:{plan_id}` | 目标、当时的 HEAD、要丢弃的检查点（最新的在前）、发起方、来源、理由、对应的信号、文件变化、会消失的提交数、效果及其结果、状态（`planned` / `applying` / `completed` / `partial` / `accepted` / `invalidated`）、`applied_at`、进度 `progress`（最后完成的阶段、要丢弃的检查点、停掉的进程、恢复依赖后的包列表、写回和删除的文件、恢复后的清单）。也是回退的进度记录 |
+| `RollbackPlan` | `recoverable:plan:{plan_id}` | 目标、当时的 HEAD、要丢弃的检查点（最新的在前）、发起方、来源、理由、对应的信号、文件变化、会消失的提交数、效果及其结果、状态（`planned` / `applying` / `completed` / `partial` / `accepted` / `invalidated`）、要取消的等待确认的调用 `cancelled_calls`、`applied_at`、进度 `progress`（最后完成的阶段、要丢弃的检查点、停掉的进程、恢复依赖后的包列表、写回和删除的文件、恢复后的清单）。也是回退的进度记录 |
+| 等待确认的调用 | `recoverable:{session_id}:paused` | 上一轮结束时停在确认上的调用（`PausedCall` 列表）；没有时删除 |
+| 被回退丢弃的调用 | `recoverable:{session_id}:discarded` | 最近一次丢弃了等待确认调用的回退所丢弃的调用，用来拒绝之后对它们的回答 |
 | 回退执行中 | `recoverable:{session_id}:applying` | 正在执行的回退计划 ID；提交完成后删除 |
 | `RollbackTicket` | `recoverable:{session_id}:signal:{signal_id}` | 信号、状态、计划 ID、原因 |
 | 未结信号 | `recoverable:{session_id}:active_signal` | 等待步骤边界或等待确认的信号 ID，最多一个 |
@@ -281,6 +293,9 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 
 - S_04：`CheckpointRail` 遵守事件路由集合与 priority 规则，不新增事件。
 - S_02：依赖 DeepAgent 的 `save_state` / `clear_state` / `react_agent.context_engine` / `ensure_initialized`；运行状态缓存在 Session 对象上，写回后必须清掉。
+- core 的中断：读 Session 状态里的 `INTERRUPTION_KEY`（`ToolInterruptionState`），用 `pending_interrupts` 列出等待确认的调用，
+  用 `match_answers` 判断一个 `InteractiveInput` 回答的是哪些调用，与中断处理器恢复时的判断一致。
+- core 的 vcs：写回状态时空状态不生效（见不变量 6），④ 在写回后自行删除目标之后的状态键；vcs 本身没改。
 - S_09：工作区根目录取自 `Workspace.root_path`。
 - S_08：反向命令的复检用 `PermissionInterruptRail.engine` 的 `evaluate_global_policy_directly`，以及 bash 工具层的注入检查。
 - S_15：CLI 的 `chat --recoverable` 和 `/checkpoints`、`/rollback`、`/resume`、`/prune` 命令。
