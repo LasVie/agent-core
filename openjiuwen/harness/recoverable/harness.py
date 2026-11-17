@@ -357,6 +357,9 @@ class RecoverableHarness:
         auto_limit_per_target: Automatic signals accepted per target checkpoint,
             over the session's lifetime.
         auto_limit_per_round: Automatic signals accepted per round.
+        workspace_root: The directory to snapshot and restore, when it is not the
+            agent's workspace: a host whose agent edits files elsewhere (the CLI
+            works in the current directory) names it here.
         storage_cap: File content stored for the workspace, in bytes, above which
             the user is told; ``None`` for no cap.
         min_free_ratio: Share of free disk below which the user is told; ``0``
@@ -379,6 +382,7 @@ class RecoverableHarness:
         auto_limit_per_round: int = 5,
         storage_cap: int | None = DEFAULT_STORAGE_CAP,
         min_free_ratio: float = DEFAULT_MIN_FREE_RATIO,
+        workspace_root: str | Path | None = None,
     ):
         self._storage_dir = Path(storage_dir).expanduser().resolve() if storage_dir else DEFAULT_STORAGE_DIR
         self._kv_store = kv_store
@@ -406,6 +410,7 @@ class RecoverableHarness:
         self._rounds: dict[str, int] = {}
         self._storage_cap = storage_cap
         self._min_free_ratio = min_free_ratio
+        self._workspace_root = Path(workspace_root).expanduser().resolve() if workspace_root else None
         self._stored_bytes: int | None = None
         """Size of the stored file content at the last measurement; objects added since are counted apart."""
         self._registered: set[str] = set()
@@ -415,6 +420,11 @@ class RecoverableHarness:
     @property
     def storage_dir(self) -> Path:
         return self._storage_dir
+
+    @property
+    def workspace_root(self) -> Path | None:
+        """The directory named at construction to snapshot instead of the agent's workspace."""
+        return self._workspace_root
 
     def rail(self) -> CheckpointRail:
         """The rail to register on the DeepAgent this harness serves."""

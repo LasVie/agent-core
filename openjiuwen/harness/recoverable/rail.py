@@ -107,7 +107,9 @@ class CheckpointRail(DeepAgentRail):
         if self.workspace is None:
             return
         sandboxed = getattr(self.sys_operation, "mode", OperationMode.LOCAL) == OperationMode.SANDBOX
-        root = Path(self.workspace.root_path).expanduser().resolve()
+        # A host whose agent edits another directory than its workspace (the CLI edits the cwd) names it.
+        target = self._harness.workspace_root or self.workspace.root_path
+        root = Path(target).expanduser().resolve()
         kept = set()
         for node in _KEPT_NODES:
             path = self.workspace.get_node_path(node)
@@ -115,7 +117,7 @@ class CheckpointRail(DeepAgentRail):
                 resolved = Path(path).expanduser().resolve()
                 if root in resolved.parents:
                     kept.add(resolved.relative_to(root).as_posix())
-        self._harness.bind_workspace(self.workspace.root_path, sandboxed=sandboxed, kept_dirs=frozenset(kept))
+        self._harness.bind_workspace(root, sandboxed=sandboxed, kept_dirs=frozenset(kept))
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         if ctx.session is None or self._deep_agent is None:
