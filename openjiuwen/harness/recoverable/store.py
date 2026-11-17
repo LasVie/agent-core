@@ -22,6 +22,7 @@ from openjiuwen.harness.recoverable.models import (
     SCHEMA_VERSION,
     Checkpoint,
     LedgerRecord,
+    PausedCall,
     PendingRollback,
     RollbackCounts,
     RollbackPlan,
@@ -210,6 +211,18 @@ class CheckpointStore:
 
     async def put_counts(self, counts: RollbackCounts) -> None:
         await self._kv.set(f"{_PREFIX}:{counts.session_id}:counts", counts.model_dump_json())
+
+    async def paused_calls(self, session_id: str, *, discarded: bool = False) -> list[PausedCall]:
+        """Calls waiting for an answer when the last round ended, or those the last such rollback discarded."""
+        raw = await self._kv.get(f"{_PREFIX}:{session_id}:{'discarded' if discarded else 'paused'}")
+        return [PausedCall.model_validate(item) for item in json.loads(raw)] if raw is not None else []
+
+    async def set_paused_calls(self, session_id: str, calls: list[PausedCall], *, discarded: bool = False) -> None:
+        key = f"{_PREFIX}:{session_id}:{'discarded' if discarded else 'paused'}"
+        if calls:
+            await self._kv.set(key, json.dumps([call.model_dump() for call in calls]))
+        else:
+            await self._kv.delete(key)
 
     async def records(self, session_id: str) -> list[LedgerRecord]:
         """The session's side-effect records in registration order."""

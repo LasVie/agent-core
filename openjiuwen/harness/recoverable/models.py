@@ -171,6 +171,18 @@ class PlannedEffect(BaseModel):
     detail: str = ""
 
 
+class PausedCall(BaseModel):
+    """A tool call that waited for a person's answer when its round ended.
+
+    Any rollback discards it: its step is not finished, so no checkpoint holds it.
+    """
+
+    tool_call_id: str
+    interrupt_id: str
+    tool_name: str
+    args_summary: str = ""
+
+
 class PackageChangeInfo(BaseModel):
     """How one dependency environment is brought back to its list at the target."""
 
@@ -251,6 +263,8 @@ class RollbackPlan(BaseModel):
     """Background processes the agent started after the target."""
     package_changes: list[PackageChangeInfo] = Field(default_factory=list)
     """Dependency environments whose package list differs from the target's."""
+    cancelled_calls: list[PausedCall] = Field(default_factory=list)
+    """Calls waiting for a person's answer; the rollback discards them and refuses a later answer."""
     status: RollbackStatus = RollbackStatus.PLANNED
     signal_id: str | None = None
     """The rollback signal this plan answers; ``None`` for a plan asked for directly."""

@@ -149,6 +149,9 @@ def _show_plan(console: Console, plan: Any, target: Any) -> dict[int, Any]:
                              + (f" ({change.error})" if change.error else "")))
     if plan.processes_to_stop:
         console.print(f"  Background processes stopped: {', '.join(map(str, plan.processes_to_stop))}")
+    for call in plan.cancelled_calls:
+        line = f"  Cancels the call waiting for confirmation: {call.tool_name}({call.args_summary[:80]})"
+        console.print(escape(line))
     numbered: dict[int, Any] = {}
     if plan.effects:
         console.print("  Outside the working directory, newest first:")

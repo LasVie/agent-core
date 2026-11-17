@@ -71,8 +71,17 @@ from openjiuwen.core.foundation.llm.schema.message import OPENJIUWEN_MESSAGE_SOU
 from openjiuwen.core.foundation.store.base_kv_store import BaseKVStore
 from openjiuwen.core.foundation.store.kv.db_based_kv_store import DbBasedKVStore
 from openjiuwen.core.foundation.tool.mcp.base import McpToolCard
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.session.vcs import VersioningConfig, VersioningManager, for_session
+from openjiuwen.core.session.vcs.constants import CONTEXT_KEY, GLOBAL_STATE_KEY, STATE_KEY
 from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
+from openjiuwen.core.single_agent.interrupt.state import (
+    INTERRUPTION_KEY,
+    PendingInterrupt,
+    ToolInterruptionState,
+    match_answers,
+    pending_interrupts,
+)
 from openjiuwen.core.sys_operation.execution_environment import ExecutionEnvironment, execution_environment_scope
 from openjiuwen.harness.recoverable.cleanup import backup_digests, manifest_digests, reachable_manifests
 from openjiuwen.harness.recoverable.dependencies import (
@@ -117,6 +126,7 @@ from openjiuwen.harness.recoverable.models import (
     LedgerRecord,
     PackageChangeInfo,
     PathBackup,
+    PausedCall,
     PendingRollback,
     PlannedEffect,
     PruneReport,
@@ -215,6 +225,38 @@ def _live_is_empty(session: "Session", context_engine: "ContextEngine") -> bool:
     if not isinstance(states, dict):
         return True
     return not any(isinstance(state, dict) and state.get("messages") for state in states.values())
+
+
+def _paused_calls(session: "Session") -> list[PausedCall]:
+    """The tool calls the session waits on for a person's answer, as the interrupt handler lists them."""
+    state = session.get_state(INTERRUPTION_KEY)
+    if not isinstance(state, ToolInterruptionState):
+        return []
+    return [
+        PausedCall(
+            tool_call_id=call_id,
+            interrupt_id=request.interrupt_id,
+            tool_name=entry.tool_call.name,
+            args_summary=_summary(parse_args(entry.tool_call.arguments)),
+        )
+        for entry in state.interrupted_tools.values()
+        for call_id, request in entry.interrupt_requests.items()
+    ]
+
+
+def _drop_later_state(session: "Session", restored: dict) -> None:
+    """Remove the session state keys the restored checkpoint did not have.
+
+    vcs restores the state with ``set_state``, which ignores an empty state, so
+    keys added after an empty one, such as a tool call waiting for confirmation,
+    would otherwise survive the rollback. The context key belongs to the context
+    track and is rewritten from the restored context.
+    """
+    state = restored.get(STATE_KEY) or {}
+    kept = set((state.get(GLOBAL_STATE_KEY) or {}).keys())
+    later = [key for key in (session.get_state() or {}) if key not in kept and key != CONTEXT_KEY]
+    if later:
+        session.update_state({key: None for key in later})
 
 
 def _listed(paths: list[str]) -> str:
@@ -724,6 +766,7 @@ class RecoverableHarness:
             signal_id=signal_id,
             effects=await self._planned_effects(session_id, target),
             processes_to_stop=[r.pid for r in await self._processes_after(session_id, target)],
+            cancelled_calls=await store.paused_calls(session_id),
         )
         loaded = await self._load_manifest(session_id, target.manifest_id)
         files = await self._files_ready(session_id)
@@ -952,8 +995,12 @@ class RecoverableHarness:
 
     # ------------------------------------------------------- called by the rail
 
-    async def begin_round(self, session: "Session", deep_agent: "DeepAgent") -> None:
-        """Mark the session running, write back a pending rollback or a lost session, start the baseline."""
+    async def begin_round(self, session: "Session", deep_agent: "DeepAgent", query: Any = None) -> None:
+        """Mark the session running, write back a pending rollback or a lost session, start the baseline.
+
+        ``query`` is the round's input. An answer to a confirmation that a rollback
+        discarded is refused before anything changes.
+        """
         session_id = session.get_session_id()
         self._claim(session_id)
         self._running.add(session_id)
@@ -961,6 +1008,8 @@ class RecoverableHarness:
             async with self._lock(session_id):
                 await self._refuse_if_applying(session_id)
                 await self._register(session_id)
+                if isinstance(query, InteractiveInput):
+                    await self._refuse_discarded_answer(session, query)
                 rolled_back = await self._restore(session, deep_agent)
                 await self._count_round(session_id, rolled_back)
                 await self._prepare_files(session_id)
@@ -978,6 +1027,10 @@ class RecoverableHarness:
                 await self._checkpoints().put_workspace_scan(self._workspace_key, record)
         finally:
             self._running.discard(session_id)
+            try:  # Before a waiting signal is planned: its plan lists them.
+                await self._checkpoints().set_paused_calls(session_id, _paused_calls(session))
+            except Exception:  # Only shown in a plan, and checked against a later answer.
+                logger.exception("recoverable: cannot record the paused calls of session %s", session_id)
             if session_id in self._waiting:
                 self._waiting.discard(session_id)
                 try:
@@ -1277,6 +1330,34 @@ class RecoverableHarness:
         kind = EventKind.ROLLBACK_PARTIAL if plan.status == RollbackStatus.PARTIAL else EventKind.ROLLBACK_APPLIED
         await self._emit(kind, session_id, signal_id=plan.signal_id, plan_id=plan.plan_id,
                          checkpoint_id=plan.target_id)
+
+    async def _refuse_discarded_answer(self, session: "Session", answer: InteractiveInput) -> None:
+        """Refuse an answer to a confirmation a rollback discarded; the call it would run went with its step.
+
+        Until a rollback is written back, every answer is stale: no call waits at
+        its target. Afterwards, an answer is stale when it matches a call the
+        last rollback discarded and none that waits now.
+        """
+        session_id = session.get_session_id()
+        store = self._checkpoints()
+        pending = await store.get_pending(session_id)
+        if pending is not None and pending.target_id is not None:
+            discarded = await store.paused_calls(session_id)
+        elif match_answers(answer, pending_interrupts(session.get_state(INTERRUPTION_KEY))).answers:
+            return
+        else:
+            discarded = [
+                call for call in await store.paused_calls(session_id, discarded=True)
+                if match_answers(answer, [PendingInterrupt(call.interrupt_id, call.tool_call_id, "")]).answers
+            ]
+            if not discarded:
+                return
+        calls = f" ({', '.join(sorted({call.tool_name for call in discarded}))})" if discarded else ""
+        raise build_error(
+            StatusCode.DEEPAGENT_INPUT_PARAM_ERROR,
+            error_msg=f"session {session_id} was rolled back, which discarded the calls waiting for "
+                      f"confirmation{calls}; this answer is refused and nothing ran. Send a new message instead",
+        )
 
     async def _refuse_if_applying(self, session_id: str) -> None:
         """A rollback cut short by a crash must finish before the session goes on; its world is half restored."""
@@ -1721,7 +1802,7 @@ class RecoverableHarness:
                 error_msg=f"rollback target {pending.target_id} of session {session_id} is missing",
             )
         manager = self._manager_for(session, context_engine)
-        await manager.rewind(target.commit_id)
+        _drop_later_state(session, await manager.rewind(target.commit_id))
         deep_agent.clear_state(session)
         await self._append_note(session, context_engine, pending.notes)
         manifest_id = pending.manifest_id if pending.manifest_id is not None else target.manifest_id
@@ -1730,6 +1811,10 @@ class RecoverableHarness:
             store, manager, session_id, target, CheckpointKind.ROLLBACK, manifest_id,
             await store.ledger_seq(session_id), packages_id, f"rolled back to #{target.seq}",
         )
+        cancelled = await store.paused_calls(session_id)
+        if cancelled:  # A later answer to them is refused.
+            await store.set_paused_calls(session_id, cancelled, discarded=True)
+            await store.set_paused_calls(session_id, [])
         await store.clear_pending(session_id)
         logger.info("rollback written back: session=%s target=#%s", session_id, target.seq)
 

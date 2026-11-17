@@ -5,8 +5,9 @@
 Hooks and where they run (see ``rails/AGENTS.md`` for the routing):
 
 - ``BEFORE_INVOKE`` (outer DeepAgent): claim the workspace for the session, mark
-  the session running, write back a pending rollback or a session lost to a
-  restart, and start the session's first workspace snapshot. Runs first in its
+  the session running, refuse an answer to a confirmation a rollback discarded,
+  write back a pending rollback or a session lost to a restart, and start the
+  session's first workspace snapshot. Runs first in its
   chain so no other rail reads the context before it is restored. A failure here
   stops the round (``AbortError``): running on a context that was not restored,
   or beside another session's rollback, would lose work.
@@ -20,7 +21,7 @@ Hooks and where they run (see ``rails/AGENTS.md`` for the routing):
   Runs first, before other rails rewrite the result.
 - ``AFTER_REACT_ITERATION`` (inner ReAct): checkpoint the step end.
 - ``AFTER_INVOKE`` (outer DeepAgent): checkpoint the round end, unless the round
-  raised; mark the session idle.
+  raised; record the calls left waiting for confirmation; mark the session idle.
 
 After the checkpoint at a step boundary (``BEFORE_MODEL_CALL``,
 ``AFTER_REACT_ITERATION``), a rollback signal that arrived while the agent ran
@@ -124,7 +125,7 @@ class CheckpointRail(DeepAgentRail):
             return
         self._harness.add_declaration_params(self._deep_agent)  # Tools may have been reloaded.
         try:
-            await self._harness.begin_round(ctx.session, self._deep_agent)
+            await self._harness.begin_round(ctx.session, self._deep_agent, getattr(ctx.inputs, "query", None))
         except Exception as exc:  # Plain callback errors are only logged; abort to stop the round.
             error = exc if isinstance(exc, BaseError) else build_error(
                 StatusCode.DEEPAGENT_RUNTIME_ERROR, cause=exc, error_msg=f"recoverable round start failed: {exc}",
