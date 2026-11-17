@@ -59,6 +59,9 @@ class Checkpoint(BaseModel):
     ledger_seq: int = 0
     """Highest side-effect record ``seq`` at this checkpoint; later records happened after it."""
     kind: CheckpointKind = CheckpointKind.STEP
+    label: str = ""
+    """One line on what the context ends with here, for a person picking a target: the step's tool calls,
+    the model's reply, the user's message, or the rollback that made it."""
     created_at: float = Field(default_factory=time.time)
 
 

@@ -159,6 +159,9 @@ DEFAULT_MIN_FREE_RATIO = 0.2
 ROLLBACK_NOTE_SOURCE_KIND = "rollback_note"
 _DB_FILENAME = "recoverable.db"
 _LIST_LIMIT = 10
+_LABEL_LIMIT = 120
+_LABEL_ARGS = ("command", "file_path", "path", "query", "url", "pattern")
+"""Arguments that say what a call did, in order of preference, for a checkpoint label."""
 _SUMMARY_LIMIT = 500
 _RECORD_KEY = "_recoverable_ledger_record"
 _GLOBAL_KEY = "_recoverable_global_packages"
@@ -179,6 +182,28 @@ def _at_step_boundary(context: "ModelContext") -> bool:
             answered = {m.tool_call_id for m in messages[index + 1:] if isinstance(m, ToolMessage)}
             return all(call.id in answered for call in message.tool_calls)
     return True
+
+
+def _one_line(text: object) -> str:
+    line = " ".join(str(text or "").split())
+    return line if len(line) <= _LABEL_LIMIT else line[:_LABEL_LIMIT - 1] + "…"
+
+
+def _checkpoint_label(messages: list) -> str:
+    """What the context ends with: the last step's tool calls, the model's reply, or the user's message."""
+    for message in reversed(messages):
+        if isinstance(message, AssistantMessage):
+            if not message.tool_calls:
+                return _one_line(f"reply: {message.content}")
+            calls = []
+            for call in message.tool_calls:
+                args = parse_args(call.arguments)
+                key = next((args[k] for k in _LABEL_ARGS if isinstance(args.get(k), str) and args[k]), "")
+                calls.append(f"{call.name}: {key}" if key else call.name)
+            return _one_line("; ".join(calls))
+        if isinstance(message, UserMessage):
+            return _one_line(f"user: {message.content}")
+    return ""
 
 
 def _live_is_empty(session: "Session", context_engine: "ContextEngine") -> bool:
@@ -1122,6 +1147,7 @@ class RecoverableHarness:
                 return None
             return await self._commit(
                 store, manager, session_id, head, CheckpointKind.STEP, manifest_id, ledger_seq, packages_id,
+                _checkpoint_label(context.get_messages()),
             )
 
     # ------------------------------------------------------------- internals
@@ -1692,7 +1718,7 @@ class RecoverableHarness:
         packages_id = pending.packages_id if pending.packages_id is not None else target.packages_id
         await self._commit(
             store, manager, session_id, target, CheckpointKind.ROLLBACK, manifest_id,
-            await store.ledger_seq(session_id), packages_id,
+            await store.ledger_seq(session_id), packages_id, f"rolled back to #{target.seq}",
         )
         await store.clear_pending(session_id)
         logger.info("rollback written back: session=%s target=#%s", session_id, target.seq)
@@ -1918,6 +1944,7 @@ class RecoverableHarness:
         manifest_id: str | None,
         ledger_seq: int,
         packages_id: str | None,
+        label: str = "",
     ) -> Checkpoint:
         commit_id = await manager.commit(kind.value)
         checkpoint = Checkpoint(
@@ -1931,6 +1958,7 @@ class RecoverableHarness:
             packages_id=packages_id,
             ledger_seq=ledger_seq,
             kind=kind,
+            label=label,
         )
         await store.put(checkpoint)
         await store.set_head(session_id, checkpoint.checkpoint_id)
