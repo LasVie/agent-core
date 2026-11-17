@@ -49,7 +49,8 @@ files:
 - Agent 没有声明的工作区外文件，没能备份的工作区外文件，以及 Agent 之后又被改过的工作区外文件；
 - 沙箱中的工作区。
 
-只支持单轮模式，不支持任务循环模式。
+单轮模式和任务循环模式都适用：任务循环模式下每一轮仍经过外层 `BEFORE_INVOKE` / `AFTER_INVOKE` 和内层 ReAct 的步骤边界。
+任务循环模式只验证了"一次调用一轮"的基本流程。
 
 上下文日志用 `core/session/vcs`（`for_session`、`commit`、`rewind`），vcs 本身的契约见其 `CLAUDE.md`。
 Rail 的事件路由与 priority 规则见 S_04。
@@ -252,7 +253,7 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 
 | 记录 | 键（`BaseKVStore`） | 内容 |
 |---|---|---|
-| `Checkpoint` | `recoverable:{session_id}:checkpoint:{checkpoint_id}` | `seq`、`parent_id`、vcs `commit_id` 与 `event_id`、`manifest_id`、`packages_id`、`ledger_seq`（当时账本的最大序号）、`kind`（`step` / `rollback`） |
+| `Checkpoint` | `recoverable:{session_id}:checkpoint:{checkpoint_id}` | `seq`、`parent_id`、vcs `commit_id` 与 `event_id`、`manifest_id`、`packages_id`、`ledger_seq`（当时账本的最大序号）、`kind`（`step` / `rollback`）、`label`（一行摘要，见下） |
 | `LedgerRecord` | `recoverable:{session_id}:ledger:{seq:012d}` | 工具名、参数摘要（最多 500 字符）、类别及原因（`detail`）、状态（`intended` / `succeeded` / `failed`）、错误、撤销工具与参数、`external_paths` 及其备份 `external_backups`（每个路径执行前和执行后的条目、没能备份的原因）、后台进程的 `pid` 与启动时间、全局安装的反向命令（`generated_undo`）与无法撤销项、`reverses` / `rollback_id`（撤销调用）、`abandoned` |
 | 账本序号 | `recoverable:{session_id}:ledger_seq` | 已分配的最大序号；同一会话内用锁串行分配 |
 | HEAD | `recoverable:{session_id}:head` | 当前检查点 ID |
@@ -268,6 +269,10 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 | `PendingRollback` | `recoverable:{session_id}:pending` | 目标检查点（为空时只有说明待写入）、恢复后的清单、待写入的回退说明，以及这些说明来自哪些回退计划 |
 | vcs 日志 | `{session_id}:vcs:...` | 由 vcs `KvBackend` 维护 |
 | 工作区锁 | 文件 `storage_dir/locks/{工作区键}.lock`，不在 `BaseKVStore` 里 | 占住时写入 `session {session_id}, pid {pid}`，被拒绝的一方在报错里看到 |
+
+检查点的 `label` 在建立时按上下文最后一条消息生成，最长 120 个字符：这一步的工具调用写成"工具名: 关键参数"
+（依次取 `command`、`file_path`、`path`、`query`、`url`、`pattern` 中第一个有值的，没有就只写工具名，多个调用用分号隔开）；
+模型的回复写成 `reply: …`；用户的输入写成 `user: …`；回退检查点写成 `rolled back to #<目标 seq>`。
 
 清单条目是 `[kind, digest, size, mtime_ns, ino, mode, link]`，`kind` 为 `f`（文件）、`l`（链接）、`d`（目录）、`s`（超过上限未存）。
 工作区键是工作区绝对路径 sha256 的前 16 位。持久化的记录都带 `schema_version`，读到未知版本报 `DEEPAGENT_RUNTIME_ERROR`。
