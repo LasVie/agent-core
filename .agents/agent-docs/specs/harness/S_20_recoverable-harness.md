@@ -194,7 +194,7 @@ Rail 的事件路由与 priority 规则见 S_04。
 
 | 入口 | 说明 |
 |---|---|
-| `RecoverableHarness(*, kv_store=None, storage_dir=None, dependency_dirs=..., build_output_dirs=..., file_size_cap=1 GB, use_clones=True, declarations=None, on_event=None, auto_limit_per_target=2, auto_limit_per_round=5, storage_cap=100 GB, min_free_ratio=0.2)` | `kv_store` 默认是 `storage_dir/recoverable.db` 上的 SQLite（`DbBasedKVStore`）；`storage_dir` 默认 `~/.openjiuwen/recoverable`，文件内容在 `storage_dir/objects/<工作区键>/`。依赖目录默认 `node_modules`、`.venv`、`venv`、`.tox`；构建产物默认 `dist`、`build`、`target`、`.next`。`declarations` 是宿主工具的 `EffectDeclaration`，按工具名；`outward_commands` 默认 `ssh`、`scp`、`sftp`、`kubectl`、`helm`、`docker`、`podman`、`aws`、`gcloud`、`az`、`terraform`、`psql`、`mysql`、`mongosh`、`redis-cli`、`crontab`、`systemctl`、`launchctl` |
+| `RecoverableHarness(*, kv_store=None, storage_dir=None, dependency_dirs=..., build_output_dirs=..., file_size_cap=1 GB, use_clones=True, declarations=None, on_event=None, auto_limit_per_target=2, auto_limit_per_round=5, storage_cap=100 GB, min_free_ratio=0.2, workspace_root=None)` | `workspace_root` 指定要快照的目录，不给时用 Agent 的工作区（Agent 改的是别处时由宿主指定，CLI 用当前目录）；`kv_store` 默认是 `storage_dir/recoverable.db` 上的 SQLite（`DbBasedKVStore`）；`storage_dir` 默认 `~/.openjiuwen/recoverable`，文件内容在 `storage_dir/objects/<工作区键>/`。依赖目录默认 `node_modules`、`.venv`、`venv`、`.tox`；构建产物默认 `dist`、`build`、`target`、`.next`。`declarations` 是宿主工具的 `EffectDeclaration`，按工具名；`outward_commands` 默认 `ssh`、`scp`、`sftp`、`kubectl`、`helm`、`docker`、`podman`、`aws`、`gcloud`、`az`、`terraform`、`psql`、`mysql`、`mongosh`、`redis-cli`、`crontab`、`systemctl`、`launchctl` |
 | `rail() -> CheckpointRail` | 注册到 DeepAgent 的 Rail；一个 harness 服务一个 DeepAgent |
 | `history(session_id, limit=None) -> list[Checkpoint]` | 从 HEAD 沿父检查点往回，最新的在前 |
 | `uncovered_files(session_id) -> list[str]` | 最新清单中超过单文件上限、没有存下的文件 |
@@ -283,6 +283,7 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 - S_02：依赖 DeepAgent 的 `save_state` / `clear_state` / `react_agent.context_engine` / `ensure_initialized`；运行状态缓存在 Session 对象上，写回后必须清掉。
 - S_09：工作区根目录取自 `Workspace.root_path`。
 - S_08：反向命令的复检用 `PermissionInterruptRail.engine` 的 `evaluate_global_policy_directly`，以及 bash 工具层的注入检查。
+- S_15：CLI 的 `chat --recoverable` 和 `/checkpoints`、`/rollback`、`/resume`、`/prune` 命令。
 - S_05：`bash`、`code` 工具的参数定义不变，声明参数只加在开启 ④ 的 Agent 的工具卡片上。
 - core 的 MCP 工具卡片：`McpToolCard.annotations`（可选，默认 `None`）保存服务器给的 `ToolAnnotations`，由 stdio、sse、
   playwright、streamable-http 客户端在 `list_tools` 时填入；模型看到的工具信息不变。Agent 注册的是名为

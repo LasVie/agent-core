@@ -162,6 +162,41 @@ You> /exit
 Goodbye!
 ```
 
+### 回退（`--recoverable`）
+
+打开后，Agent 每走一步都会在当前目录建一个检查点；回退时把当前目录的文件、对话上下文，以及 Agent 记下的
+工作区外的操作（例如它启动的容器、改过的 `~/.zshrc`）一起回到那个检查点。默认关闭。
+
+```bash
+$ openjiuwen chat --recoverable          # 或设置 OPENJIUWEN_RECOVERABLE=1
+
+You> 把登录模块改成用 JWT
+  ...
+You> /checkpoints
+   #   Time      What
+   6   14:32:10  reply: 已完成，测试通过  (now)
+   5   14:31:52  bash: npm install jsonwebtoken bcrypt
+   3   14:30:41  edit_file: src/auth/login.ts
+   0   14:29:58  user: 把登录模块改成用 JWT
+You> /rollback 3
+  （列出要写回、删除的文件，要卸载的包，要撤销的外部操作；可以划掉个别撤销，确认后才执行）
+Apply this rollback? [y/N] y
+Rollback completed. 2 file(s) written back, 1 deleted.
+```
+
+| 命令 | 作用 |
+|------|------|
+| `/checkpoints [all]` | 列出本会话的检查点（默认最近 20 个） |
+| `/rollback <#>` | 回到某个检查点，先确认 |
+| `/resume <session_id>` | 接着之前的会话（也可以启动时用 `openjiuwen chat --recoverable --resume <id>`） |
+| `/prune <keep>` | 存储不够时，每个会话只保留最近 `<keep>` 个检查点，先报告能腾出多少空间 |
+
+注意：
+
+- 回退不能撤销：检查点之后的改动（包括你自己改的）会丢掉。编辑器里没保存的文件请先保存或关闭。
+- 工作区以外的效果只认 Agent 记录和声明过的；它没声明的不会被撤销。
+- 数据存在 `~/.openjiuwen/recoverable`。在主目录这类包含它的目录里启动时会报错，请在项目目录里启动。
+
 ### 非交互式模式
 
 ```bash

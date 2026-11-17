@@ -34,6 +34,14 @@ files:
 - tests/unit_tests/harness/recoverable/test_signals.py
 - tests/unit_tests/harness/recoverable/test_workspace.py
 - openjiuwen/harness/rails/security/tool_security_rail.py
+- openjiuwen/harness/cli/cli.py
+- openjiuwen/harness/cli/agent/config.py
+- openjiuwen/harness/cli/agent/factory.py
+- openjiuwen/harness/cli/storage/session_store.py
+- openjiuwen/harness/cli/ui/repl.py
+- openjiuwen/harness/cli/ui/recoverable_commands.py
+- openjiuwen/harness/cli/README.md
+- tests/cli/integration/test_recoverable_cli.py
 - openjiuwen/core/foundation/tool/mcp/base.py
 - openjiuwen/core/foundation/tool/mcp/client/stdio_client.py
 - openjiuwen/core/foundation/tool/mcp/client/sse_client.py
@@ -82,7 +90,7 @@ design_note: null
   - **U8 MCP 提示**：core 的 MCP 工具卡片保留服务器给的提示（`annotations`）；声明表里没有的 MCP 工具，服务器标了只读的
     按无外部效果，其余按不可逆，宿主的声明优先。
 
-  开发单元 U1～U8 都已完成。
+  开发单元 U1～U8 都已完成。之后接入了 CLI：`openjiuwen chat --recoverable` 和 `/checkpoints`、`/rollback`、`/resume`、`/prune`。
 
 ## 决策归属与关系
 
@@ -270,6 +278,19 @@ U7d 新增的做法：
   里记下来自哪个计划，已写过就不再写。原来在回退里删除被丢弃检查点的清单，改由随后的清理处理（U7c），提交阶段少一步。
 - **崩溃发生在提交的最后一步**（计划已定稿、标记还没清除）：下一轮开始时发现计划不是 `applying`，直接清除标记。
 
+CLI 接入的做法（需求方 2026-11-17 决定：默认关闭、四个命令都做、建检查点时存摘要）：
+
+- **核对现状：** CLI 每个进程一个会话，上下文在内存里，退出就没了；`/sessions` 只能列出，不能恢复（P19 要核实的问题，答案是"不能"）。
+  CLI 用任务循环模式，实测可用（见"实施演进与修订"）。
+- **快照哪个目录：** CLI 的 `cfg.workspace`（默认 `~/.openjiuwen/workspace`）是 Agent 自己的状态目录，Agent 读写的是启动时的当前目录。
+  所以 `RecoverableHarness` 新增 `workspace_root`，CLI 设为当前目录；Rail 绑定工作区时优先用它。
+- **开关：** `chat --recoverable`，或 `OPENJIUWEN_RECOVERABLE=1`；`--resume` 必须和它一起用，因为上下文只在 ④ 的历史里。
+- **命令放在 `ui/recoverable_commands.py`，** `repl.py` 只注册命令、把输入框传给命令、打印提醒。`/rollback` 先列计划，
+  可以撤销和"要你确认"的外部操作带编号，供划掉或确认；不确认时调用 `decline_rollback`，计划作废。部分完成时可以当场重试或接受。
+- **会话切换：** 后端的 `use_session` 切换前释放当前会话对工作区的占用，否则新会话第一轮会被拒绝（U7b）。
+- **存储提醒：** `on_event` 收到 `storage_low` 时存进后端的 `notices`，欢迎界面后和每轮结束后打印一次。
+- **没碰的：** CLI 默认的写文件确认中断（`ConfirmInterruptRail`）照旧；它在 ④ 的登记之前拦下调用，两者不冲突。
+
 U8 新增的做法：
 
 - **core 的改动（增量）：** `McpToolCard` 新增可选字段 `annotations`，默认 `None`；`mcp/base.py` 新增 `mcp_tool_annotations`，
@@ -342,6 +363,8 @@ U8 新增的做法：
 | 2026-11-16 / 真实模型评估 | OpenRouter 上的 `deepseek/deepseek-v4-flash`；真实 DeepAgent 和 ④，`bash` 只记录参数、返回假的成功，不执行任何命令；20 个用例（无外部效果 9、可反向 5、不可逆 6，其中 4 个写工作区外文件、3 个是用户的原话）；工作区放在不含账户名的临时目录，已核对发给模型的内容里没有账户名、主目录和路径 | `RECOVERABLE_REAL_MODEL=1 .venv/bin/python -m pytest tests/system_tests/harness/recoverable/test_declaration_quality.py -q -p no:cacheprovider`（需在本地 `config_llm_local.yaml` 填密钥） | 见下文"真实模型评估"；采用第二版措辞后，最终一次类别正确 13/20，不可逆 6/6 | 每种措辞只跑了 1～3 次，波动约 ±2 个用例；其他模型未评估 |
 | 2026-11-16 / 文件工具写工作区外的修正 | 同上 | 临时让文件工具的目标不再备份 | 对应用例失败，恢复后通过；单元测试与提示词测试共 153 个通过 | — |
 | 2026-11-17 / 检查点摘要、任务循环模式 | 同上；任务循环模式用 `create_deep_agent(enable_task_loop=True)` | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable/ tests/unit_tests/harness/test_deep_agent_rail_event_routing.py tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py tests/unit_tests/harness/prompts -q -p no:cacheprovider` | 通过：155 个用例（含新增的摘要、任务循环模式各 1 个） | — |
+| 2026-11-17 / CLI 接入 | 同上；CLI 的 `LocalBackend` 和 `CLIConfig(recoverable=True)`，Agent 换成直接写文件的测试 Agent（避开 CLI 默认的写文件确认和本机的 MCP 配置），存储放在测试临时目录，交互回答用脚本代替；开发环境原来没装 `openjiuwen[cli]` 的 `prompt-toolkit`，按锁文件装了 3.0.52 | `.venv/bin/python -m pytest tests/cli/unit tests/cli/integration -q -p no:cacheprovider` | 新增 13 个用例全部通过；CLI 共 187 个通过、5 个失败，失败的 5 个在改动前就失败（工具追踪 3 个、auto-harness 报错 1 个、记忆 rail 挂载 1 个），与本特性无关 | 真实终端交互没有测 |
+| 2026-11-17 / CLI 接入测试有效性 | 同上 | 临时分别让划掉的反向操作照样执行、不经确认就执行、快照 Agent 的状态目录而不是当前目录、切换会话时不释放 | 对应用例都失败（分别 1、1、7、1 个），恢复后都通过 | — |
 | 2026-11-16 / U6 测试有效性 | 同上 | 临时分别去掉"之后又被改过"的比对、不记调用结束时的内容、去掉与工作区重叠的检查、让恢复什么都不做、去掉大小上限 | 对应用例都失败（分别 1、4、1、5、1 个），恢复后都通过 | — |
 | 2026-11-13 / V4、V7 实测 | 本仓库工作目录（8,527 个文件，218 MB，含 `.git`），APFS | 直接调用 `WorkspaceSnapshot.scan`，各测克隆和复制 | 第一份清单：克隆 2.52 秒、复制 2.24 秒；之后每步扫描约 170 毫秒 | 系统缓存为空时、更大的仓库上没有测。克隆没有更快，因为时间主要花在算指纹 |
 
@@ -453,15 +476,18 @@ U8 新增的做法：
 - **U7a 已证明的范围：** 运行中和空闲时的信号、去重、只有一个未结信号、人取代自动、人拒绝、自动次数上限、事件。
 - **U7a 未覆盖的：** 停在确认中断上时收到信号；进程在信号等待期间退出后查询回执；建立检查点失败的事件。
 - **U7b 已证明的范围：** 同一进程两个会话、两个进程之间的互斥，释放后可以使用，进程退出后锁自动释放；本轮开始时失败会中止本轮。
-- **U7b 未覆盖的：** Windows（只有进程内的判断）；网络文件系统上的 `flock`；CLI 换会话时是否调用 `release_session`。
+- **U7b 未覆盖的：** Windows（只有进程内的判断）；网络文件系统上的 `flock`。CLI 换会话时的释放已在 CLI 接入时完成。
 - **U7c 已证明的范围：** 回退后清理、超限只提示一次、预览与清除旧检查点、调整上限、删除会话，以及部分完成的回退重试时备份仍在。
 - **U7c 未覆盖的：** 多个会话共用一个工作区时的清理（只有删除会话的用例涉及）；上百 GB 时遍历内容目录的耗时；网络文件系统。
 - **U7d 已证明的范围：** 五个位置崩溃后的继续、不重复撤销、说明只写一次且数字准确、崩溃期间拒绝新一轮和新信号、结果未知的撤销只报告。
 - **U7d 未覆盖的：** 真实的进程被杀死（用异常模拟）；依赖安装、文件写回进行到一半时崩溃。
 - **U8 已证明的范围：** stdio 客户端带上服务器的提示；④ 按 `readOnlyHint` 给声明表里没有的 MCP 工具定默认类别；宿主声明优先。
 - **U8 未覆盖的：** 其他三种连接方式接真实服务器；服务器提示不实时的后果（只能靠宿主覆盖）。
-- **交付判断：** U1～U8 都满足各自范围。整个特性还不能算交付：真实包管理器（V8、V9）、真实模型是否认真声明、
-  CLI 接入（按 session_id 重新打开会话、换会话时 `release_session`）、停在中断上回退后又收到恢复输入，都还没有验证或处理。
+- **CLI 接入已证明的范围：** 打开开关后快照当前目录；`/checkpoints` 列出摘要；`/rollback` 确认后恢复文件和上下文、
+  不确认则什么都不变、可以逐条划掉反向操作；模拟重启后 `/resume` 接回原上下文；同一个 REPL 里来回切换会话；
+  `/prune` 先报告再删除；没开回退时命令给出提示；存储在当前目录里时启动报错。
+- **CLI 接入未覆盖的：** 真实终端里的交互（用假的输入框代替）；CLI 默认的写文件确认中断和回退一起出现的情况；`run` 模式。
+- **交付判断：** U1～U8 和 CLI 接入都满足各自范围。还差：pnpm、yarn、brew、conda；停在中断上回退后又收到恢复输入（下一项）。
 
 ### 覆盖与资料同步
 
@@ -477,7 +503,8 @@ U8 新增的做法：
 | --- | --- | --- | --- |
 | 会话停在中断上时执行回退，宿主随后又发来恢复中断的输入 | 未实现 | 目标状态里已经没有中断记录，这次恢复的结果没有定义。宿主在回退后应当发新问题，不要发恢复输入 | U7 |
 | 宿主用同一个 session_id 开始一段新对话 | 有意取舍 | Session 为空时会恢复旧上下文。同一个 session_id 视为同一段对话 | 写进接入说明 |
-| CLI 能否按 session_id 重新打开会话 | 未核实 | 不能的话，CLI 用户在重启后无法回退 | U7 或 CLI 接入时核实 |
+| CLI 的会话记录在回退后保留被丢弃的消息 | 有意取舍 | `~/.openjiuwen/sessions/*.json` 只是对话流水，供 `/sessions` 列出，回退不改它；上下文以 ④ 的历史为准 | — |
+| `openjiuwen run` 不支持回退 | 未接入 | 单轮非交互，没有确认回退的地方 | 有需要再加 |
 | 任务循环模式的复杂情况 | 未验证 | 一次调用内的多轮跟进（follow-up）、插话（steering）下的检查点和回退没有测过；"一次调用一轮"的基本流程已测 | CLI 使用中观察 |
 | 模型漏写的工作区外路径 | 已知限制 | 不会备份，回退说明提示"没有声明的工作区外文件没有处理" | 靠声明；无更好办法 |
 | 命令顺带建的上级目录 | 有意取舍 | 声明 `~/.config/new/x` 而 `new/` 原来不存在时，回退只删 `x`，留下空的 `new/` | 让模型声明最上面一级新建的目录 |
@@ -487,7 +514,6 @@ U8 新增的做法：
 | 全局 `pip` 的识别 | 已知限制 | 按 ④ 所在进程的 `VIRTUAL_ENV` 判断是不是全局；命令里先激活虚拟环境再装包时，前后比较的是全局 pip，差异为空 | 需要时改为解析命令实际用的解释器 |
 | Node 只看顶层包 | 有意取舍 | 嵌套依赖随顶层包一起装卸，不单独记 | — |
 | 人拒绝 JEV 的计划后，下一轮清零"同一轮"的计数 | 已知限制（需求方 2026-11-16 接受） | JEV 发信号、人拒绝，反复下去不受"同一轮"上限限制；"同一目标"上限仍然有效 | 需要时由宿主标记新需求 |
-| CLI 换会话时释放工作区 | 未接入 | CLI 在同一进程里开新对话时不调用 `release_session` 的话，新会话的第一轮会被拒绝 | 接入 CLI 时处理 |
 | Windows 上跨进程的互斥 | 未实现 | 没有 `fcntl`，只在进程内判断 | 有需要时用 `msvcrt.locking` |
 | 名单以外的对外命令（如 `python deploy.py`） | 已知限制 | 以模型的声明为准，确认时有提示 | 无更好办法，靠声明和名单补漏 |
 | 模型填写声明不准 | 已评估（DeepSeek V4 Flash），已知限制 | 不可逆的操作没有漏报；但工作区里的改动常被声明为 `reversible` 并附上反向命令（回退时会多执行这些命令，随后快照恢复照样回到目标）；新建资源约一半被声明为 `irreversible`（撤不回，只报告）；删除工作区外目录常被声明为 `irreversible` 而不列路径 | 改措辞已到头；要更准需改声明的结构，待讨论。其他模型未评估 |

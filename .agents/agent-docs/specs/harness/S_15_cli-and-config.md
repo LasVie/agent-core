@@ -18,7 +18,7 @@ author_email: yangzequ1@huawei.com
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/cli/`（24 文件） |
-| 最近一次修订日期 | 2026-10-15 |
+| 最近一次修订日期 | 2026-11-17 |
 | 关联 feature | `F_22_cli-jiuwen-memory-rail-mount-and-switch.md` |
 
 ## 范围 / 边界
@@ -60,13 +60,21 @@ author_email: yangzequ1@huawei.com
    pytest 运行时跳过（`"pytest" in sys.modules`）。
 4. **装配统一走 harness 构造流**：`cli/agent/factory.py` 调 `create_deep_agent`（`S_01`），
    不在 CLI 另造装配路径。
-5. **会话存储独立**：`cli/storage/session_store.py` 管理 CLI 侧会话记录；repl / runner
-   经它恢复上一会话（`S_02` session 语义的 CLI 落地）。
+5. **会话存储独立**：`cli/storage/session_store.py` 管理 CLI 侧会话记录，只存每条消息的角色和文字，
+   供 `/sessions` 列出；单凭它不能恢复会话的上下文。打开回退时，`--resume` / `/resume` 用
+   `SessionStore.resume_session` 把后续消息接到原会话的记录文件上，上下文由 `S_20` 从存储的历史写回。
 6. **渲染面**：`ui/renderer.py`（结果渲染）、`ui/repl.py`（交互循环）、`ui/runner.py`
    （run 驱动）、`ui/todo_render.py` / `ui/tool_display.py`（todo / 工具输出展示）——
    CLI 是 `S_02` 输出租约 / `S_10` 投影的唯一宿主面之一。
 7. **CLI rail**：`cli/rails/token_tracker.py` / `tool_tracker.py` 负责 CLI 的 token /
    工具调用追踪，经 `S_04` rail 机制挂载（CLI 专用 rail，不进 `harness/rails/__init__`）。
+8. **回退默认关闭**：`chat --recoverable`（或 `OPENJIUWEN_RECOVERABLE=1`）时，`LocalBackend` 创建 `S_20` 的
+   `RecoverableHarness`，快照的是启动时的当前目录（`cfg.cwd`，Agent 实际读写的目录），不是 `cfg.workspace`
+   （Agent 自己的状态目录）。存储默认 `~/.openjiuwen/recoverable`；当前目录包含这个存储目录时（例如在主目录启动），
+   启动报错。REPL 命令 `/checkpoints`、`/rollback`、`/resume`、`/prune` 在 `ui/recoverable_commands.py`；
+   `/rollback` 和 `/prune` 先显示要做什么，经确认才执行，`/rollback` 还可以逐条划掉反向操作或确认失败调用的反向操作。
+   切换会话（`/resume`）时，当前会话释放对工作区的占用。存储超限等提醒在欢迎界面后和每轮结束后打印一次。
+   `--resume` 必须和 `--recoverable` 一起用；没打开回退时这四个命令只提示怎样打开。`run` 不支持回退。
 
 ## 接口契约
 
@@ -74,7 +82,16 @@ author_email: yangzequ1@huawei.com
 # cli/cli.py（Click）
 openjiuwen           # 交互式 REPL（默认）
 openjiuwen chat      # 交互式 REPL（显式）
+openjiuwen chat --recoverable [--resume SESSION_ID]  # 打开回退；可接着之前的会话（不变量 8）
 openjiuwen run PROMPT  # 非交互单轮
+
+# REPL 中的回退命令（ui/recoverable_commands.py，--recoverable 时可用）
+/checkpoints [all]   # 本会话的检查点，最新的在前：编号、时间、摘要（默认最近 20 个）
+/rollback <#>        # 显示计划 → 划掉 / 确认反向操作 → 确认 → 执行；部分完成时可重试或接受
+/resume <session_id> # 接着之前的会话
+/prune <keep>        # 每个会话保留最近 <keep> 个检查点：先报告能腾出多少空间，确认后删除
+
+OPENJIUWEN_RECOVERABLE=1  # 等同 --recoverable
 
 # cli/agent/config.py
 SETTINGS_PATH = Path.home() / ".openjiuwen" / "settings.json"
@@ -115,6 +132,8 @@ JIUWEN_MEMORY_USER_ID     # 用户记忆轴，映射 rail user_id，缺省 jiuwe
 | 3 | CLI 参数 | 最高 |
 
 ## 与其它 spec 的关系
+
+- `S_20`：`chat --recoverable` 的检查点与回退；CLI 用 `RecoverableHarness(workspace_root=cfg.cwd)`。
 
 - 装配经 `create_deep_agent` —— `S_01`；运行经交互 supervisor —— `S_02`。
 - CLI rail 走 rail 机制 —— `S_04`；prompt 面走 `S_06`；todo/工具渲染对应 `S_05` 的
