@@ -7,6 +7,7 @@ author_email: song.haoran@h-partners.com
 modules:
 - harness
 - core/foundation/tool
+- core/session
 files:
 - openjiuwen/harness/recoverable/__init__.py
 - openjiuwen/harness/recoverable/cleanup.py
@@ -52,6 +53,8 @@ files:
 - tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py
 - tests/system_tests/harness/recoverable/test_real_package_managers.py
 - tests/system_tests/harness/recoverable/test_declaration_quality.py
+- openjiuwen/core/session/state/base.py
+- tests/unit_tests/core/session/vcs/test_rewind_empty_state.py
 designs:
 - D-20261113-1506-recoverable-harness
 design_note: null
@@ -295,9 +298,9 @@ CLI 接入的做法（需求方 2026-11-17 决定：默认关闭、四个命令�
 停在确认上时回退的做法（需求方 2026-11-17 决定：迟到的回答拒绝并报错；计划里列出要取消的调用）：
 
 - **写回后状态与目标完全一致。** 写回用 vcs `rewind`，它用 `set_state` 写回状态，而 core 的 `InMemoryStateLike.set_state`
-  遇到空字典什么都不做。目标的状态为空时（例如一轮里的头几步），目标之后才加的状态键都留了下来，其中就有等待确认的中断。
-  改为写回后对比：活 Session 的全局状态里有、目标里没有的键（上下文键除外）一律删掉。目标状态不为空时 `set_state` 本来就整体替换，
-  所以这只是让空状态的情况与之一致；目标之后用户选的"始终允许"同样被撤掉。没有改 core。
+  原来遇到空字典什么都不做。目标的状态为空时（例如一轮里的头几步），目标之后才加的状态键都留了下来，其中就有等待确认的中断。
+  2026-11-19 起改在 core 修复（[修复记录](../bugfix/core_runtime/B_20261119_1444_empty-state-write-back.md)），
+  ④ 不再自己删键。目标之后用户选的"始终允许"同样被撤掉。
 - **记下等待确认的调用。** 回合结束时读 Session 的中断状态，按中断处理器的列法记下每个等待确认的调用（工具调用 ID、中断 ID、工具名、参数摘要），
   存在 `recoverable:{session}:paused`；为等待中的信号生成计划之前记，这样计划里就有它们。计划的 `cancelled_calls` 取自这里；CLI 的计划多一行
   "Cancels the call waiting for confirmation"。
@@ -386,6 +389,7 @@ U8 新增的做法：
 | 2026-11-17 / 停在确认上时回退：问题复现 | 同上；`ask_permissions("work")` 让权限 Rail 拦下 `work`，同一轮先执行了一个不用确认的工具 | 修改前，停在 `work` 的确认上时回退到 HEAD 或本轮开始，再分别发来批准和一条新消息 | 发批准：`work` 照样执行，上下文里多了一条没有对应调用的工具结果；发新消息：模型没被调用，又一次要求确认 `work`。原因是写回后中断状态还在 | — |
 | 2026-11-17 / 停在确认上时回退 | 同上 | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable tests/cli/integration/test_recoverable_cli.py tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py tests/unit_tests/core/session/vcs -q -p no:cacheprovider`；另跑用到中断夹具的 5 个测试文件和 Rail 路由契约 | 通过：145 个（含新增的 `test_paused.py` 4 个、CLI 1 个）；中断与路由 148 个通过 | 工作流（`session.interact`）的中断没有测 |
 | 2026-11-17 / 停在确认上时回退测试有效性 | 同上 | 临时分别去掉写回后删状态键、去掉拒绝、不先比对当前等待的调用、不记被丢弃的调用、回合结束时不记等待确认的调用 | 对应用例都失败（分别 3、2、1、1、2 个），恢复后都通过 | — |
+| 2026-11-19 / 写回空状态改在 core 修复 | 同上 | 删掉 ④ 的删键，改 core `set_state`；详细步骤见 [修复记录](../bugfix/core_runtime/B_20261119_1444_empty-state-write-back.md) | `tests/unit_tests/harness/recoverable` 全部通过；把 core 改回原来的判断，`test_paused.py` 3 个失败 | Redis checkpointer 没有实测 |
 | 2026-11-16 / U6 测试有效性 | 同上 | 临时分别去掉"之后又被改过"的比对、不记调用结束时的内容、去掉与工作区重叠的检查、让恢复什么都不做、去掉大小上限 | 对应用例都失败（分别 1、4、1、5、1 个），恢复后都通过 | — |
 | 2026-11-13 / V4、V7 实测 | 本仓库工作目录（8,527 个文件，218 MB，含 `.git`），APFS | 直接调用 `WorkspaceSnapshot.scan`，各测克隆和复制 | 第一份清单：克隆 2.52 秒、复制 2.24 秒；之后每步扫描约 170 毫秒 | 系统缓存为空时、更大的仓库上没有测。克隆没有更快，因为时间主要花在算指纹 |
 
@@ -527,7 +531,6 @@ U8 新增的做法：
 | --- | --- | --- | --- |
 | 写回之后的轮次里，对被丢弃的工作流中断的回答 | 已知限制 | 只记工具调用的中断（`ToolInterruptionState`）；工作流（`session.interact`）的中断在写回那一轮之后不再识别，回答会被当成普通消息交给模型。写回之前的回答照样拒绝 | 有需要时按 `ai_message` 的调用一并记下 |
 | 子 Agent 自己 Session 里的中断状态 | 不在范围内 | 子 Agent 不在本期范围；父 Agent 一侧的中断随回退清掉 | 做子 Agent 时一起处理 |
-| core vcs 写回空状态不生效 | 已知问题，已绕开 | `InMemoryStateLike.set_state` 遇到空字典不替换，vcs `rewind` 写回空状态时留下后来加的键。④ 写回后自行删除。vcs `rewind` 目前只有 ④ 调用，以后直接用它的代码会遇到同样的问题 | 交 core 中 session / vcs 的维护者 |
 | 宿主用同一个 session_id 开始一段新对话 | 有意取舍 | Session 为空时会恢复旧上下文。同一个 session_id 视为同一段对话 | 写进接入说明 |
 | CLI 的会话记录在回退后保留被丢弃的消息 | 有意取舍 | `~/.openjiuwen/sessions/*.json` 只是对话流水，供 `/sessions` 列出，回退不改它；上下文以 ④ 的历史为准 | — |
 | `openjiuwen run` 不支持回退 | 未接入 | 单轮非交互，没有确认回退的地方 | 有需要再加 |
@@ -667,3 +670,12 @@ U8 新增的做法：
 - 变化：S_20 的范围改为"两种模式都适用"，新增任务循环模式的用例。多轮跟进、插话的情况仍未验证，列入遗留。
 - 另外，CLI 要列出检查点供人挑选，需求方 2026-11-17 决定在建检查点时存一行摘要：`Checkpoint.label`（格式见 S_20 数据结构）。
 - 旧结论的效力：不再适用。
+
+### 2026-11-19 写回空状态改在 core 修复
+
+- 原结论：2026-11-17"停在确认上时回退"那条修订记为"没有改 core"，由 ④ 在写回后删掉目标之后的状态键；已知遗留里记为"交 core 中 session / vcs 的维护者"。
+- 新证据：只改 core `set_state`（空字典也写回）、不要 ④ 的删键，回退测试全部通过；core 的会话、单 Agent、工作流等 1295 个测试修改前后结果一致。
+  ④ 的删键只处理全局状态，Agent 状态里之后才写的键原来也会留下。
+- 变化：需求方 2026-11-19 决定在本分支直接改 core，删掉 ④ 的 `_drop_later_state`。
+  S_20 不变量 6 改为依赖 core 的写回；对应遗留删去。
+- 旧结论的效力：局部替代。"写回后状态与目标完全一致"不变，做法从 ④ 删键改为 core 写回。

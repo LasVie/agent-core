@@ -25,9 +25,10 @@ generated: true
 | [extensions/a2a](#module-8) |
 | [extensions/observability](#module-9) |
 | [harness](#module-10) |
-| [harness/subagents](#module-11) |
-| [harness/tools/browser_move/decision](#module-12) |
-| [harness/tools/subagent](#module-13) |
+| [harness/recoverable](#module-11) |
+| [harness/subagents](#module-12) |
+| [harness/tools/browser_move/decision](#module-13) |
+| [harness/tools/subagent](#module-14) |
 
 <a id="module-1"></a>
 
@@ -93,6 +94,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261103_1050_grandocean-review-feedback](core_runtime/B_20261103_1050_grandocean-review-feedback.md) | B | grandocean 七项检视意见的兼容性修复 | alan_cheng | openjiuwen/core/session, openjiuwen/core/context_engine, openjiuwen/core/controller, openjiuwen/core/runner/drunner/dmessage_queue, openjiuwen/extensions/a2a | openjiuwen/core/session/session_controller/scope.py, openjiuwen/core/session/session_controller/chain_session.py, openjiuwen/core/session/vcs/models.py, openjiuwen/core/session/vcs/delta.py, openjiuwen/core/session/vcs/adapter.py, openjiuwen/core/context_engine/context_engine.py, openjiuwen/core/controller/modules/intent_recognizer.py, openjiuwen/core/runner/drunner/dmessage_queue/message_serializer.py, openjiuwen/core/runner/runner_config.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_factory.py, openjiuwen/core/runner/drunner/dmessage_queue/message_queue_fake.py, openjiuwen/extensions/message_queue/message_queue_pulsar.py, openjiuwen/extensions/a2a/a2a_agent_executor.py | 无独立 D：用户明确要求按已有七条检视意见直接开发并补测试，无独立设计文档。 |
+| [B_20261119_1444_empty-state-write-back](core_runtime/B_20261119_1444_empty-state-write-back.md) | B | 写回空状态不生效，vcs 回退后留下之后才写的状态 | Song Haoran | openjiuwen/core/session, openjiuwen/harness/recoverable | openjiuwen/core/session/state/base.py, openjiuwen/harness/recoverable/harness.py, tests/unit_tests/core/session/vcs/test_rewind_empty_state.py | 无独立 D：core session 的缺陷修复，无独立设计；在实施 D-20261113-1506-recoverable-harness 时发现，过程见 F_20261113_1706_recoverable-harness。 |
 
 <a id="module-7"></a>
 
@@ -128,13 +130,21 @@ generated: true
 
 <a id="module-11"></a>
 
+## harness/recoverable
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261119_1444_empty-state-write-back](core_runtime/B_20261119_1444_empty-state-write-back.md) | B | 写回空状态不生效，vcs 回退后留下之后才写的状态 | Song Haoran | openjiuwen/core/session, openjiuwen/harness/recoverable | openjiuwen/core/session/state/base.py, openjiuwen/harness/recoverable/harness.py, tests/unit_tests/core/session/vcs/test_rewind_empty_state.py | 无独立 D：core session 的缺陷修复，无独立设计；在实施 D-20261113-1506-recoverable-harness 时发现，过程见 F_20261113_1706_recoverable-harness。 |
+
+<a id="module-12"></a>
+
 ## harness/subagents
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261102_1733_browser-pr-contract-review](harness/B_20261102_1733_browser-pr-contract-review.md) | B | Browser PR budget and exception contract corrections | ShowHsiang | openjiuwen/harness/subagents, openjiuwen/harness/tools/subagent, openjiuwen/harness/tools/browser_move/decision | openjiuwen/harness/subagents/browser_agent.py, openjiuwen/harness/tools/subagent/task_tool.py, tests/unit_tests/harness/test_deep_agent_terminal_stream.py, tests/unit_tests/harness/tools/browser_move/test_browser_fact_handoff.py, tests/unit_tests/harness/tools/browser_move/test_browser_shared_state_delivery.py, tests/unit_tests/harness/tools/browser_move/test_browser_local_intent_readers.py | 无独立 D：Local corrections to the existing explicit-budget and fact-retention contracts; no new architecture or feature. |
 
-<a id="module-12"></a>
+<a id="module-13"></a>
 
 ## harness/tools/browser_move/decision
 
@@ -142,7 +152,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261102_1733_browser-pr-contract-review](harness/B_20261102_1733_browser-pr-contract-review.md) | B | Browser PR budget and exception contract corrections | ShowHsiang | openjiuwen/harness/subagents, openjiuwen/harness/tools/subagent, openjiuwen/harness/tools/browser_move/decision | openjiuwen/harness/subagents/browser_agent.py, openjiuwen/harness/tools/subagent/task_tool.py, tests/unit_tests/harness/test_deep_agent_terminal_stream.py, tests/unit_tests/harness/tools/browser_move/test_browser_fact_handoff.py, tests/unit_tests/harness/tools/browser_move/test_browser_shared_state_delivery.py, tests/unit_tests/harness/tools/browser_move/test_browser_local_intent_readers.py | 无独立 D：Local corrections to the existing explicit-budget and fact-retention contracts; no new architecture or feature. |
 
-<a id="module-13"></a>
+<a id="module-14"></a>
 
 ## harness/tools/subagent
 

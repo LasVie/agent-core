@@ -16,6 +16,7 @@ files:
   - openjiuwen/core/session/vcs/models.py
   - openjiuwen/core/session/vcs/delta.py
   - openjiuwen/core/session/vcs/adapter.py
+  - openjiuwen/core/session/state/base.py
   - openjiuwen/core/context_engine/context_engine.py
   - openjiuwen/core/controller/modules/intent_recognizer.py
   - openjiuwen/core/runner/drunner/dmessage_queue/message_serializer.py
@@ -42,6 +43,9 @@ files:
 - VCS 快照恢复只删除目标快照中不存在的 context；已有实例执行 `load_state`，保留 processor、
   token counter 和调用方引用。`ContextEngine.list_context_ids(session_id)` 只枚举该会话，不保存状态。
   缺失实例通过引擎默认配置创建；快照不包含可恢复的自定义运行配置。
+- 状态写回（`set_state`）后，状态与传入的完全一致：传入 `{}` 写回为空，之后才写的键全部删掉；
+  传入 `None`（快照里没有这一部分）保持原状。vcs `rewind` / `fork` 和 checkpointer 的恢复都依赖这一点。
+  不要用真假判断代替 `is None`（[修复记录](../../bugfix/core_runtime/B_20261119_1444_empty-state-write-back.md)）。
 
 ## 2. 任务与 A2A 结束
 
@@ -92,5 +96,6 @@ MessageQueueConfig(
 `.link` 多文件写入沿用既有 flush 行为，不新增跨文件事务或多 writer 保证。
 
 验证入口：`test_scope.py`、`test_link_filename_collision.py`、`test_review_compatibility.py`、
-`test_intent_optional_target.py`、`test_artifact_completion.py`、`test_message_serializer_versions.py`。
+`test_intent_optional_target.py`、`test_artifact_completion.py`、`test_message_serializer_versions.py`、
+`test_rewind_empty_state.py`。
 实施依据与证据见 [修复记录](../../bugfix/core_runtime/B_20261103_1050_grandocean-review-feedback.md)。

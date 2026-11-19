@@ -31,7 +31,7 @@ files:
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py` / `effects.py` / `processes.py` / `dependencies.py` / `external.py` / `lock.py` / `cleanup.py`） |
-| 最近一次修订日期 | 2026-11-17 |
+| 最近一次修订日期 | 2026-11-19 |
 | 关联设计 | D-20261113-1506-recoverable-harness |
 | 关联 feature | F_20261113_1706_recoverable-harness.md |
 
@@ -70,8 +70,7 @@ Rail 的事件路由与 priority 规则见 S_04。
    下一轮 `BEFORE_INVOKE` 时把目标的上下文和状态写回 Session，清掉 DeepAgent 的运行状态缓存，追加回退说明，
    并提交一个 `kind=rollback` 的检查点。写回失败时这一轮报错，不在旧路线上继续。
    写回后 Session 状态与目标完全一致：目标之后才有的状态键全部删掉，包括等待确认的中断（不变量 39），
-   以及目标之后用户在确认中选的"始终允许"。vcs 用 `set_state` 写回状态，而 core 的 `set_state` 遇到空状态什么都不做，
-   所以由 ④ 在写回后删掉这些键。
+   以及目标之后用户在确认中选的"始终允许"。这由 vcs `rewind` 的 `set_state` 保证，目标的状态为空时也一样（[core_runtime S_01](../core_runtime/S_01_runtime-data-compatibility.md) 第 1 节）。
 7. **重启后恢复。** `BEFORE_INVOKE` 时，若会话有 HEAD 而上下文池和 Session 状态里都没有消息，先把 HEAD 写回 Session，
    再记任何新内容，避免 vcs 把空 Session 记成"清空上下文"。重启后要在第一轮之前回退，宿主先调用
    `DeepAgent.ensure_initialized()`，让 Rail 拿到工作区。
@@ -295,7 +294,7 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 - S_02：依赖 DeepAgent 的 `save_state` / `clear_state` / `react_agent.context_engine` / `ensure_initialized`；运行状态缓存在 Session 对象上，写回后必须清掉。
 - core 的中断：读 Session 状态里的 `INTERRUPTION_KEY`（`ToolInterruptionState`），用 `pending_interrupts` 列出等待确认的调用，
   用 `match_answers` 判断一个 `InteractiveInput` 回答的是哪些调用，与中断处理器恢复时的判断一致。
-- core 的 vcs：写回状态时空状态不生效（见不变量 6），④ 在写回后自行删除目标之后的状态键；vcs 本身没改。
+- core 的 vcs 与 session 状态：依赖写回后状态与目标完全一致，目标状态为空时也一样（[core_runtime S_01](../core_runtime/S_01_runtime-data-compatibility.md) 第 1 节）。
 - S_09：工作区根目录取自 `Workspace.root_path`。
 - S_08：反向命令的复检用 `PermissionInterruptRail.engine` 的 `evaluate_global_policy_directly`，以及 bash 工具层的注入检查。
 - S_15：CLI 的 `chat --recoverable` 和 `/checkpoints`、`/rollback`、`/resume`、`/prune` 命令。
