@@ -130,7 +130,8 @@ class InMemoryStateLike(StateLike):
         return deepcopy(self._state)
 
     def set_state(self, state: dict) -> None:
-        if state:
+        # None means there is nothing to restore; an empty dict is a real empty state.
+        if state is not None:
             self._state = state
 
 
