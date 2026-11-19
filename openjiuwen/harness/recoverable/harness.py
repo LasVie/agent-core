@@ -73,7 +73,6 @@ from openjiuwen.core.foundation.store.kv.db_based_kv_store import DbBasedKVStore
 from openjiuwen.core.foundation.tool.mcp.base import McpToolCard
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.session.vcs import VersioningConfig, VersioningManager, for_session
-from openjiuwen.core.session.vcs.constants import CONTEXT_KEY, GLOBAL_STATE_KEY, STATE_KEY
 from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
 from openjiuwen.core.single_agent.interrupt.state import (
     INTERRUPTION_KEY,
@@ -242,21 +241,6 @@ def _paused_calls(session: "Session") -> list[PausedCall]:
         for entry in state.interrupted_tools.values()
         for call_id, request in entry.interrupt_requests.items()
     ]
-
-
-def _drop_later_state(session: "Session", restored: dict) -> None:
-    """Remove the session state keys the restored checkpoint did not have.
-
-    vcs restores the state with ``set_state``, which ignores an empty state, so
-    keys added after an empty one, such as a tool call waiting for confirmation,
-    would otherwise survive the rollback. The context key belongs to the context
-    track and is rewritten from the restored context.
-    """
-    state = restored.get(STATE_KEY) or {}
-    kept = set((state.get(GLOBAL_STATE_KEY) or {}).keys())
-    later = [key for key in (session.get_state() or {}) if key not in kept and key != CONTEXT_KEY]
-    if later:
-        session.update_state({key: None for key in later})
 
 
 def _listed(paths: list[str]) -> str:
@@ -1802,7 +1786,7 @@ class RecoverableHarness:
                 error_msg=f"rollback target {pending.target_id} of session {session_id} is missing",
             )
         manager = self._manager_for(session, context_engine)
-        _drop_later_state(session, await manager.rewind(target.commit_id))
+        await manager.rewind(target.commit_id)
         deep_agent.clear_state(session)
         await self._append_note(session, context_engine, pending.notes)
         manifest_id = pending.manifest_id if pending.manifest_id is not None else target.manifest_id
