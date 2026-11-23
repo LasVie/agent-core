@@ -2,10 +2,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Dependency detection and restore with real package managers (design V8, V9).
 
-Needs the network (PyPI) and runs only with ``RECOVERABLE_REAL_PACKAGES=1``.
-Everything is installed into virtual environments under the test's temporary
-directory; "global" pip is a virtual environment standing in for the system
-Python, so nothing on the machine changes.
+Needs the network (PyPI, the npm registry, Yarn releases) and runs only with
+``RECOVERABLE_REAL_PACKAGES=1``; the npm, pnpm and yarn tests are skipped when
+those programs are on neither PATH nor ``~/.local/node/bin``. Everything is
+installed under the test's temporary directory: "global" pip is a virtual
+environment standing in for the system Python, and the global packages, stores
+and caches of npm, pnpm and yarn are pointed there, so nothing on the machine
+changes.
 """
 from __future__ import annotations
 
@@ -245,3 +248,101 @@ async def test_a_global_npm_install_and_upgrade_are_reversed(tmp_path, npm_path,
 
     assert result.status == RollbackStatus.COMPLETED, result.effects
     assert list_global("npm") == before
+
+
+# --------------------------------------------------------------------- pnpm and yarn
+
+LOCKFILES = {"pnpm": "pnpm-lock.yaml", "yarn": "yarn.lock"}
+ADD = {"pnpm": ["pnpm", "add"], "yarn": ["yarn", "add", "--no-progress"]}
+GLOBAL_ADD = {"pnpm": "pnpm add -g", "yarn": "yarn global add --no-progress"}
+
+
+@pytest.fixture
+def node_managers(tmp_path, monkeypatch):
+    """pnpm and yarn with their store, caches and global packages under the test's directory."""
+    pnpm_home = tmp_path / "pnpm-home"
+    monkeypatch.setenv("PATH", os.pathsep.join([str(pnpm_home / "bin"), str(NODE_BIN), os.environ["PATH"]]))
+    for name in ("pnpm", "yarn"):
+        if shutil.which(name) is None:
+            pytest.skip(f"{name} is not installed")
+    monkeypatch.setenv("PNPM_HOME", str(pnpm_home))
+    monkeypatch.setenv("pnpm_config_store_dir", str(tmp_path / "pnpm-store"))
+    monkeypatch.setenv("pnpm_config_cache_dir", str(tmp_path / "pnpm-cache"))
+    monkeypatch.setenv("YARN_CACHE_FOLDER", str(tmp_path / "yarn-cache"))
+    monkeypatch.setenv("YARN_GLOBAL_FOLDER", str(tmp_path / "yarn-global"))
+    monkeypatch.setenv("YARN_PREFIX", str(tmp_path / "yarn-prefix"))
+
+
+def _node_project(path: Path, manager: str, *packages: str) -> Path:
+    path.mkdir(parents=True)
+    (path / "package.json").write_text(json.dumps({"name": path.name, "version": "1.0.0", "private": True}))
+    if packages:
+        _sh(*ADD[manager], *packages, cwd=path)
+    return path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manager", ["pnpm", "yarn"])
+async def test_a_pnpm_or_yarn_project_returns_to_its_checkpoint(tmp_path, node_managers, runner, manager):
+    ws = tmp_path / "ws"
+    web = _node_project(ws / "web", manager, "left-pad@1.1.0")
+    start = list_packages(web / "node_modules")
+    files = {name: (web / name).read_text() for name in ("package.json", LOCKFILES[manager])}
+    harness = _harness(tmp_path)
+    agent = _agent(ws, harness)
+    command = " ".join([*ADD[manager], "left-pad@1.3.0", "is-odd@3.0.1"])
+    bash = json.dumps({"command": command, "workdir": str(web), "side_effect": "none"})
+    with scripted(_model(create_tool_call_response("bash", bash, tool_call_id="c1"))):
+        await run(agent, "upgrade", "s1")
+        assert list_packages(web / "node_modules")["left-pad"] == "1.3.0"
+        plan, result = await _rollback(harness)
+
+    assert [c.error for c in plan.package_changes] == [None]
+    assert result.status == RollbackStatus.COMPLETED, result.package_changes
+    assert list_packages(web / "node_modules") == start, "is-odd is gone and left-pad is 1.1.0"
+    assert {name: (web / name).read_text() for name in files} == files
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manager", ["pnpm", "yarn"])
+async def test_a_global_pnpm_or_yarn_install_and_upgrade_are_reversed(tmp_path, node_managers, runner, manager):
+    _sh("sh", "-c", f"{GLOBAL_ADD[manager]} left-pad@1.1.0", env=os.environ.copy())
+    before = list_global(manager)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = _harness(tmp_path)
+    agent = _agent(ws, harness)
+    bash = json.dumps({"command": f"{GLOBAL_ADD[manager]} left-pad@1.3.0 is-odd@3.0.1", "side_effect": "none"})
+    with scripted(_model(create_tool_call_response("bash", bash, tool_call_id="c1"))):
+        await run(agent, "install tools", "s1")
+        assert list_global(manager)["left-pad"] == "1.3.0" and "is-odd" in list_global(manager)
+        _, result = await _rollback(harness)
+
+    assert before == {"left-pad": "1.1.0"}
+    assert result.status == RollbackStatus.COMPLETED, result.effects
+    assert list_global(manager) == before
+
+
+@pytest.mark.asyncio
+async def test_a_yarn_plug_and_play_project_returns_with_its_files(tmp_path, node_managers, runner, monkeypatch):
+    """Yarn 2 and later resolve packages through ``.pnp.cjs`` and ``yarn.lock``, which the snapshot restores."""
+    monkeypatch.delenv("YARN_PREFIX")  # A yarn 1 setting; later versions refuse to run with it.
+    ws = tmp_path / "ws"
+    web = _node_project(ws / "web", "yarn")
+    _sh("yarn", "set", "version", "4.9.2", cwd=web)
+    _sh("yarn", "add", "left-pad@1.1.0", cwd=web)
+
+    def resolved() -> str:
+        return _sh("node", "-r", str(web / ".pnp.cjs"), "-p", "require('left-pad/package.json').version", cwd=web)
+
+    assert resolved().strip() == "1.1.0" and not (web / "node_modules").exists()
+    harness = _harness(tmp_path)
+    agent = _agent(ws, harness)
+    bash = json.dumps({"command": "yarn add left-pad@1.3.0 is-odd@3.0.1", "workdir": str(web), "side_effect": "none"})
+    with scripted(_model(create_tool_call_response("bash", bash, tool_call_id="c1"))):
+        await run(agent, "upgrade", "s1")
+        assert resolved().strip() == "1.3.0"
+        _, result = await _rollback(harness)
+
+    assert result.status == RollbackStatus.COMPLETED
+    assert resolved().strip() == "1.1.0"
