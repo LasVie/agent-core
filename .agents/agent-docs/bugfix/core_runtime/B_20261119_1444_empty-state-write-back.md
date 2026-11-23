@@ -61,7 +61,7 @@ Agent 状态（`agent_state.py` 的 `StateCollection.set_state`）把快照拆�
   ④ 的绕法也只处理了全局状态，没有处理 Agent 状态。
 
 行为变化只出现在一种情况：写回的某一部分是 `{}`，而当前这一部分不为空。checkpointer 恢复时，会话一般是新建的，状态本来就为空，
-所以结果不变。这是推断，依据是下面的回归测试修改前后结果一致；Redis checkpointer 没有实测。
+所以结果不变。这是推断，依据是下面的回归测试（含用 fakeredis 跑的 Redis checkpointer 测试）修改前后结果一致。
 
 ## 回归证据与适用范围
 
@@ -74,10 +74,10 @@ Agent 状态（`agent_state.py` 的 `StateCollection.set_state`）把快照拆�
 | 对其他调用方的影响 | 同一插件，修改前后各跑一次 `tests/unit_tests/core/{session,single_agent,workflow,agent,multi_agent,runner}` | 修改前后都是 1295 passed、2 skipped，失败列表都为空 |
 | 新增用例 | `tests/unit_tests/core/session/vcs/test_rewind_empty_state.py`：`set_state({})` 写回为空、缺失部分保持原状；回到状态为空和不为空的历史点 | 3 个通过 |
 | 用例有效性 | 临时把 `set_state` 改回原来的判断，跑新增用例和 `test_paused.py` | 5 个失败（新增 2 个、`test_paused.py` 3 个），改回后全部通过 |
+| Redis checkpointer | `tests/unit_tests/extensions/checkpointer` 的 conftest 无条件跳过整个目录。用临时插件放开跳过、把 `Redis.from_url` 换成 fakeredis，修复前后各跑一次 | 两次都是 34 passed、5 failed、3 errors，失败的用例相同（缺 SiliconFlow 的 api_key、agent_group 存储用例自身的断言），与本修复无关 |
 | 整体回归 | `tests/unit_tests/core/{session,single_agent,workflow,agent,multi_agent,runner}`、`tests/unit_tests/harness`、`tests/unit_tests/harness_providers`、`tests/unit_tests/cli`、`tests/cli/integration/test_recoverable_cli.py`；修复后跑一次，再用临时插件把 `set_state` 改回原来的判断跑一次，比对两次的失败列表 | 修复后 10059 passed、11 failed、7 个文件收集失败；改回后多出 5 个失败，正是上一行的 5 个，其余失败两次完全相同，与本修复无关。7 个收集失败和部分失败报的是本机缺少依赖（`opentelemetry.exporter`、`opentelemetry.proto`、`openai_codex`、`openjiuwen.rsi`），另有几个是 codex、自动 harness 等用例自身的断言失败，没有逐个查 |
 
-没有验证的：Redis checkpointer（`tests/unit_tests/extensions/checkpointer` 需要本地 Redis，本机没有）；
-上面两次都失败或收集失败的用例。
+没有验证的：真实 Redis（本机没有）；上面两次都失败或收集失败的用例。
 重验条件：`set_state` 的调用方新增"传入 `{}` 表示不写回"的用法，或 checkpointer 改为在已有状态的会话上恢复。
 
 ## 防错模式与资料同步

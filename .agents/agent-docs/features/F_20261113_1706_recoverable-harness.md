@@ -31,6 +31,7 @@ files:
 - tests/unit_tests/harness/recoverable/test_harness.py
 - tests/unit_tests/harness/recoverable/test_ledger.py
 - tests/unit_tests/harness/recoverable/test_lock.py
+- tests/unit_tests/harness/recoverable/test_node_managers.py
 - tests/unit_tests/harness/recoverable/test_paused.py
 - tests/unit_tests/harness/recoverable/test_shell.py
 - tests/unit_tests/harness/recoverable/test_signals.py
@@ -201,12 +202,33 @@ U5 新增的做法：
   不需要另外遍历工作区。
 - **恢复依赖用的命令：** Python 优先用环境自己的 `python -m pip`，没有 pip 时用 `uv pip --python <环境>`；
   Node 用 `npm uninstall/install --no-save`，不改 `package.json`（它是普通文件，随后由快照恢复）。
-  pnpm、yarn 的 `node_modules` 结构和命令都不同，只报告不处理。
+  pnpm、yarn 原来只报告不处理，2026-11-19 起按锁文件重装（见本节末"pnpm、yarn 的依赖恢复"）。
 - **目标之后新建的环境整个删除**，符合"回到检查点时的状态"；目标时有、现在已不存在的环境无法重建（不知道用哪个 Python），只报告。
-- **全局安装：** 只认几种明确的写法，执行前后各取一次全局列表（`npm ls -g --json`、`brew list --versions`、`pip list --format=json`），
+- **全局安装：** 只认几种明确的写法，执行前后各取一次全局列表（`npm ls -g --json`、`brew list --versions`、`pip list --format=json`；
+  2026-11-19 起加上 `pnpm ls -g --json` 和 yarn 的全局目录），
   比较差异生成反向命令，所以只撤这次调用造成的变化，用户自己装的不动。即使命令失败到一半，差异也是准确的。
   反向命令作为单独一项排在模型写的反向命令之后（设计 A30）。
 - **检查点的去重**加上了 `packages_id`。
+
+pnpm、yarn 的依赖恢复（需求方 2026-11-19 决定：按锁文件重装；全局安装像 `npm -g` 一样撤回）：
+
+- **按锁文件判断包管理器。** 有 `package-lock.json` 或没有锁文件的是 npm，照旧按列表；只有 `pnpm-lock.yaml` 的是 pnpm，
+  只有 `yarn.lock` 的是 yarn。判断在写回目标的 `package.json` 和锁文件之后做，所以看的是目标时的锁文件。
+- **按锁文件重装，再比对。** pnpm 用 `pnpm install --frozen-lockfile --prefer-offline --config.confirmModulesPurge=false`（最后一项免得
+  pnpm 要求确认清空 `node_modules`）；yarn 1 用 `yarn install --frozen-lockfile --prefer-offline --non-interactive`；有 `.yarnrc.yml`
+  的 yarn 2 及以后用 `yarn install --immutable`。装完读一次 `node_modules`，与目标的列表比对，不一致的（例如目标时有人手工放进
+  `node_modules`、锁文件里没有的包）记为错误，回退为 `partial`。没有按列表装，是因为 pnpm 的 `node_modules` 只有直接依赖的链接，
+  按列表装会改写锁文件；锁文件本来就记着目标时的依赖。
+- **计划里提前写明不能恢复的。** 生成计划时就检查包管理器在不在（Python 检查有没有 pip 或 uv），不在的写进
+  `PackageChangeInfo.error`，CLI 显示为"Dependencies in …: …（pnpm is not available）"，执行时不再尝试。原来计划里不写，
+  确认后才在结果里报告，看起来像是会恢复。
+- **全局 pnpm、yarn。** 认出 `pnpm add/remove/update -g`（含 `i`、`rm`、`un`、`up`、`upgrade`、`--global`）和
+  `yarn global add/remove/upgrade`。pnpm 的列表取自 `pnpm ls -g --json`；yarn 的 `yarn global list` 不列没有可执行程序的包
+  （实测 left-pad 就不在里面），改为读 `yarn global dir` 下 `package.json` 的依赖名和 `node_modules` 里的版本。
+  反向命令是 `pnpm remove -g` / `pnpm add -g 名@旧版本`、`yarn global remove` / `yarn global add 名@旧版本`。
+- **包管理器不再读输入。** 运行包管理器时标准输入接到空设备：在 CLI 里运行时它继承终端，会提问的包管理器会一直等。
+- **Yarn 2 及以后的即插即用模式不用改。** 它不建 `node_modules`，依赖由工作区里的 `.pnp.cjs` 和 `yarn.lock` 决定，
+  包在 yarn 的缓存里，文件快照写回这两个文件就恢复了。
 
 U6 新增的做法：
 
@@ -389,6 +411,10 @@ U8 新增的做法：
 | 2026-11-17 / 停在确认上时回退：问题复现 | 同上；`ask_permissions("work")` 让权限 Rail 拦下 `work`，同一轮先执行了一个不用确认的工具 | 修改前，停在 `work` 的确认上时回退到 HEAD 或本轮开始，再分别发来批准和一条新消息 | 发批准：`work` 照样执行，上下文里多了一条没有对应调用的工具结果；发新消息：模型没被调用，又一次要求确认 `work`。原因是写回后中断状态还在 | — |
 | 2026-11-17 / 停在确认上时回退 | 同上 | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable tests/cli/integration/test_recoverable_cli.py tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py tests/unit_tests/core/session/vcs -q -p no:cacheprovider`；另跑用到中断夹具的 5 个测试文件和 Rail 路由契约 | 通过：145 个（含新增的 `test_paused.py` 4 个、CLI 1 个）；中断与路由 148 个通过 | 工作流（`session.interact`）的中断没有测 |
 | 2026-11-17 / 停在确认上时回退测试有效性 | 同上 | 临时分别去掉写回后删状态键、去掉拒绝、不先比对当前等待的调用、不记被丢弃的调用、回合结束时不记等待确认的调用 | 对应用例都失败（分别 3、2、1、1、2 个），恢复后都通过 | — |
+| 2026-11-19 / 任务循环模式的跟进和插话 | 同上；`create_deep_agent(enable_task_loop=True)`，工具在执行中调用 `follow_up` / `steer` / `request_rollback`，模拟人在 Agent 运行时操作；探测用例在临时目录，没有提交 | 三种情况：只发跟进消息；只插话；发跟进消息（或任务清单里留一个未完成任务）后再发回退信号 | 跟进消息和插话各有自己的检查点（"user: also check the logs"、"user: [STEERING] …"），回退到它之前或它所在的检查点都正常。回退信号停下一轮后，任务循环又跑了一轮：模型没被调用，但跟进消息进了上下文、没有回答，未完成任务被任务执行器标为完成（摘要是停下的说明），这一轮多出两个同标签的检查点。另外每轮结束没有单独的检查点 | 需求方决定暂不适配，列入已知遗留 |
+| 2026-11-19 / pnpm、yarn 实测（修改前） | 同上；pnpm 12.21.0、yarn 1.22.22（用 npm 装进 `~/.local/node`，`--ignore-scripts`，再运行 pnpm 自带的 `install.js` 链接本机二进制）、yarn 4.9.2（`yarn set version`）；存储、缓存、全局目录都在临时目录 | 真实 `pnpm add` / `yarn add` 装包、升级、删除后读列表和指纹；Agent 升级包后回退；全局安装 | 列表和指纹都对（pnpm 的符号链接布局也对）；回退后 `package.json` 和锁文件恢复、`node_modules` 没动，结果 `partial`，计划里却写着要装回；`pnpm add -g`、`yarn global add` 完全没认出来；yarn 4 即插即用项目回退后完整恢复 | brew、conda 本机没有 |
+| 2026-11-19 / pnpm、yarn 按锁文件重装 | 同上 | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable tests/cli/integration/test_recoverable_cli.py tests/unit_tests/core/session/vcs tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py -q -p no:cacheprovider -o addopts=""`；`RECOVERABLE_REAL_PACKAGES=1 .venv/bin/python -m pytest tests/system_tests/harness/recoverable/test_real_package_managers.py -q -p no:cacheprovider -o addopts=""` | 单元等 162 个通过（含新增 `test_node_managers.py` 14 个）；真实包管理器 13 个通过（新增 pnpm、yarn 项目各 1 个，全局各 1 个，yarn 4 即插即用 1 个）；运行后 `~/Library/pnpm`、`~/Library/Caches/Yarn` 的修改时间没变 | pnpm 工作区（monorepo）、yarn 2 及以后的 `node_modules` 模式没有测 |
+| 2026-11-19 / pnpm、yarn 测试有效性 | 同上 | 临时分别改回只报告、装完不比对、计划里不写原因、不写回锁文件、不认全局 pnpm/yarn、yarn 全局列表为空 | 单元测试对应失败 3、1、1、3、2、1 个；前一项和不认全局在真实测试上也各失败 2 个；恢复后都通过 | — |
 | 2026-11-19 / 写回空状态改在 core 修复 | 同上 | 删掉 ④ 的删键，改 core `set_state`；详细步骤见 [修复记录](../bugfix/core_runtime/B_20261119_1444_empty-state-write-back.md) | `tests/unit_tests/harness/recoverable` 全部通过；把 core 改回原来的判断，`test_paused.py` 3 个失败 | Redis checkpointer 没有实测 |
 | 2026-11-16 / U6 测试有效性 | 同上 | 临时分别去掉"之后又被改过"的比对、不记调用结束时的内容、去掉与工作区重叠的检查、让恢复什么都不做、去掉大小上限 | 对应用例都失败（分别 1、4、1、5、1 个），恢复后都通过 | — |
 | 2026-11-13 / V4、V7 实测 | 本仓库工作目录（8,527 个文件，218 MB，含 `.git`），APFS | 直接调用 `WorkspaceSnapshot.scan`，各测克隆和复制 | 第一份清单：克隆 2.52 秒、复制 2.24 秒；之后每步扫描约 170 毫秒 | 系统缓存为空时、更大的仓库上没有测。克隆没有更快，因为时间主要花在算指纹 |
@@ -494,7 +520,9 @@ U8 新增的做法：
   没有 pip 的 uv 环境用 `uv pip` 恢复；从本地路径、git 提交装的包和可编辑安装按原来源装回；Agent 用 `npm install`
   （写进 `package.json`）改过的 npm 项目，回退后 node_modules、`package.json`、`package-lock.json` 都和目标一致；
   全局 pip、全局 npm 的安装和升级按反向命令撤回。
-- **U5 未覆盖的：** pnpm、yarn、brew、conda（本机没有）；装回已下架的版本。
+- **U5 未覆盖的：** brew、conda（本机没有）；pnpm 工作区（monorepo）、yarn 2 及以后的 `node_modules` 模式；装回已下架的版本。
+  2026-11-19 起在真实的 pnpm 12、yarn 1 上验证了：Agent 用 `pnpm add` / `yarn add` 改过的项目，回退后 `node_modules`、
+  `package.json`、锁文件都和目标一致；全局 pnpm、yarn 的安装和升级按反向命令撤回；yarn 4 即插即用项目靠文件快照完整恢复。
 - **U6 已证明的范围：** 声明过的工作区外文件和目录的备份与恢复、新建的删除、删除的复原（含权限位）、之后被改过的保留、
   同一文件多次修改的倒序恢复、无法备份时列为不可逆、写回失败与重试。
 - **U6 未覆盖的：** 真实的用户主目录和需要 sudo 的系统路径；`code` 工具；另一个卷上的文件（复制路径）；恢复到一半进程崩溃。
@@ -515,7 +543,7 @@ U8 新增的做法：
 - **停在确认上时回退已证明的范围：** 回退到 HEAD 或更早时，被丢弃的调用不再执行；回退写回前后，按工具调用 ID 或中断 ID 发来的迟到回答都被拒绝；
   新消息照常开始一轮，模型看不到被丢弃调用的痕迹；之后模型再次调用同一工具并停在确认上时，对它的回答照常执行；计划和 CLI 列出要取消的调用。
 - **停在确认上时回退未覆盖的：** 工作流（`session.interact`）的中断和子 Agent 里的中断；任务循环模式下的恢复输入。
-- **交付判断：** U1～U8、CLI 接入、停在确认上时回退都满足各自范围。还差：pnpm、yarn、brew、conda。
+- **交付判断：** U1～U8、CLI 接入、停在确认上时回退都满足各自范围。还差：brew、conda；任务循环模式下的回退信号暂不适配。
 
 ### 覆盖与资料同步
 
@@ -534,12 +562,14 @@ U8 新增的做法：
 | 宿主用同一个 session_id 开始一段新对话 | 有意取舍 | Session 为空时会恢复旧上下文。同一个 session_id 视为同一段对话 | 写进接入说明 |
 | CLI 的会话记录在回退后保留被丢弃的消息 | 有意取舍 | `~/.openjiuwen/sessions/*.json` 只是对话流水，供 `/sessions` 列出，回退不改它；上下文以 ④ 的历史为准 | — |
 | `openjiuwen run` 不支持回退 | 未接入 | 单轮非交互，没有确认回退的地方 | 有需要再加 |
-| 任务循环模式的复杂情况 | 未验证 | 一次调用内的多轮跟进（follow-up）、插话（steering）下的检查点和回退没有测过；"一次调用一轮"的基本流程已测 | CLI 使用中观察 |
+| 任务循环模式下的回退信号 | 暂不适配（需求方 2026-11-19 决定） | 信号停下一轮后，任务循环把 `rollback` 结果当普通结果，又取出排队的跟进消息或下一个未完成任务跑一轮：这一轮调用模型前就停下，但跟进消息进了上下文却没有回答，未完成任务被任务执行器标为完成。接受回退时目标的状态连任务清单一起写回，没有影响；拒绝回退时那个任务不会再做，需要人重新交代。这一轮还多出两个同标签的检查点 | 适配时让任务循环把回退结果当作中断：不标完成、立即停下、跟进消息留到人决定之后 |
+| 任务循环模式每轮结束没有检查点 | 暂不适配（需求方 2026-11-19 决定） | 普通模式每轮结束有"reply:"检查点；任务循环模式里只有整个调用结束时才有，回退不到"上一轮答完、跟进消息到来之前"，只能回到包含跟进消息的检查点或更早 | 适配时在 `AFTER_TASK_ITERATION` 建检查点 |
 | 模型漏写的工作区外路径 | 已知限制 | 不会备份，回退说明提示"没有声明的工作区外文件没有处理" | 靠声明；无更好办法 |
 | 命令顺带建的上级目录 | 有意取舍 | 声明 `~/.config/new/x` 而 `new/` 原来不存在时，回退只删 `x`，留下空的 `new/` | 让模型声明最上面一级新建的目录 |
 | 工作区外的目录恢复到一半进程崩溃 | 已知限制 | 继续时这个目录既不是备份的样子、也不是调用结束时的样子，会被当成"之后又被改过"而保留并报告，不会被覆盖。单个文件的写回是原子的，没有这个问题 | 需要时在写回前登记意图 |
-| 真实包管理器上的依赖恢复（V8、V9） | 部分验证 | pip、uv、npm 和全局 pip、全局 npm 已在真实环境验证（`tests/system_tests/harness/recoverable/test_real_package_managers.py`，需联网，设 `RECOVERABLE_REAL_PACKAGES=1` 才运行；npm 测试找不到 npm 时跳过，本机用的是 `~/.local/node` 下的 Node）；pnpm、yarn、brew、conda 未验证 | brew 只能在愿意改动全局环境的机器上测 |
-| pnpm、yarn、conda 环境 | 未实现 | 记下包列表，恢复时只报告 | 有需要再加 |
+| 真实包管理器上的依赖恢复（V8、V9） | 部分验证 | pip、uv、npm 和全局 pip、全局 npm 已在真实环境验证（`tests/system_tests/harness/recoverable/test_real_package_managers.py`，需联网，设 `RECOVERABLE_REAL_PACKAGES=1` 才运行；npm、pnpm、yarn 测试找不到程序时跳过，本机用的是 `~/.local/node` 下的 Node、pnpm 12.21.0、yarn 1.22.22）；brew、conda 未验证 | brew 只能在愿意改动全局环境的机器上测 |
+| conda 环境 | 未实现 | 不认作依赖环境，不记包列表 | 有需要再加 |
+| pnpm、yarn 按锁文件重装的前提 | 已知限制 | 目标时没有锁文件，或本地缓存里没有要装的包又不能联网时，重装失败，回退为 `partial` 并报告；pnpm 工作区（monorepo）和 yarn 2 及以后的 `node_modules` 模式没有实测 | 用到时补测 |
 | 全局 `pip` 的识别 | 已知限制 | 按 ④ 所在进程的 `VIRTUAL_ENV` 判断是不是全局；命令里先激活虚拟环境再装包时，前后比较的是全局 pip，差异为空 | 需要时改为解析命令实际用的解释器 |
 | Node 只看顶层包 | 有意取舍 | 嵌套依赖随顶层包一起装卸，不单独记 | — |
 | 人拒绝 JEV 的计划后，下一轮清零"同一轮"的计数 | 已知限制（需求方 2026-11-16 接受） | JEV 发信号、人拒绝，反复下去不受"同一轮"上限限制；"同一目标"上限仍然有效 | 需要时由宿主标记新需求 |
@@ -679,3 +709,19 @@ U8 新增的做法：
 - 变化：需求方 2026-11-19 决定在本分支直接改 core，删掉 ④ 的 `_drop_later_state`。
   S_20 不变量 6 改为依赖 core 的写回；对应遗留删去。
 - 旧结论的效力：局部替代。"写回后状态与目标完全一致"不变，做法从 ④ 删键改为 core 写回。
+
+### 2026-11-19 任务循环模式的跟进和插话实测
+
+- 原结论：2026-11-17 记为"多轮跟进、插话的情况仍未验证"。
+- 新证据：跟进消息和插话各有检查点，可以回退；回退信号停下一轮后任务循环还会再跑一轮（见"已知遗留"）。
+- 变化：需求方 2026-11-19 决定暂不适配任务循环模式，只记为已知遗留；S_20 的范围说明写明。
+- 旧结论的效力：局部替代。
+
+### 2026-11-19 pnpm、yarn 改为按锁文件重装；全局 pnpm、yarn 安装撤回
+
+- 原结论：U5 记为"pnpm、yarn 的 `node_modules` 结构和命令都不同，只报告不处理"；全局安装只认 npm、brew、pip。
+- 新证据：在真实的 pnpm 12、yarn 1 上，回退后 `package.json` 和锁文件回到目标，`node_modules` 还是 Agent 改过的样子，两者对不上；
+  计划里写着要装回，确认后才报告没做。`pnpm add -g`、`yarn global add` 完全没认出来，不记录也不提示。
+- 变化：需求方 2026-11-19 决定 pnpm、yarn 按目标的锁文件重装后比对，全局安装像 `npm -g` 一样按前后列表撤回；
+  计划里提前写明不能恢复的原因。S_20 不变量 25、26 已改。
+- 旧结论的效力：局部替代。npm 和 Python 的做法不变。

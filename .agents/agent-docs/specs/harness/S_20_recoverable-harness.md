@@ -31,7 +31,7 @@ files:
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py` / `effects.py` / `processes.py` / `dependencies.py` / `external.py` / `lock.py` / `cleanup.py`） |
-| 最近一次修订日期 | 2026-11-19 |
+| 最近一次修订日期 | 2026-11-23 |
 | 关联设计 | D-20261113-1506-recoverable-harness |
 | 关联 feature | F_20261113_1706_recoverable-harness.md |
 
@@ -50,7 +50,10 @@ files:
 - 沙箱中的工作区。
 
 单轮模式和任务循环模式都适用：任务循环模式下每一轮仍经过外层 `BEFORE_INVOKE` / `AFTER_INVOKE` 和内层 ReAct 的步骤边界。
-任务循环模式只验证了"一次调用一轮"的基本流程。
+任务循环模式下，跟进消息（`follow_up`）和插话（`steer`）各有自己的检查点，可以回退。
+任务循环模式下的回退信号暂不适配（需求方 2026-11-19 决定）：信号停下一轮后，任务循环还会取出排队的跟进消息或下一个未完成任务
+再跑一轮，这一轮在调用模型前就停下，但跟进消息进了上下文却没有回答，未完成任务被任务循环标为完成；每轮结束也没有单独的检查点。
+详见 F_20261113_1706_recoverable-harness 的已知遗留。
 
 上下文日志用 `core/session/vcs`（`for_session`、`commit`、`rewind`），vcs 本身的契约见其 `CLAUDE.md`。
 Rail 的事件路由与 priority 规则见 S_04。
@@ -130,11 +133,18 @@ Rail 的事件路由与 priority 规则见 S_04。
     `node_modules/.package-lock.json` 里的 `resolved` 记下来源，本地路径相对项目目录。
 25. **依赖按列表恢复，不管是谁装的。** 回退时在撤销之后、写回文件之前，把每个环境恢复成目标检查点的列表：
     多出来的卸载，少了的或版本不同的安装目标版本。Python 用环境自己的 `pip`，没有时用 `uv pip --python`；
-    Node 只处理 npm 项目：先把目标检查点的 `package.json` 和 `package-lock.json` 写回（npm 即使 `--no-save` 也会按
-    `package.json` 把 Agent 加进去的包再装回来），再用 `npm uninstall/install --no-save` 按列表恢复；pnpm、yarn 项目只报告。
+    Node 先把目标检查点的 `package.json` 和锁文件（`package-lock.json`、`pnpm-lock.yaml`、`yarn.lock`）写回，再按锁文件判断包管理器：
+    有 `package-lock.json` 或没有锁文件的是 npm，用 `npm uninstall/install --no-save` 按列表恢复（npm 即使 `--no-save`
+    也会按 `package.json` 把 Agent 加进去的包再装回来）；pnpm、yarn 按写回的锁文件重装（`pnpm install --frozen-lockfile`，
+    yarn 1 为 `yarn install --frozen-lockfile`，有 `.yarnrc.yml` 的 yarn 2 及以后为 `yarn install --immutable`），装完与目标列表比对，
+    不一致的记为错误。Yarn 2 及以后默认不建 `node_modules`，依赖由工作区里的 `.pnp.cjs` 和 `yarn.lock` 决定，随文件快照恢复。
+    生成计划时就检查能不能恢复（Node 看包管理器在不在，Python 看有没有 pip 或 uv），不能的原因写进计划的
+    `PackageChangeInfo.error`，执行时不再尝试。
     目标之后新建的环境整个删除；目标时有、现在已不存在的环境只报告。安装或卸载失败的环境记下错误，回退为 `partial`。
-26. **全局安装只撤 Agent 做的。** `bash` 命令里认出 `npm -g`、`brew install/uninstall/upgrade/reinstall`、不在虚拟环境中的
-    `pip` / `python -m pip` 时，不论声明什么都进账本，执行前后各取一次全局包列表，比较后生成反向命令
+26. **全局安装只撤 Agent 做的。** `bash` 命令里认出 `npm -g`、`pnpm add/remove/update -g`、`yarn global add/remove/upgrade`、
+    `brew install/uninstall/upgrade/reinstall`、不在虚拟环境中的 `pip` / `python -m pip` 时，不论声明什么都进账本，
+    执行前后各取一次全局包列表（yarn 读 `yarn global dir` 下的 `package.json` 和 `node_modules`，因为 `yarn global list`
+    不列没有可执行程序的包），比较后生成反向命令
     （新增的卸载，删掉或版本变了的装回原版本；brew 的版本变化装不回，列为无法撤销）。
     这条反向命令作为单独的一项排在模型写的反向命令之后执行。
 27. **工作区外的文件只按 Agent 的声明或文件工具的目标备份和恢复。** `write_file`、`edit_file` 的 `file_path` 在工作区以外时，
