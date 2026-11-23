@@ -17,14 +17,16 @@ manager:
   name could fetch an unrelated package;
 - a Node ``node_modules`` next to a ``package.json``: the ``package.json`` of each
   top-level package; a package that did not come from a registry keeps its source
-  from npm's hidden lockfile (``node_modules/.package-lock.json``). Only npm
-  projects are restored, by list with ``--no-save``; the caller first puts back
-  the target's ``package.json`` and ``package-lock.json``, or npm would re-add
-  what the changed ``package.json`` names. pnpm and yarn are reported.
+  from npm's hidden lockfile (``node_modules/.package-lock.json``). The caller
+  first puts back the target's ``package.json`` and lockfile. An npm project is
+  then restored by list with ``--no-save`` (npm would otherwise re-add what a
+  changed ``package.json`` names); a pnpm or yarn project is installed from its
+  lockfile and compared with the target's list.
 
-Global installs (``npm -g``, ``brew``, ``pip`` outside a virtual environment) are
-compared before and after the command that made them, and only that difference is
-reversed. Everything here is synchronous; callers run it in a worker thread.
+Global installs (``npm -g``, ``pnpm -g``, ``yarn global``, ``brew``, ``pip``
+outside a virtual environment) are compared before and after the command that
+made them, and only that difference is reversed. Everything here is synchronous;
+callers run it in a worker thread.
 """
 
 from __future__ import annotations
@@ -67,8 +69,9 @@ def _capture(argv: list[str], cwd: Path | None = None, timeout: int = _RUN_TIMEO
     Listings parse the standard output only: package managers print notices,
     such as a newer version being available, on the error output.
     """
-    try:
-        completed = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False)
+    try:  # No input: a package manager that would ask a question fails instead of waiting.
+        completed = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False,
+                                   stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, "", str(exc)
     return completed.returncode == 0, completed.stdout, completed.stderr
@@ -226,49 +229,96 @@ def _python_steps(path: Path, change: PackageChange) -> list[list[str]] | None:
     return ([[*remove, *change.remove]] if change.remove else []) + ([[*install, *installs]] if installs else [])
 
 
-def restore_environment(root: Path, change: PackageChange) -> str | None:
-    """Make one environment hold its target list again; return an error, or ``None``."""
-    path = root / change.env
+def node_manager(project: Path) -> str:
+    """The package manager of a Node project, by its lockfile: ``npm``, ``pnpm`` or ``yarn``."""
+    if not (project / "package-lock.json").exists():
+        if (project / "pnpm-lock.yaml").exists():
+            return "pnpm"
+        if (project / "yarn.lock").exists():
+            return "yarn"
+    return "npm"
+
+
+def _lockfile_install(program: str, manager: str, project: Path) -> list[str]:
+    """Install exactly what the project's lockfile names, without changing the lockfile."""
+    if manager == "pnpm":
+        return [program, "install", "--frozen-lockfile", "--prefer-offline", "--config.confirmModulesPurge=false"]
+    if (project / ".yarnrc.yml").exists():  # Yarn 2 and later.
+        return [program, "install", "--immutable"]
+    return [program, "install", "--frozen-lockfile", "--prefer-offline", "--non-interactive"]
+
+
+def restore_problem(path: Path) -> str | None:
+    """Why the environment at ``path`` cannot be restored, known before a rollback is confirmed; ``None`` if it can."""
     kind = env_kind(path)
     if kind == "python":
-        steps = _python_steps(path, change)
-        if steps is None:
-            return "neither pip in the environment nor uv is available"
-    elif kind == "node":
-        project = path.parent
-        if not (project / "package-lock.json").exists() and (
-            (project / "pnpm-lock.yaml").exists() or (project / "yarn.lock").exists()
-        ):
-            return "only npm projects are restored; pnpm and yarn are not"
-        npm = shutil.which("npm")
-        if npm is None:
-            return "npm is not available"
-        steps = []
-        if change.remove:
-            steps.append([npm, "uninstall", "--no-save", "--no-fund", "--no-audit", *change.remove])
-        if change.install:
-            steps.append([npm, "install", "--no-save", "--no-fund", "--no-audit",
-                          *(_npm_spec(n, v) for n, v in change.install.items())])
-        path = project
+        return None if _python_steps(path, PackageChange(env="")) is not None else \
+            "neither pip in the environment nor uv is available"
+    if kind == "node":
+        manager = node_manager(path.parent)
+        return None if shutil.which(manager) else f"{manager} is not available"
+    return "not a recognized environment"
+
+
+def restore_environment(root: Path, change: PackageChange, target: Packages | None = None) -> str | None:
+    """Make one environment hold its target list again; return an error, or ``None``.
+
+    An npm project and a virtual environment are changed by the list. A pnpm or
+    yarn project is installed from its lockfile, which the caller has put back to
+    the target's; ``target`` is then compared with what the install left.
+    """
+    path = root / change.env
+    problem = restore_problem(path)
+    if problem is not None:
+        return problem
+    lockfile = False
+    if env_kind(path) == "python":
+        steps = _python_steps(path, change) or []
     else:
-        return "not a recognized environment"
+        project = path.parent
+        manager = node_manager(project)
+        program = shutil.which(manager)
+        steps = []
+        if manager != "npm":
+            lockfile = True
+            steps.append(_lockfile_install(program, manager, project))
+        else:
+            if change.remove:
+                steps.append([program, "uninstall", "--no-save", "--no-fund", "--no-audit", *change.remove])
+            if change.install:
+                steps.append([program, "install", "--no-save", "--no-fund", "--no-audit",
+                              *(_npm_spec(n, v) for n, v in change.install.items())])
+        path = project
     for argv in steps:
         ok, output = _run(argv, cwd=path)
         if not ok:
             return f"`{shlex.join(argv)}` failed: {output}"
+    if lockfile and target is not None:
+        left = diff_packages(change.env, list_packages(root / change.env), target)
+        if left.remove or left.install:
+            parts = [f"remove {n}" for n in left.remove] + [f"install {n}=={v}" for n, v in left.install.items()]
+            return f"`{shlex.join(steps[0])}` left it different from the target: {', '.join(parts)}"
     return None
 
 
 # --------------------------------------------------------------------- global
 
 
+_PNPM_GLOBAL_VERBS = ("add", "i", "install", "remove", "rm", "uninstall", "un", "update", "up", "upgrade")
+
+
 def global_manager(command: str) -> str | None:
-    """The global package manager a shell command installs with: ``npm``, ``brew`` or ``pip:<program>``."""
+    """The global package manager a shell command installs with: ``npm``, ``pnpm``, ``yarn``, ``brew`` or
+    ``pip:<program>``."""
     for argv in simple_commands(command):
         program, args = split_program(argv)
         if program == "npm" and args[:1] and args[0] in ("i", "install", "add", "uninstall", "remove", "rm") \
                 and ("-g" in args or "--global" in args):
             return "npm"
+        if program == "pnpm" and args[:1] and args[0] in _PNPM_GLOBAL_VERBS and ("-g" in args or "--global" in args):
+            return "pnpm"
+        if program == "yarn" and args[:1] == ["global"] and args[1:2] and args[1] in ("add", "remove", "upgrade"):
+            return "yarn"
         if program == "brew" and args[:1] and args[0] in ("install", "uninstall", "upgrade", "reinstall"):
             return "brew"
         pip_args = args[2:] if program.startswith("python") and args[:2] == ["-m", "pip"] else (
@@ -277,6 +327,27 @@ def global_manager(command: str) -> str | None:
                 and not os.environ.get("VIRTUAL_ENV"):
             return f"pip:{program}" if program in ("pip", "pip3") else f"pip:{program} -m pip"
     return None
+
+
+def _yarn_global() -> Packages | None:
+    """Yarn's global packages, read from its global folder.
+
+    ``yarn global list`` leaves out packages without executables, so the folder's
+    ``package.json`` names the packages and its ``node_modules`` gives their versions.
+    """
+    ok, output, _ = _capture(["yarn", "global", "dir"], timeout=_LIST_TIMEOUT_S)
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not ok or not lines:
+        return None
+    folder = Path(lines[-1])
+    try:
+        names = json.loads((folder / "package.json").read_text(encoding="utf-8")).get("dependencies") or {}
+    except FileNotFoundError:
+        return {}  # Nothing was ever installed globally.
+    except (OSError, ValueError, AttributeError):
+        return None
+    installed = list_packages(folder / "node_modules")
+    return {name: installed[name] for name in names if name in installed}
 
 
 def list_global(manager: str) -> Packages | None:
@@ -288,6 +359,18 @@ def list_global(manager: str) -> Packages | None:
         except ValueError:
             return None
         return {name: str(info.get("version", "")) for name, info in deps.items()} if ok or deps else None
+    if manager == "pnpm":
+        ok, output, _ = _capture(["pnpm", "ls", "-g", "--depth=0", "--json"], timeout=_LIST_TIMEOUT_S)
+        try:
+            entries = json.loads(output) if ok and output else None
+        except ValueError:
+            return None
+        if not isinstance(entries, list):
+            return None
+        return {name: str(info.get("version", "")) for entry in entries if isinstance(entry, dict)
+                for name, info in (entry.get("dependencies") or {}).items() if isinstance(info, dict)}
+    if manager == "yarn":
+        return _yarn_global()
     if manager == "brew":
         ok, output, _ = _capture(["brew", "list", "--versions"], timeout=_LIST_TIMEOUT_S)
         if not ok:
@@ -318,6 +401,13 @@ def global_undo(manager: str, before: Packages, after: Packages) -> tuple[str | 
             steps.append(shlex.join(["npm", "uninstall", "-g", *added]))
         if removed or changed:
             steps.append(shlex.join(["npm", "install", "-g", *(f"{n}@{before[n]}" for n in removed + changed)]))
+    elif manager in ("pnpm", "yarn"):
+        remove, add = (["pnpm", "remove", "-g"], ["pnpm", "add", "-g"]) if manager == "pnpm" else \
+            (["yarn", "global", "remove"], ["yarn", "global", "add"])
+        if added:
+            steps.append(shlex.join([*remove, *added]))
+        if removed or changed:
+            steps.append(shlex.join([*add, *(f"{n}@{before[n]}" for n in removed + changed)]))
     elif manager == "brew":
         if added:
             steps.append(shlex.join(["brew", "uninstall", *added]))

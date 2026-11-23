@@ -94,6 +94,7 @@ from openjiuwen.harness.recoverable.dependencies import (
     list_global,
     list_packages,
     restore_environment,
+    restore_problem,
 )
 from openjiuwen.harness.recoverable.effects import (
     DEFAULT_OUTWARD_COMMANDS,
@@ -1942,7 +1943,8 @@ class RecoverableHarness:
                 continue
             diff = diff_packages(env, await asyncio.to_thread(list_packages, root / env), wanted[env])
             if diff.remove or diff.install:
-                changes.append(PackageChangeInfo(env=env, remove=diff.remove, install=diff.install))
+                changes.append(PackageChangeInfo(env=env, remove=diff.remove, install=diff.install,
+                                                 error=await asyncio.to_thread(restore_problem, root / env)))
         return changes, created
 
     async def _restore_dependencies(self, session_id: str, target: Checkpoint) -> list[PackageChangeInfo]:
@@ -1955,13 +1957,15 @@ class RecoverableHarness:
             await asyncio.to_thread(shutil.rmtree, root / env, True)
             done.append(PackageChangeInfo(env=env, remove=["(the whole environment)"]))
         loaded = await self._load_manifest(session_id, target.manifest_id) if changes else None
+        wanted = await self._checkpoints().get_packages(session_id, target.packages_id) if changes else None
         for change in changes:
             if change.error is None:
                 if loaded is not None and env_kind(root / change.env) == "node":
-                    # npm reads package.json even with --no-save: the changed one would re-add what it names.
+                    # npm reads package.json even with --no-save, and pnpm and yarn install from the lockfile.
                     await asyncio.to_thread(self._put_back_project_files, loaded[0], change.env)
                 step = PackageChange(env=change.env, remove=change.remove, install=change.install)
-                change = change.model_copy(update={"error": await asyncio.to_thread(restore_environment, root, step)})
+                error = await asyncio.to_thread(restore_environment, root, step, (wanted or {}).get(change.env))
+                change = change.model_copy(update={"error": error})
             done.append(change)
         if files is not None and done:
             manifest = await asyncio.to_thread(self._workspace.scan, files.manifest)
@@ -1970,12 +1974,12 @@ class RecoverableHarness:
         return done
 
     def _put_back_project_files(self, manifest: Manifest, env: str) -> None:
-        """Write the target's package.json and package-lock.json of an npm project before npm runs.
+        """Write the target's package.json and lockfiles of a Node project before its package manager runs.
 
-        The files stage restores them anyway; this only lets npm see the target's dependencies.
+        The files stage restores them anyway; this only lets the package manager see the target's dependencies.
         """
         project = posixpath.dirname(env)
-        for name in ("package.json", "package-lock.json"):
+        for name in ("package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"):
             rel = posixpath.join(project, name) if project else name
             entry = manifest.entries.get(rel)
             full = self._workspace.root / rel
