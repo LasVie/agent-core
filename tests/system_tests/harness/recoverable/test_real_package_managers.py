@@ -2,13 +2,14 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Dependency detection and restore with real package managers (design V8, V9).
 
-Needs the network (PyPI, the npm registry, Yarn releases) and runs only with
-``RECOVERABLE_REAL_PACKAGES=1``; the npm, pnpm and yarn tests are skipped when
-those programs are on neither PATH nor ``~/.local/node/bin``. Everything is
-installed under the test's temporary directory: "global" pip is a virtual
-environment standing in for the system Python, and the global packages, stores
-and caches of npm, pnpm and yarn are pointed there, so nothing on the machine
-changes.
+Needs the network (PyPI, the npm registry, Yarn releases, conda-forge) and runs
+only with ``RECOVERABLE_REAL_PACKAGES=1``; the npm, pnpm, yarn and conda tests are
+skipped when those programs are on neither PATH nor ``~/.local/node/bin`` /
+``~/.local/miniforge3/bin``. Everything is installed under the test's temporary
+directory: "global" pip is a virtual environment standing in for the system
+Python, and the global packages, stores and caches of npm, pnpm and yarn and
+conda's named environments are pointed there. Only conda's package cache, in
+conda's own install directory, is shared between runs.
 """
 from __future__ import annotations
 
@@ -346,3 +347,69 @@ async def test_a_yarn_plug_and_play_project_returns_with_its_files(tmp_path, nod
 
     assert result.status == RollbackStatus.COMPLETED
     assert resolved().strip() == "1.1.0"
+
+
+# --------------------------------------------------------------------- conda
+
+CONDA_BIN = Path.home() / ".local" / "miniforge3" / "bin"
+
+
+@pytest.fixture
+def conda(tmp_path, monkeypatch):
+    """conda with its named environments under the test's directory; returns that directory.
+
+    conda's package cache in its own install directory is reused, or every test would download the index again.
+    """
+    monkeypatch.setenv("PATH", os.pathsep.join([str(CONDA_BIN), os.environ["PATH"]]))
+    if shutil.which("conda") is None:
+        pytest.skip("conda is not installed")
+    monkeypatch.setenv("CONDA_ENVS_PATH", str(tmp_path / "conda-envs"))
+    monkeypatch.setenv("CONDA_REGISTER_ENVS", "false")  # Leaves ~/.conda/environments.txt alone.
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    return tmp_path / "conda-envs"
+
+
+def _conda_versions(prefix: Path) -> dict[str, str]:
+    return {name: version for name, version in list_packages(prefix).items() if name}
+
+
+@pytest.mark.asyncio
+async def test_a_conda_env_in_the_workspace_returns_to_its_revision(tmp_path, conda, runner):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    prefix = ws / "env"
+    _sh("conda", "create", "-p", str(prefix), "-y", "-q", "zlib=1.2.13")
+    start = _conda_versions(prefix)
+    harness = _harness(tmp_path)
+    agent = _agent(ws, harness)
+    bash = json.dumps({"command": "conda install -p ./env -y -q zlib=1.3.1 xz", "workdir": str(ws),
+                       "side_effect": "none"})
+    with scripted(_model(create_tool_call_response("bash", bash, tool_call_id="c1"))):
+        await run(agent, "upgrade zlib", "s1")
+        assert _conda_versions(prefix)["zlib"] == "1.3.1" and "xz" in _conda_versions(prefix)
+        plan, result = await _rollback(harness)
+
+    assert [c.error for c in plan.package_changes] == [None]
+    assert result.status == RollbackStatus.COMPLETED, result.package_changes
+    assert _conda_versions(prefix) == start, "zlib is 1.2.13 again and xz is gone"
+
+
+@pytest.mark.asyncio
+async def test_a_named_conda_env_is_reverted_and_one_the_agent_made_is_removed(tmp_path, conda, runner):
+    _sh("conda", "create", "-n", "kept", "-y", "-q", "zlib=1.2.13")
+    start = _conda_versions(conda / "kept")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = _harness(tmp_path)
+    agent = _agent(ws, harness)
+    upgrade = json.dumps({"command": "conda install -n kept -y -q zlib=1.3.1", "side_effect": "none"})
+    create = json.dumps({"command": "conda create -n made -y -q zlib", "side_effect": "none"})
+    with scripted(_model(create_tool_call_response("bash", upgrade, tool_call_id="c1"),
+                         create_tool_call_response("bash", create, tool_call_id="c2"))):
+        await run(agent, "set up environments", "s1")
+        assert _conda_versions(conda / "kept")["zlib"] == "1.3.1" and (conda / "made").is_dir()
+        _, result = await _rollback(harness)
+
+    assert result.status == RollbackStatus.COMPLETED, result.effects
+    assert _conda_versions(conda / "kept") == start
+    assert not (conda / "made").exists()
