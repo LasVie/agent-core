@@ -21,12 +21,16 @@ manager:
   first puts back the target's ``package.json`` and lockfile. An npm project is
   then restored by list with ``--no-save`` (npm would otherwise re-add what a
   changed ``package.json`` names); a pnpm or yarn project is installed from its
-  lockfile and compared with the target's list.
+  lockfile and compared with the target's list;
+- a conda environment (a directory with ``conda-meta/history``, whatever its
+  name): the ``conda-meta/*.json`` records, and the environment's revision number
+  under the reserved name ``""``. It is restored with ``conda install --revision``,
+  which conda can do for any revision in its history, and compared with the list.
 
 Global installs (``npm -g``, ``pnpm -g``, ``yarn global``, ``brew``, ``pip``
-outside a virtual environment) are compared before and after the command that
-made them, and only that difference is reversed. Everything here is synchronous;
-callers run it in a worker thread.
+outside a virtual environment, conda environments outside the workspace) are
+compared before and after the command that made them, and only that difference is
+reversed. Everything here is synchronous; callers run it in a worker thread.
 """
 
 from __future__ import annotations
@@ -48,7 +52,10 @@ _LIST_TIMEOUT_S = 60
 
 Packages = dict[str, str]
 """Package name to version. A package installed from a direct source has ``"<version> @ <source>"``,
-where the source is a pip requirement URL, or ``editable <URL>`` for an editable install."""
+where the source is a pip requirement URL, or ``editable <URL>`` for an editable install.
+A conda environment also has its revision number under ``CONDA_REVISION``."""
+CONDA_REVISION = ""
+"""Not a package name: the key of a conda environment's revision number in its list."""
 _SOURCE = " @ "
 _EDITABLE = "editable "
 
@@ -80,8 +87,14 @@ def _capture(argv: list[str], cwd: Path | None = None, timeout: int = _RUN_TIMEO
 # ---------------------------------------------------------------- environments
 
 
+def is_conda_env(path: Path) -> bool:
+    return (path / "conda-meta" / "history").is_file()
+
+
 def env_kind(path: Path) -> str | None:
-    """``"python"``, ``"node"`` or ``None`` for a dependency directory."""
+    """``"conda"``, ``"python"``, ``"node"`` or ``None`` for a dependency directory."""
+    if is_conda_env(path):
+        return "conda"
     if (path / "pyvenv.cfg").is_file():
         return "python"
     if path.name == "node_modules" and (path.parent / "package.json").is_file():
@@ -101,6 +114,8 @@ def fingerprint(path: Path) -> str:
         marks = [p for p in _site_packages(path)]
     elif kind == "node":
         marks = [path, path / ".package-lock.json"]
+    elif kind == "conda":
+        marks = [path / "conda-meta", path / "conda-meta" / "history"]
     else:
         return ""
     return ",".join(f"{p.stat().st_mtime_ns}" if p.exists() else "-" for p in marks)
@@ -185,7 +200,25 @@ def list_packages(path: Path) -> Packages:
                 name = manifest.parent.relative_to(path).as_posix()  # The directory npm installed it as.
                 source = sources.get(name)
                 packages[name] = str(data["version"]) + (_SOURCE + source if source else "")
+    elif kind == "conda":
+        for record in (path / "conda-meta").glob("*.json"):
+            try:
+                data = json.loads(record.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("name") and data.get("version"):
+                packages[str(data["name"])] = str(data["version"])
+        packages[CONDA_REVISION] = str(conda_revision(path))
     return packages
+
+
+def conda_revision(prefix: Path) -> int:
+    """The current revision of a conda environment: each block of ``conda-meta/history`` is one, from 0."""
+    try:
+        lines = (prefix / "conda-meta" / "history").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return -1
+    return sum(1 for line in lines if line.startswith("==>")) - 1
 
 
 @dataclass
@@ -202,6 +235,8 @@ class PackageChange:
 
 
 def diff_packages(env: str, current: Packages, target: Packages) -> PackageChange:
+    current = {n: v for n, v in current.items() if n != CONDA_REVISION}
+    target = {n: v for n, v in target.items() if n != CONDA_REVISION}
     return PackageChange(
         env=env,
         remove=sorted(set(current) - set(target)),
@@ -248,9 +283,16 @@ def _lockfile_install(program: str, manager: str, project: Path) -> list[str]:
     return [program, "install", "--frozen-lockfile", "--prefer-offline", "--non-interactive"]
 
 
+def _conda_program() -> str | None:
+    """conda, or mamba when only it is installed; both take ``--revision``."""
+    return shutil.which("conda") or shutil.which("mamba")
+
+
 def restore_problem(path: Path) -> str | None:
     """Why the environment at ``path`` cannot be restored, known before a rollback is confirmed; ``None`` if it can."""
     kind = env_kind(path)
+    if kind == "conda":
+        return None if _conda_program() else "neither conda nor mamba is available"
     if kind == "python":
         return None if _python_steps(path, PackageChange(env="")) is not None else \
             "neither pip in the environment nor uv is available"
@@ -265,14 +307,22 @@ def restore_environment(root: Path, change: PackageChange, target: Packages | No
 
     An npm project and a virtual environment are changed by the list. A pnpm or
     yarn project is installed from its lockfile, which the caller has put back to
-    the target's; ``target`` is then compared with what the install left.
+    the target's, and a conda environment goes back to the target's revision;
+    ``target`` is then compared with what is installed.
     """
     path = root / change.env
     problem = restore_problem(path)
     if problem is not None:
         return problem
-    lockfile = False
-    if env_kind(path) == "python":
+    verify = False
+    kind = env_kind(path)
+    if kind == "conda":
+        revision = (target or {}).get(CONDA_REVISION, "")
+        if not revision.isdigit():
+            return "the checkpoint has no conda revision for this environment"
+        verify = True
+        steps = [[_conda_program(), "install", "-p", str(path), "--revision", revision, "-y", "-q"]]
+    elif kind == "python":
         steps = _python_steps(path, change) or []
     else:
         project = path.parent
@@ -280,7 +330,7 @@ def restore_environment(root: Path, change: PackageChange, target: Packages | No
         program = shutil.which(manager)
         steps = []
         if manager != "npm":
-            lockfile = True
+            verify = True
             steps.append(_lockfile_install(program, manager, project))
         else:
             if change.remove:
@@ -293,7 +343,7 @@ def restore_environment(root: Path, change: PackageChange, target: Packages | No
         ok, output = _run(argv, cwd=path)
         if not ok:
             return f"`{shlex.join(argv)}` failed: {output}"
-    if lockfile and target is not None:
+    if verify and target is not None:
         left = diff_packages(change.env, list_packages(root / change.env), target)
         if left.remove or left.install:
             parts = [f"remove {n}" for n in left.remove] + [f"install {n}=={v}" for n, v in left.install.items()]
@@ -307,11 +357,39 @@ def restore_environment(root: Path, change: PackageChange, target: Packages | No
 _PNPM_GLOBAL_VERBS = ("add", "i", "install", "remove", "rm", "uninstall", "un", "update", "up", "upgrade")
 
 
+_CONDA_VERBS = ("install", "update", "upgrade", "remove", "uninstall", "create")
+
+
+def _conda_selector(args: list[str]) -> str | None:
+    """``-n NAME``, ``-p PATH`` or ``""`` (the active environment) of a conda command that changes an environment."""
+    words = args[1:] if args[:1] == ["env"] else args
+    if not words or words[0] not in _CONDA_VERBS:
+        return None
+    selector = ""
+    for i, word in enumerate(words):
+        value = words[i + 1] if i + 1 < len(words) else ""
+        if word in ("-n", "--name") and value:
+            selector = f"-n {value}"
+        elif word.startswith("--name="):
+            selector = f"-n {word[len('--name='):]}"
+        elif word in ("-p", "--prefix") and value:
+            selector = f"-p {value}"
+        elif word.startswith("--prefix="):
+            selector = f"-p {word[len('--prefix='):]}"
+    if not selector and words[0] == "create":
+        return None  # conda refuses it; `conda env create` takes the name from its file.
+    return selector
+
+
 def global_manager(command: str) -> str | None:
-    """The global package manager a shell command installs with: ``npm``, ``pnpm``, ``yarn``, ``brew`` or
-    ``pip:<program>``."""
+    """The global package manager a shell command installs with: ``npm``, ``pnpm``, ``yarn``, ``brew``,
+    ``pip:<program>`` or ``conda:<selector>`` (``resolve_global`` turns the selector into a prefix)."""
     for argv in simple_commands(command):
         program, args = split_program(argv)
+        if program in ("conda", "mamba"):
+            selector = _conda_selector(args)
+            if selector is not None:
+                return f"conda:{selector}"
         if program == "npm" and args[:1] and args[0] in ("i", "install", "add", "uninstall", "remove", "rm") \
                 and ("-g" in args or "--global" in args):
             return "npm"
@@ -350,8 +428,52 @@ def _yarn_global() -> Packages | None:
     return {name: installed[name] for name in names if name in installed}
 
 
+def resolve_global(manager: str, workspace: Path | None) -> str | None:
+    """``conda:<prefix>`` for a conda command, other managers unchanged.
+
+    ``None`` for an environment inside the workspace, which is restored as a
+    dependency environment, and when the environment cannot be told: a relative
+    ``-p`` depends on the command's directory, unknown here.
+    """
+    if not manager.startswith("conda:"):
+        return manager
+    selector = manager[len("conda:"):]
+    if selector.startswith("-p "):
+        prefix = Path(selector[3:]).expanduser()
+        if not prefix.is_absolute():
+            return None
+    else:
+        program = _conda_program()
+        ok, output, _ = _capture([program, "info", "--json"], timeout=_LIST_TIMEOUT_S) if program else (False, "", "")
+        try:
+            info = json.loads(output) if ok else None
+        except ValueError:
+            info = None
+        if not isinstance(info, dict) or not info.get("root_prefix"):
+            return None
+        if selector.startswith("-n ") and selector[3:] not in ("base", "root"):
+            dirs = [Path(d) for d in info.get("envs_dirs") or []]
+            existing = [d / selector[3:] for d in dirs if (d / selector[3:]).is_dir()]
+            if not existing and not dirs:
+                return None
+            prefix = existing[0] if existing else dirs[0] / selector[3:]  # Where `create` puts a new one.
+        elif selector.startswith("-n "):
+            prefix = Path(info["root_prefix"])
+        else:
+            prefix = Path(info.get("default_prefix") or info["root_prefix"])
+    if workspace is not None and prefix.resolve().is_relative_to(workspace.resolve()):
+        return None
+    return f"conda:{prefix}"
+
+
 def list_global(manager: str) -> Packages | None:
-    """Globally installed packages of ``manager``; ``None`` when it cannot be listed."""
+    """Globally installed packages of ``manager``; ``None`` when it cannot be listed.
+
+    A conda environment that does not exist lists as empty, without a revision.
+    """
+    if manager.startswith("conda:"):
+        prefix = Path(manager[len("conda:"):])
+        return list_packages(prefix) if is_conda_env(prefix) else {}
     if manager == "npm":
         ok, output, _ = _capture(["npm", "ls", "-g", "--depth=0", "--json"], timeout=_LIST_TIMEOUT_S)
         try:
@@ -389,8 +511,26 @@ def list_global(manager: str) -> Packages | None:
     return None
 
 
+def _conda_undo(prefix: str, before: Packages, after: Packages) -> tuple[str | None, list[str]]:
+    """Back to the revision before the command; an environment it created is removed."""
+    program = "conda" if shutil.which("conda") or not shutil.which("mamba") else "mamba"
+    had, has = CONDA_REVISION in before, CONDA_REVISION in after
+    if not had and has:
+        return shlex.join([program, "remove", "-p", prefix, "--all", "-y"]), []
+    if had and not has:
+        return None, [f"the conda environment {prefix} was deleted"]
+    change = diff_packages(prefix, after, before)
+    if not had or not (change.remove or change.install):
+        return None, []
+    if not before[CONDA_REVISION].isdigit():
+        return None, [f"the conda environment {prefix} has no readable history"]
+    return shlex.join([program, "install", "-p", prefix, "--revision", before[CONDA_REVISION], "-y"]), []
+
+
 def global_undo(manager: str, before: Packages, after: Packages) -> tuple[str | None, list[str]]:
     """A shell command reversing what changed between ``before`` and ``after``, and what it cannot reverse."""
+    if manager.startswith("conda:"):
+        return _conda_undo(manager[len("conda:"):], before, after)
     added = sorted(set(after) - set(before))
     removed = sorted(set(before) - set(after))
     changed = sorted(n for n in set(before) & set(after) if before[n] != after[n])

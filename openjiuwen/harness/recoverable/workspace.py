@@ -4,7 +4,8 @@
 
 Three kinds of directory stay out of the snapshot:
 
-- dependency directories, named in ``dependency_dirs`` at any depth;
+- dependency directories, named in ``dependency_dirs`` at any depth, and conda
+  environments (a directory with ``conda-meta/history``) whatever their name;
 - build outputs, named in ``build_output_dirs`` **and** ignored by git, so a
   ``build/`` that holds sources is still snapshotted. Rollback deletes them;
 - kept directories, given as paths in ``kept_dirs``, such as the agent's memory.
@@ -25,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from openjiuwen.core.common.logging import logger
+from openjiuwen.harness.recoverable.dependencies import is_conda_env
 from openjiuwen.harness.recoverable.manifest import Entry, EntryKind, Manifest
 from openjiuwen.harness.recoverable.objects import ObjectStore
 
@@ -112,7 +114,7 @@ class WorkspaceSnapshot:
                 rel = full.relative_to(self.root).as_posix()
                 if full.is_symlink():
                     manifest.entries[rel] = self._link_entry(full)
-                elif name in self._dependency_dirs:
+                elif name in self._dependency_dirs or is_conda_env(full):
                     manifest.dependency_dirs.append(rel)
                 elif rel in ignored or rel in self._kept_dirs:
                     continue

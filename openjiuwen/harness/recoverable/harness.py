@@ -93,6 +93,7 @@ from openjiuwen.harness.recoverable.dependencies import (
     global_undo,
     list_global,
     list_packages,
+    resolve_global,
     restore_environment,
     restore_problem,
 )
@@ -1053,6 +1054,9 @@ class RecoverableHarness:
         # Recorded even without effect: rollback stops a background process and reverses global installs.
         background = tool_name == SHELL_TOOL and bool(args.get("run_in_background"))
         manager = global_manager(str(args.get("command") or "")) if tool_name == SHELL_TOOL else None
+        if manager is not None and manager.startswith("conda:"):  # Asks conda where the environment is.
+            root = self._workspace.root if self._workspace is not None else None
+            manager = await asyncio.to_thread(resolve_global, manager, root)
         paths = args.get(EXTERNAL_PATHS_ARG) if self._declarations.declared_per_call(tool_name) else None
         declared = [p for p in paths if isinstance(p, str)] if isinstance(paths, list) else []
         declared += self._outside_file(tool_name, args)
