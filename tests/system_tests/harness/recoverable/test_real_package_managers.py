@@ -9,7 +9,9 @@ skipped when those programs are on neither PATH nor ``~/.local/node/bin`` /
 directory: "global" pip is a virtual environment standing in for the system
 Python, and the global packages, stores and caches of npm, pnpm and yarn and
 conda's named environments are pointed there. Only conda's package cache, in
-conda's own install directory, is shared between runs.
+conda's own install directory, is shared between runs. The brew tests use the
+machine's own Homebrew and also need ``RECOVERABLE_REAL_BREW=1``; they install
+only small formulae that were not installed before and remove them afterwards.
 """
 from __future__ import annotations
 
@@ -413,3 +415,71 @@ async def test_a_named_conda_env_is_reverted_and_one_the_agent_made_is_removed(t
     assert result.status == RollbackStatus.COMPLETED, result.effects
     assert _conda_versions(conda / "kept") == start
     assert not (conda / "made").exists()
+
+
+# --------------------------------------------------------------------- brew
+
+BREW_BIN = Path("/opt/homebrew/bin")
+BREW_PACKAGES = ("hello", "jq", "oniguruma")
+"""Small formulae the brew tests install and remove; jq depends on oniguruma."""
+
+
+@pytest.fixture
+def brew(monkeypatch):
+    """The machine's own Homebrew, put back as it was after each test.
+
+    It changes the global environment, so it also needs ``RECOVERABLE_REAL_BREW=1``,
+    and it skips when one of ``BREW_PACKAGES`` was installed already.
+    """
+    if os.environ.get("RECOVERABLE_REAL_BREW") != "1":
+        pytest.skip("changes the machine's Homebrew; set RECOVERABLE_REAL_BREW=1")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(BREW_BIN), os.environ["PATH"]]))
+    if shutil.which("brew") is None:
+        pytest.skip("brew is not installed")
+    for name, value in (("HOMEBREW_NO_AUTO_UPDATE", "1"), ("HOMEBREW_NO_ANALYTICS", "1"),
+                        ("HOMEBREW_NO_ENV_HINTS", "1"), ("HOMEBREW_NO_INSTALL_CLEANUP", "1")):
+        monkeypatch.setenv(name, value)
+    before = list_global("brew")
+    if before is None or set(before) & set(BREW_PACKAGES):
+        pytest.skip(f"one of {', '.join(BREW_PACKAGES)} is installed already")
+    yield before
+    extra = [name for name in BREW_PACKAGES if name in (list_global("brew") or {})]
+    if extra:
+        subprocess.run(["brew", "uninstall", "--force", "--ignore-dependencies", *extra],
+                       capture_output=True, check=False)
+
+
+@pytest.mark.asyncio
+async def test_a_brew_install_with_a_dependency_is_reversed(tmp_path, brew, runner):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = _harness(tmp_path)
+    agent = _agent(ws, harness)
+    bash = json.dumps({"command": "brew install jq", "side_effect": "none"})
+    with scripted(_model(create_tool_call_response("bash", bash, tool_call_id="c1"))):
+        await run(agent, "install jq", "s1")
+        assert {"jq", "oniguruma"} <= set(list_global("brew"))
+        plan, result = await _rollback(harness)
+
+    [effect] = plan.effects
+    assert effect.undo_args == {"command": "brew uninstall jq oniguruma"}
+    assert result.status == RollbackStatus.COMPLETED, result.effects
+    assert list_global("brew") == brew
+
+
+@pytest.mark.asyncio
+async def test_a_brew_uninstall_is_reversed(tmp_path, brew, runner):
+    _sh("brew", "install", "hello")
+    installed = list_global("brew")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = _harness(tmp_path)
+    agent = _agent(ws, harness)
+    bash = json.dumps({"command": "brew uninstall hello", "side_effect": "none"})
+    with scripted(_model(create_tool_call_response("bash", bash, tool_call_id="c1"))):
+        await run(agent, "remove hello", "s1")
+        assert "hello" not in list_global("brew")
+        _, result = await _rollback(harness)
+
+    assert result.status == RollbackStatus.COMPLETED, result.effects
+    assert list_global("brew") == installed, "reinstalled at the version it had"
