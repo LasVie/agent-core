@@ -25,6 +25,7 @@ files:
 - openjiuwen/harness/recoverable/workspace.py
 - tests/unit_tests/harness/recoverable/conftest.py
 - tests/unit_tests/harness/recoverable/test_cleanup.py
+- tests/unit_tests/harness/recoverable/test_conda.py
 - tests/unit_tests/harness/recoverable/test_crash.py
 - tests/unit_tests/harness/recoverable/test_dependencies.py
 - tests/unit_tests/harness/recoverable/test_external.py
@@ -230,6 +231,26 @@ pnpm、yarn 的依赖恢复（需求方 2026-11-19 决定：按锁文件重装�
 - **Yarn 2 及以后的即插即用模式不用改。** 它不建 `node_modules`，依赖由工作区里的 `.pnp.cjs` 和 `yarn.lock` 决定，
   包在 yarn 的缓存里，文件快照写回这两个文件就恢复了。
 
+conda 环境（需求方 2026-11-23 决定：工作区里的当依赖环境、按修订号恢复；工作区外的像 `npm -g` 一样撤销）：
+
+- **按 `conda-meta/history` 认环境，不看名字。** conda 环境可以叫任何名字（`env`、`.conda`、`envs/x`），
+  原来名字不在依赖目录名单里的整个进快照（一个带 Python 3.12 的环境 6,765 个文件、116 MB，首次扫描 2.6 秒），
+  名为 `.venv` / `venv` 的因为在名单里而不进快照、又没有 `pyvenv.cfg`，被悄悄漏掉。现在扫描时有 `conda-meta/history`
+  的目录一律当依赖目录，多一次 stat。
+- **包列表从 `conda-meta/*.json` 读，加上修订号。** 不运行 conda。修订号是 `history` 里 `==>` 开头的块数减 1，
+  与 `conda list --revisions` 的编号一致；存在包列表的保留名 `""` 下，`diff_packages` 不比这一项，
+  所以只装了又卸掉、包没变的环境不算变化。
+- **按修订号恢复。** `conda install -p <环境> --revision <目标的修订号> -y -q`，conda 按历史求出那一次的包并装回；
+  恢复本身也会追加一个新修订，所以之后再回退到同一个检查点照样可用。装完与目标列表比对。实测一次约 12～35 秒，
+  大部分是求解和下载包索引。没有按列表装，是因为 conda 按列表装会重新求解，可能顺带改别的包。
+- **工作区外的环境。** 命令里认出 `conda` / `mamba` 的 `install`、`update`、`upgrade`、`remove`、`uninstall`、`create`
+  （含 `conda env …`）后，在后台线程里用 `conda info --json` 找到环境的位置：`-n` 在 `envs_dirs` 里找已有的，
+  没有就取第一个（`create` 会建在那里），`base` 为 `root_prefix`；`-p` 取绝对路径；都没有时为 `default_prefix`（当前激活的环境或 base）。
+  位置在工作区里的不当全局处理，免得撤两次。执行前后各取一次列表：执行前没有、执行后有的是 Agent 新建的，
+  反向命令为 `conda remove -p <环境> --all -y`；执行前有、执行后没有的装不回，列为无法撤销；都有且包变了的，
+  反向命令为 `conda install -p <环境> --revision <执行前的修订号> -y`。`global_undo` 在异步代码里直接调用，不能再起子进程，
+  所以位置在执行前就解析好，放进管理器的名字里（`conda:<路径>`）。
+
 U6 新增的做法：
 
 - **新增 `external.py`。** 备份的条目沿用工作区清单的格式，文件内容存进同一个内容目录；恢复直接复用 `WorkspaceSnapshot.restore`，
@@ -414,6 +435,9 @@ U8 新增的做法：
 | 2026-11-19 / 任务循环模式的跟进和插话 | 同上；`create_deep_agent(enable_task_loop=True)`，工具在执行中调用 `follow_up` / `steer` / `request_rollback`，模拟人在 Agent 运行时操作；探测用例在临时目录，没有提交 | 三种情况：只发跟进消息；只插话；发跟进消息（或任务清单里留一个未完成任务）后再发回退信号 | 跟进消息和插话各有自己的检查点（"user: also check the logs"、"user: [STEERING] …"），回退到它之前或它所在的检查点都正常。回退信号停下一轮后，任务循环又跑了一轮：模型没被调用，但跟进消息进了上下文、没有回答，未完成任务被任务执行器标为完成（摘要是停下的说明），这一轮多出两个同标签的检查点。另外每轮结束没有单独的检查点 | 需求方决定暂不适配，列入已知遗留 |
 | 2026-11-19 / pnpm、yarn 实测（修改前） | 同上；pnpm 12.21.0、yarn 1.22.22（用 npm 装进 `~/.local/node`，`--ignore-scripts`，再运行 pnpm 自带的 `install.js` 链接本机二进制）、yarn 4.9.2（`yarn set version`）；存储、缓存、全局目录都在临时目录 | 真实 `pnpm add` / `yarn add` 装包、升级、删除后读列表和指纹；Agent 升级包后回退；全局安装 | 列表和指纹都对（pnpm 的符号链接布局也对）；回退后 `package.json` 和锁文件恢复、`node_modules` 没动，结果 `partial`，计划里却写着要装回；`pnpm add -g`、`yarn global add` 完全没认出来；yarn 4 即插即用项目回退后完整恢复 | brew、conda 本机没有 |
 | 2026-11-19 / pnpm、yarn 按锁文件重装 | 同上 | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable tests/cli/integration/test_recoverable_cli.py tests/unit_tests/core/session/vcs tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py -q -p no:cacheprovider -o addopts=""`；`RECOVERABLE_REAL_PACKAGES=1 .venv/bin/python -m pytest tests/system_tests/harness/recoverable/test_real_package_managers.py -q -p no:cacheprovider -o addopts=""` | 单元等 162 个通过（含新增 `test_node_managers.py` 14 个）；真实包管理器 13 个通过（新增 pnpm、yarn 项目各 1 个，全局各 1 个，yarn 4 即插即用 1 个）；运行后 `~/Library/pnpm`、`~/Library/Caches/Yarn` 的修改时间没变 | pnpm 工作区（monorepo）、yarn 2 及以后的 `node_modules` 模式没有测 |
+| 2026-11-23 / conda 实测（修改前） | 同上；Miniforge 26.9.4-2（conda 26.9.4、mamba 2.9.0），从 GitHub 发布页下载安装脚本，SHA256 与发布页一致，`-b -p ~/.local/miniforge3` 安装，没有运行 `conda init`、没改 `.zshrc`；环境都在临时目录，`CONDA_REGISTER_ENVS=false` | Agent 对三种位置的环境执行 `conda install … zlib=1.3.1` 后回退：工作区里名为 `env`、名为 `.venv`，工作区外的命名环境；另测 `conda install --revision` | `env` 当普通文件进快照，回退后 zlib 回到 1.2.13，conda 自查一致；`.venv` 和命名环境都没动，结果却是 `completed`；`--revision` 在带 Python 的环境上能退回（约 12 秒）；mamba 也支持 `--revision` | — |
+| 2026-11-24 / conda 按修订号恢复 | 同上 | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable tests/cli/integration/test_recoverable_cli.py tests/unit_tests/core/session/vcs tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py -q -p no:cacheprovider -o addopts=""`；`RECOVERABLE_REAL_PACKAGES=1 … test_real_package_managers.py` | 单元等 176 个通过（含新增 `test_conda.py` 14 个，用假的 conda）；真实 conda 新增 2 个通过（工作区里的环境、工作区外的命名环境加 Agent 新建的环境），共 80 秒；真实包管理器全部 15 个通过（127 秒） | micromamba、装在 conda 环境里的 pip 包、`conda env create -f` 没有测 |
+| 2026-11-24 / conda 测试有效性 | 同上 | 临时分别不认 conda 环境、扫描时不排除 conda 环境、把修订号算作包、恢复时不给修订号、恢复后不比对、工作区里的绝对 `-p` 也当全局、不删 Agent 新建的环境、计划里不写缺 conda | 单元测试对应失败 6、3、2、3、1、1、1、1 个；不给修订号、不删新建环境在真实测试上也各失败 1 个；恢复后都通过 | — |
 | 2026-11-19 / pnpm、yarn 测试有效性 | 同上 | 临时分别改回只报告、装完不比对、计划里不写原因、不写回锁文件、不认全局 pnpm/yarn、yarn 全局列表为空 | 单元测试对应失败 3、1、1、3、2、1 个；前一项和不认全局在真实测试上也各失败 2 个；恢复后都通过 | — |
 | 2026-11-19 / 写回空状态改在 core 修复 | 同上 | 删掉 ④ 的删键，改 core `set_state`；详细步骤见 [修复记录](../bugfix/core_runtime/B_20261119_1444_empty-state-write-back.md) | `tests/unit_tests/harness/recoverable` 全部通过；把 core 改回原来的判断，`test_paused.py` 3 个失败 | Redis checkpointer 没有实测 |
 | 2026-11-16 / U6 测试有效性 | 同上 | 临时分别去掉"之后又被改过"的比对、不记调用结束时的内容、去掉与工作区重叠的检查、让恢复什么都不做、去掉大小上限 | 对应用例都失败（分别 1、4、1、5、1 个），恢复后都通过 | — |
@@ -520,7 +544,10 @@ U8 新增的做法：
   没有 pip 的 uv 环境用 `uv pip` 恢复；从本地路径、git 提交装的包和可编辑安装按原来源装回；Agent 用 `npm install`
   （写进 `package.json`）改过的 npm 项目，回退后 node_modules、`package.json`、`package-lock.json` 都和目标一致；
   全局 pip、全局 npm 的安装和升级按反向命令撤回。
-- **U5 未覆盖的：** brew、conda（本机没有）；pnpm 工作区（monorepo）、yarn 2 及以后的 `node_modules` 模式；装回已下架的版本。
+- **U5 未覆盖的：** brew（本机没有）；pnpm 工作区（monorepo）、yarn 2 及以后的 `node_modules` 模式；micromamba；
+  装在 conda 环境里的 pip 包；装回已下架的版本。
+  2026-11-24 起在真实的 conda 26.9 上验证了：工作区里的 conda 环境不进快照，按修订号回到检查点时的包；
+  工作区外的命名环境按执行前的修订号撤回，Agent 新建的环境回退时删除。
   2026-11-19 起在真实的 pnpm 12、yarn 1 上验证了：Agent 用 `pnpm add` / `yarn add` 改过的项目，回退后 `node_modules`、
   `package.json`、锁文件都和目标一致；全局 pnpm、yarn 的安装和升级按反向命令撤回；yarn 4 即插即用项目靠文件快照完整恢复。
 - **U6 已证明的范围：** 声明过的工作区外文件和目录的备份与恢复、新建的删除、删除的复原（含权限位）、之后被改过的保留、
@@ -543,7 +570,7 @@ U8 新增的做法：
 - **停在确认上时回退已证明的范围：** 回退到 HEAD 或更早时，被丢弃的调用不再执行；回退写回前后，按工具调用 ID 或中断 ID 发来的迟到回答都被拒绝；
   新消息照常开始一轮，模型看不到被丢弃调用的痕迹；之后模型再次调用同一工具并停在确认上时，对它的回答照常执行；计划和 CLI 列出要取消的调用。
 - **停在确认上时回退未覆盖的：** 工作流（`session.interact`）的中断和子 Agent 里的中断；任务循环模式下的恢复输入。
-- **交付判断：** U1～U8、CLI 接入、停在确认上时回退都满足各自范围。还差：brew、conda；任务循环模式下的回退信号暂不适配。
+- **交付判断：** U1～U8、CLI 接入、停在确认上时回退都满足各自范围。还差：brew；任务循环模式下的回退信号暂不适配。
 
 ### 覆盖与资料同步
 
@@ -567,8 +594,11 @@ U8 新增的做法：
 | 模型漏写的工作区外路径 | 已知限制 | 不会备份，回退说明提示"没有声明的工作区外文件没有处理" | 靠声明；无更好办法 |
 | 命令顺带建的上级目录 | 有意取舍 | 声明 `~/.config/new/x` 而 `new/` 原来不存在时，回退只删 `x`，留下空的 `new/` | 让模型声明最上面一级新建的目录 |
 | 工作区外的目录恢复到一半进程崩溃 | 已知限制 | 继续时这个目录既不是备份的样子、也不是调用结束时的样子，会被当成"之后又被改过"而保留并报告，不会被覆盖。单个文件的写回是原子的，没有这个问题 | 需要时在写回前登记意图 |
-| 真实包管理器上的依赖恢复（V8、V9） | 部分验证 | pip、uv、npm 和全局 pip、全局 npm 已在真实环境验证（`tests/system_tests/harness/recoverable/test_real_package_managers.py`，需联网，设 `RECOVERABLE_REAL_PACKAGES=1` 才运行；npm、pnpm、yarn 测试找不到程序时跳过，本机用的是 `~/.local/node` 下的 Node、pnpm 12.21.0、yarn 1.22.22）；brew、conda 未验证 | brew 只能在愿意改动全局环境的机器上测 |
-| conda 环境 | 未实现 | 不认作依赖环境，不记包列表 | 有需要再加 |
+| 真实包管理器上的依赖恢复（V8、V9） | 部分验证 | pip、uv、npm 和全局 pip、全局 npm 已在真实环境验证（`tests/system_tests/harness/recoverable/test_real_package_managers.py`，需联网，设 `RECOVERABLE_REAL_PACKAGES=1` 才运行；npm、pnpm、yarn 测试找不到程序时跳过，本机用的是 `~/.local/node` 下的 Node、pnpm 12.21.0、yarn 1.22.22，`~/.local/miniforge3` 下的 conda 26.9.4）；brew 未验证 | brew 只能在愿意改动全局环境的机器上测 |
+| conda 环境里用 pip 装的包 | 已知限制 | `conda-meta` 不记 pip 装的包，修订号恢复也不管它们；工作区里的 conda 环境不进快照，所以这些包回退后保持原样且不报告。工作区外的环境里用 PATH 上的 `pip` 装时按全局 pip 处理 | 需要时把 conda 环境的 `site-packages` 也读进列表 |
+| 认不出位置的 conda 命令 | 已知限制 | 相对路径的 `-p`（取决于命令的目录）、没有 `-n`/`-p` 的 `create`、`conda env create -f`（名字在文件里）不处理；micromamba 不认 | 按声明；需要时解析 `-f` 文件 |
+| conda 修订号恢复的前提 | 已知限制 | 需要 conda 或 mamba；包缓存里没有、又不能联网时失败，回退为 `partial` 并报告；一次约 12～35 秒 | — |
+| 升级前留下的检查点里的 conda 环境 | 已知限制 | 本次修改前，名字不在名单里的 conda 环境作为普通文件进了快照；回退到这样的旧检查点时会把旧文件写回环境，但现在扫描已不列这个目录，之后多出的文件不会删除 | 跨这次升级的会话回退前重建环境 |
 | pnpm、yarn 按锁文件重装的前提 | 已知限制 | 目标时没有锁文件，或本地缓存里没有要装的包又不能联网时，重装失败，回退为 `partial` 并报告；pnpm 工作区（monorepo）和 yarn 2 及以后的 `node_modules` 模式没有实测 | 用到时补测 |
 | 全局 `pip` 的识别 | 已知限制 | 按 ④ 所在进程的 `VIRTUAL_ENV` 判断是不是全局；命令里先激活虚拟环境再装包时，前后比较的是全局 pip，差异为空 | 需要时改为解析命令实际用的解释器 |
 | Node 只看顶层包 | 有意取舍 | 嵌套依赖随顶层包一起装卸，不单独记 | — |
@@ -725,3 +755,12 @@ U8 新增的做法：
 - 变化：需求方 2026-11-19 决定 pnpm、yarn 按目标的锁文件重装后比对，全局安装像 `npm -g` 一样按前后列表撤回；
   计划里提前写明不能恢复的原因。S_20 不变量 25、26 已改。
 - 旧结论的效力：局部替代。npm 和 Python 的做法不变。
+
+### 2026-11-23 conda 环境按修订号恢复；工作区外的 conda 环境撤回
+
+- 原结论：已知遗留记为"conda 环境：未实现，不认作依赖环境，不记包列表"。
+- 新证据：真实 conda 上，名字随意的工作区内环境作为普通文件进快照，能恢复但快照随环境变大；名为 `.venv`/`venv` 的和工作区外的环境被悄悄漏掉，
+  结果仍是 `completed`。conda 和 mamba 都能用 `--revision` 把环境退回历史上的任一修订。
+- 变化：需求方 2026-11-23 决定工作区里有 `conda-meta/history` 的目录都当依赖环境，按修订号恢复；工作区外的环境按执行前的修订号撤回，
+  Agent 新建的删除、删掉的列为无法撤销。S_20 不变量 12、24、25、26 已改。
+- 旧结论的效力：完全替代。

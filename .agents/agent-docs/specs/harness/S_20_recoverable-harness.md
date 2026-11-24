@@ -31,7 +31,7 @@ files:
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/harness/recoverable/`（`harness.py` / `rail.py` / `store.py` / `models.py` / `manifest.py` / `objects.py` / `workspace.py` / `effects.py` / `processes.py` / `dependencies.py` / `external.py` / `lock.py` / `cleanup.py`） |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-24 |
 | 关联设计 | D-20261113-1506-recoverable-harness |
 | 关联 feature | F_20261113_1706_recoverable-harness.md |
 
@@ -41,7 +41,7 @@ files:
 包括上下文、Session 状态和工作区文件；工具调用对工作区以外的影响记在副作用账本里。
 人确认回退计划后，能撤销的外部效果按声明撤销，再把工作区、上下文和状态恢复到指定检查点。
 
-依赖目录（`node_modules`、`.venv` 等）不进快照，改为每个检查点记下包列表，回退时按列表安装和卸载。
+依赖目录（`node_modules`、`.venv` 等，以及任何名字的 conda 环境）不进快照，改为每个检查点记下包列表，回退时按列表安装和卸载（conda 环境按修订号恢复）。
 
 不回退的，回退说明会如实告诉 Agent：
 - Agent 的记忆目录；无法按列表恢复的依赖环境；
@@ -83,7 +83,7 @@ Rail 的事件路由与 priority 规则见 S_04。
     目标里有而现在没有的重建。Agent、shell、脚本和用户的改动一样撤掉。
 11. **第一份清单先于任何工具。** 会话的第一份清单在 `BEFORE_INVOKE` 时于后台开始建立；每个工具调用的 `BEFORE_TOOL_CALL`
     等它完成，模型调用不等。在它完成前建立的检查点引用这份清单。
-12. **快照范围。** 工作区下的一切，除了：名字在依赖目录名单里的目录（任何深度）；名字在构建产物名单里、并且被 git 忽略的目录；
+12. **快照范围。** 工作区下的一切，除了：名字在依赖目录名单里的目录（任何深度）；有 `conda-meta/history` 的目录（conda 环境，任何名字、任何深度）；名字在构建产物名单里、并且被 git 忽略的目录；
     工作区节点 `memory`、`coding_memory` 所在的目录；设备、管道、套接字。符号链接记链接本身，不跟随。
     回退时删除当前存在的构建产物目录；依赖目录和记忆目录不动；比目标多出的空目录删除，非空的（里面只剩不进快照的目录）保留。
 13. **文件内容按 sha256 存，相同内容只存一份。** 能克隆就克隆；不能克隆时，超过单文件上限的文件不存，
@@ -123,8 +123,10 @@ Rail 的事件路由与 priority 规则见 S_04。
     `input_params`，`side_effect` 列为必填；描述随 `DeepAgentConfig.language` 用中文或英文。工具本身忽略这些参数。
     `side_effect` 的描述让模型按顺序判断：只读、只改工作区或只改列出的本机外部文件为 `none`（并说明不要因为"能撤销"就选
     `reversible`）；新建独立的东西并能删掉为 `reversible`；其余（含 `git push`）为 `irreversible`。
-24. **每个检查点记下依赖环境的包列表。** 扫描时遇到的依赖目录里，有 `pyvenv.cfg` 的是 Python 虚拟环境，
-    名为 `node_modules` 且上一级有 `package.json` 的是 Node 环境。包列表直接从磁盘读：Python 读 `site-packages` 的 `*.dist-info`，
+24. **每个检查点记下依赖环境的包列表。** 扫描时遇到的依赖目录里，有 `conda-meta/history` 的是 conda 环境，
+    有 `pyvenv.cfg` 的是 Python 虚拟环境，名为 `node_modules` 且上一级有 `package.json` 的是 Node 环境。
+    conda 环境读 `conda-meta/*.json` 的包名和版本，另在保留名 `""` 下记环境当时的修订号（`conda-meta/history` 里第几块，从 0 起），
+    比较包列表时不算这一项；先比较 `conda-meta` 与 `history` 的修改时间。包列表直接从磁盘读：Python 读 `site-packages` 的 `*.dist-info`，
     Node 读顶层（含 `@scope/`）每个包的 `package.json`，不运行包管理器。先比较 `site-packages` 或 `node_modules`
     与 `.package-lock.json` 的修改时间，有变化才重读。包列表没变时，新检查点沿用上一个的 `packages_id`。
     从本地路径、压缩包地址或 git 提交装的 Python 包，按 PEP 610 的 `direct_url.json` 连同来源一起记下
@@ -138,7 +140,8 @@ Rail 的事件路由与 priority 规则见 S_04。
     也会按 `package.json` 把 Agent 加进去的包再装回来）；pnpm、yarn 按写回的锁文件重装（`pnpm install --frozen-lockfile`，
     yarn 1 为 `yarn install --frozen-lockfile`，有 `.yarnrc.yml` 的 yarn 2 及以后为 `yarn install --immutable`），装完与目标列表比对，
     不一致的记为错误。Yarn 2 及以后默认不建 `node_modules`，依赖由工作区里的 `.pnp.cjs` 和 `yarn.lock` 决定，随文件快照恢复。
-    生成计划时就检查能不能恢复（Node 看包管理器在不在，Python 看有没有 pip 或 uv），不能的原因写进计划的
+    conda 环境用 `conda install -p <环境> --revision <目标的修订号> -y -q`（没有 conda 时用 mamba）回到目标时的修订，再与目标列表比对。
+    生成计划时就检查能不能恢复（Node 看包管理器在不在，Python 看有没有 pip 或 uv，conda 看有没有 conda 或 mamba），不能的原因写进计划的
     `PackageChangeInfo.error`，执行时不再尝试。
     目标之后新建的环境整个删除；目标时有、现在已不存在的环境只报告。安装或卸载失败的环境记下错误，回退为 `partial`。
 26. **全局安装只撤 Agent 做的。** `bash` 命令里认出 `npm -g`、`pnpm add/remove/update -g`、`yarn global add/remove/upgrade`、
@@ -147,6 +150,11 @@ Rail 的事件路由与 priority 规则见 S_04。
     不列没有可执行程序的包），比较后生成反向命令
     （新增的卸载，删掉或版本变了的装回原版本；brew 的版本变化装不回，列为无法撤销）。
     这条反向命令作为单独的一项排在模型写的反向命令之后执行。
+    `conda` / `mamba` 的 `install`、`update`、`upgrade`、`remove`、`uninstall`、`create`（含 `conda env …`）作用于工作区外的环境时同样处理：
+    执行前用 `conda info --json` 找到环境的位置（`-n` 在 `envs_dirs` 里找，`-p` 取绝对路径，都没有时为 `default_prefix`），
+    在工作区里的不算全局（按不变量 25 恢复），相对路径的 `-p`、没有 `-n`/`-p` 的 `create` 和 `conda env create -f` 认不出环境，不处理。
+    反向命令：环境变了的 `conda install -p <环境> --revision <执行前的修订号> -y`，Agent 新建的环境 `conda remove -p <环境> --all -y`，
+    Agent 删掉的环境装不回，列为无法撤销。
 27. **工作区外的文件只按 Agent 的声明或文件工具的目标备份和恢复。** `write_file`、`edit_file` 的 `file_path` 在工作区以外时，
     按列在 `external_paths` 里处理（文件工具接受绝对路径）；在工作区里的不登记，由快照负责。
     `bash`、`code` 调用在 `external_paths` 里列出的路径，
@@ -277,7 +285,7 @@ Rail 的 `priority` 是 1，在所有内置 Rail 之后 init，检查点记下�
 | 账本序号 | `recoverable:{session_id}:ledger_seq` | 已分配的最大序号；同一会话内用锁串行分配 |
 | HEAD | `recoverable:{session_id}:head` | 当前检查点 ID |
 | 清单 `ManifestRecord` | `recoverable:{session_id}:manifest:{manifest_id}` | 相对 `parent_id` 的变化（路径 → 条目，删除记 `null`）；`parent_id` 为空时是完整清单，每 50 份增量存一份完整的 |
-| 包列表 | `recoverable:{session_id}:packages:{packages_id}` | 环境的工作区相对路径 → 包名 → 版本（有直接来源的为 `<版本> @ <来源>`） |
+| 包列表 | `recoverable:{session_id}:packages:{packages_id}` | 环境的工作区相对路径 → 包名 → 版本（有直接来源的为 `<版本> @ <来源>`；conda 环境另有 `""` → 修订号） |
 | 工作区的会话 | `recoverable:workspace:{工作区键}:sessions` | 在这个工作区跑过的会话 ID，清理时据此找出还要用的文件内容 |
 | 工作区最新扫描 | `recoverable:workspace:{工作区键}:scan` | 完整清单，供同一工作区的新会话复用指纹 |
 | `RollbackPlan` | `recoverable:plan:{plan_id}` | 目标、当时的 HEAD、要丢弃的检查点（最新的在前）、发起方、来源、理由、对应的信号、文件变化、会消失的提交数、效果及其结果、状态（`planned` / `applying` / `completed` / `partial` / `accepted` / `invalidated`）、要取消的等待确认的调用 `cancelled_calls`、`applied_at`、进度 `progress`（最后完成的阶段、要丢弃的检查点、停掉的进程、恢复依赖后的包列表、写回和删除的文件、恢复后的清单）。也是回退的进度记录 |
