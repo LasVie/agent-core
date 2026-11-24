@@ -438,6 +438,7 @@ U8 新增的做法：
 | 2026-11-23 / conda 实测（修改前） | 同上；Miniforge 26.9.4-2（conda 26.9.4、mamba 2.9.0），从 GitHub 发布页下载安装脚本，SHA256 与发布页一致，`-b -p ~/.local/miniforge3` 安装，没有运行 `conda init`、没改 `.zshrc`；环境都在临时目录，`CONDA_REGISTER_ENVS=false` | Agent 对三种位置的环境执行 `conda install … zlib=1.3.1` 后回退：工作区里名为 `env`、名为 `.venv`，工作区外的命名环境；另测 `conda install --revision` | `env` 当普通文件进快照，回退后 zlib 回到 1.2.13，conda 自查一致；`.venv` 和命名环境都没动，结果却是 `completed`；`--revision` 在带 Python 的环境上能退回（约 12 秒）；mamba 也支持 `--revision` | — |
 | 2026-11-24 / conda 按修订号恢复 | 同上 | `.venv/bin/python -m pytest tests/unit_tests/harness/recoverable tests/cli/integration/test_recoverable_cli.py tests/unit_tests/core/session/vcs tests/unit_tests/core/foundation/tool/mcp/test_tool_annotations.py -q -p no:cacheprovider -o addopts=""`；`RECOVERABLE_REAL_PACKAGES=1 … test_real_package_managers.py` | 单元等 176 个通过（含新增 `test_conda.py` 14 个，用假的 conda）；真实 conda 新增 2 个通过（工作区里的环境、工作区外的命名环境加 Agent 新建的环境），共 80 秒；真实包管理器全部 15 个通过（127 秒） | micromamba、装在 conda 环境里的 pip 包、`conda env create -f` 没有测 |
 | 2026-11-24 / conda 测试有效性 | 同上 | 临时分别不认 conda 环境、扫描时不排除 conda 环境、把修订号算作包、恢复时不给修订号、恢复后不比对、工作区里的绝对 `-p` 也当全局、不删 Agent 新建的环境、计划里不写缺 conda | 单元测试对应失败 6、3、2、3、1、1、1、1 个；不给修订号、不删新建环境在真实测试上也各失败 1 个；恢复后都通过 | — |
+| 2026-11-24 / brew 实测 | 同上；Homebrew 7.0.16，从 GitHub 发布页下载官方 `.pkg`，核对签名（Developer ID Installer，已经 Apple 公证）后由需求方用管理员权限 `installer` 安装到 `/opt/homebrew`；装后 `brew analytics off`；测试时设 `HOMEBREW_NO_AUTO_UPDATE=1` 等 | 先直接调用 `global_manager` / `list_global` / `global_undo`：装 `hello`、装带依赖的 `jq`、卸掉事先装好的 `hello`；再试 cask（字体 `font-fira-code`）和 formula、cask 重名；最后 `RECOVERABLE_REAL_PACKAGES=1 RECOVERABLE_REAL_BREW=1 .venv/bin/python -m pytest tests/system_tests/harness/recoverable/test_real_package_managers.py -k brew -q -p no:cacheprovider -o addopts=""` 走完整的 Agent 流程 | 反向命令分别是 `brew uninstall hello`、`brew uninstall jq oniguruma`、`brew install hello`，执行后都回到原样；`brew list --versions` 也列出 cask，按名字卸载、装回都可用；当前 8,742 个 formula 和 7,848 个 cask 没有重名，不加 `--cask` 也不会弄错；Agent 流程 2 个用例通过，跑完 brew 里没有留下任何包；不设 `RECOVERABLE_REAL_BREW` 时跳过；临时让 brew 命令不被认出，2 个都失败。没有改代码 | `brew upgrade`（版本变化，列为无法撤销）只在单元测试里测过：本机没有旧版本可升级 |
 | 2026-11-19 / pnpm、yarn 测试有效性 | 同上 | 临时分别改回只报告、装完不比对、计划里不写原因、不写回锁文件、不认全局 pnpm/yarn、yarn 全局列表为空 | 单元测试对应失败 3、1、1、3、2、1 个；前一项和不认全局在真实测试上也各失败 2 个；恢复后都通过 | — |
 | 2026-11-19 / 写回空状态改在 core 修复 | 同上 | 删掉 ④ 的删键，改 core `set_state`；详细步骤见 [修复记录](../bugfix/core_runtime/B_20261119_1444_empty-state-write-back.md) | `tests/unit_tests/harness/recoverable` 全部通过；把 core 改回原来的判断，`test_paused.py` 3 个失败 | Redis checkpointer 没有实测 |
 | 2026-11-16 / U6 测试有效性 | 同上 | 临时分别去掉"之后又被改过"的比对、不记调用结束时的内容、去掉与工作区重叠的检查、让恢复什么都不做、去掉大小上限 | 对应用例都失败（分别 1、4、1、5、1 个），恢复后都通过 | — |
@@ -544,10 +545,11 @@ U8 新增的做法：
   没有 pip 的 uv 环境用 `uv pip` 恢复；从本地路径、git 提交装的包和可编辑安装按原来源装回；Agent 用 `npm install`
   （写进 `package.json`）改过的 npm 项目，回退后 node_modules、`package.json`、`package-lock.json` 都和目标一致；
   全局 pip、全局 npm 的安装和升级按反向命令撤回。
-- **U5 未覆盖的：** brew（本机没有）；pnpm 工作区（monorepo）、yarn 2 及以后的 `node_modules` 模式；micromamba；
+- **U5 未覆盖的：** 真实 brew 上的版本变化（`brew upgrade`）；pnpm 工作区（monorepo）、yarn 2 及以后的 `node_modules` 模式；micromamba；
   装在 conda 环境里的 pip 包；装回已下架的版本。
   2026-11-24 起在真实的 conda 26.9 上验证了：工作区里的 conda 环境不进快照，按修订号回到检查点时的包；
   工作区外的命名环境按执行前的修订号撤回，Agent 新建的环境回退时删除。
+  2026-11-24 起在真实的 Homebrew 7.0 上验证了：Agent 装的 formula（含依赖）回退时卸载，卸掉的装回；cask 同样按名字处理。
   2026-11-19 起在真实的 pnpm 12、yarn 1 上验证了：Agent 用 `pnpm add` / `yarn add` 改过的项目，回退后 `node_modules`、
   `package.json`、锁文件都和目标一致；全局 pnpm、yarn 的安装和升级按反向命令撤回；yarn 4 即插即用项目靠文件快照完整恢复。
 - **U6 已证明的范围：** 声明过的工作区外文件和目录的备份与恢复、新建的删除、删除的复原（含权限位）、之后被改过的保留、
@@ -570,7 +572,8 @@ U8 新增的做法：
 - **停在确认上时回退已证明的范围：** 回退到 HEAD 或更早时，被丢弃的调用不再执行；回退写回前后，按工具调用 ID 或中断 ID 发来的迟到回答都被拒绝；
   新消息照常开始一轮，模型看不到被丢弃调用的痕迹；之后模型再次调用同一工具并停在确认上时，对它的回答照常执行；计划和 CLI 列出要取消的调用。
 - **停在确认上时回退未覆盖的：** 工作流（`session.interact`）的中断和子 Agent 里的中断；任务循环模式下的恢复输入。
-- **交付判断：** U1～U8、CLI 接入、停在确认上时回退都满足各自范围。还差：brew；任务循环模式下的回退信号暂不适配。
+- **交付判断：** U1～U8、CLI 接入、停在确认上时回退都满足各自范围；设计里列的包管理器都已在真实环境验证。
+  任务循环模式下的回退信号暂不适配。
 
 ### 覆盖与资料同步
 
@@ -594,7 +597,8 @@ U8 新增的做法：
 | 模型漏写的工作区外路径 | 已知限制 | 不会备份，回退说明提示"没有声明的工作区外文件没有处理" | 靠声明；无更好办法 |
 | 命令顺带建的上级目录 | 有意取舍 | 声明 `~/.config/new/x` 而 `new/` 原来不存在时，回退只删 `x`，留下空的 `new/` | 让模型声明最上面一级新建的目录 |
 | 工作区外的目录恢复到一半进程崩溃 | 已知限制 | 继续时这个目录既不是备份的样子、也不是调用结束时的样子，会被当成"之后又被改过"而保留并报告，不会被覆盖。单个文件的写回是原子的，没有这个问题 | 需要时在写回前登记意图 |
-| 真实包管理器上的依赖恢复（V8、V9） | 部分验证 | pip、uv、npm 和全局 pip、全局 npm 已在真实环境验证（`tests/system_tests/harness/recoverable/test_real_package_managers.py`，需联网，设 `RECOVERABLE_REAL_PACKAGES=1` 才运行；npm、pnpm、yarn 测试找不到程序时跳过，本机用的是 `~/.local/node` 下的 Node、pnpm 12.21.0、yarn 1.22.22，`~/.local/miniforge3` 下的 conda 26.9.4）；brew 未验证 | brew 只能在愿意改动全局环境的机器上测 |
+| 真实包管理器上的依赖恢复（V8、V9） | 已验证 | pip、uv、npm 和全局 pip、全局 npm 已在真实环境验证（`tests/system_tests/harness/recoverable/test_real_package_managers.py`，需联网，设 `RECOVERABLE_REAL_PACKAGES=1` 才运行；npm、pnpm、yarn 测试找不到程序时跳过，本机用的是 `~/.local/node` 下的 Node、pnpm 12.21.0、yarn 1.22.22，`~/.local/miniforge3` 下的 conda 26.9.4）；brew 测试用本机的 Homebrew 7.0.16，会改动全局环境，另需 `RECOVERABLE_REAL_BREW=1` | 在愿意改动全局环境的机器上运行 brew 测试 |
+| brew 装回的版本 | 已知限制 | Agent 卸掉的包回退时用 `brew install <名字>` 装回，装的是当时最新的版本；原来的版本比最新旧时，版本会不同且不报告。Agent 升级的包（版本变化）装不回旧版本，列为无法撤销 | brew 一般装不了旧版本；有需要时装回后比对版本并报告 |
 | conda 环境里用 pip 装的包 | 已知限制 | `conda-meta` 不记 pip 装的包，修订号恢复也不管它们；工作区里的 conda 环境不进快照，所以这些包回退后保持原样且不报告。工作区外的环境里用 PATH 上的 `pip` 装时按全局 pip 处理 | 需要时把 conda 环境的 `site-packages` 也读进列表 |
 | 认不出位置的 conda 命令 | 已知限制 | 相对路径的 `-p`（取决于命令的目录）、没有 `-n`/`-p` 的 `create`、`conda env create -f`（名字在文件里）不处理；micromamba 不认 | 按声明；需要时解析 `-f` 文件 |
 | conda 修订号恢复的前提 | 已知限制 | 需要 conda 或 mamba；包缓存里没有、又不能联网时失败，回退为 `partial` 并报告；一次约 12～35 秒 | — |

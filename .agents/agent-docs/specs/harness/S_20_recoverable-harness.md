@@ -148,7 +148,7 @@ Rail 的事件路由与 priority 规则见 S_04。
     `brew install/uninstall/upgrade/reinstall`、不在虚拟环境中的 `pip` / `python -m pip` 时，不论声明什么都进账本，
     执行前后各取一次全局包列表（yarn 读 `yarn global dir` 下的 `package.json` 和 `node_modules`，因为 `yarn global list`
     不列没有可执行程序的包），比较后生成反向命令
-    （新增的卸载，删掉或版本变了的装回原版本；brew 的版本变化装不回，列为无法撤销）。
+    （新增的卸载，删掉或版本变了的装回原版本；brew 的版本变化装不回，列为无法撤销，删掉的用 `brew install <名字>` 装回当时最新的版本）。
     这条反向命令作为单独的一项排在模型写的反向命令之后执行。
     `conda` / `mamba` 的 `install`、`update`、`upgrade`、`remove`、`uninstall`、`create`（含 `conda env …`）作用于工作区外的环境时同样处理：
     执行前用 `conda info --json` 找到环境的位置（`-n` 在 `envs_dirs` 里找，`-p` 取绝对路径，都没有时为 `default_prefix`），
